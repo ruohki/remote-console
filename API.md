@@ -81,6 +81,29 @@ Config in `settings` (admin UI) — `{ enabled, display_name, issuer, client_id,
 | GET | `/api/auth/oidc/callback` | validates ID token (issuer, aud, nonce, exp, signature via JWKS), links by verified email or provisions; sets session; redirects to `return` |
 | GET/PUT | `/api/auth/oidc/config` | admin; `POST /api/auth/oidc/test` performs discovery and reports the endpoints |
 
+### IdP group / role mapping (OIDC and SAML)
+
+Access can be defined at the IdP and mapped into the console. Provider config gains
+`mappings: Mapping[]` (evaluated top to bottom, all matching rules apply) and `sync_mode`:
+
+```ts
+interface Mapping {
+  idp_group: string;                 // exact value or glob (e.g. "it-support-*"), matched against the groups claim / SAML attribute
+  role?: "admin" | "operator";        // highest matching role wins; admin only via explicit rule
+  groups?: { group_id: string; permission: "view" | "connect" }[];  // console device-group grants to apply
+}
+```
+
+`sync_mode: "additive" | "authoritative"` — additive only ever adds grants/roles on login;
+authoritative makes SSO the source of truth: grants that were created by SSO (`group_grants.source
+= 'sso'`) and no longer match are removed on each login, while manually created grants (`source =
+'manual'`) are kept. Users with no matching rule get `default_role` (or are rejected when
+`default_role` is `none`). Role demotion via SSO never removes the last admin (409 logged, user
+keeps admin). Group claims: OIDC `groups_claim` (default `groups`, also read from the UserInfo
+endpoint when absent from the ID token); SAML `attribute_map.groups` (multi-valued attribute).
+`POST /api/auth/{oidc,saml}/test-mapping { groups: string[] }` (admin) shows the resulting
+role/grants. Audit `sso.mapping` with the applied changes.
+
 ### SAML 2.0
 Config: `{ enabled, display_name, idp_metadata_xml | idp_metadata_url, sp_entity_id (default CONSOLE_PUBLIC_URL + "/saml"), attribute_map: { email, name, groups }, auto_provision, default_role, admin_group?, trust_idp_mfa, sign_requests: bool }`; SP key/cert generated at first enable (stored encrypted).
 | Method | Path | Notes |
