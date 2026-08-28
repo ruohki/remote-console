@@ -67,6 +67,7 @@ fn init_tracing() {
 }
 
 async fn serve(config: Config) -> Result<()> {
+    config.validate_for_serve()?;
     let listen = config.listen_addr.clone();
     let public_url = config.public_url.clone();
     let state = AppState::init(config).await?;

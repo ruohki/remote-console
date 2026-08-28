@@ -6,11 +6,12 @@ use crate::auth::{self, AdminUser};
 use crate::db;
 use crate::error::{ApiError, ApiResult};
 use crate::install::{self, TokenProblem};
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
+use std::net::SocketAddr;
 
 pub async fn downloads(
     State(state): State<AppState>,
@@ -32,11 +33,13 @@ pub struct DownloadQuery {
 
 pub async fn download(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path(platform): Path<String>,
     Query(q): Query<DownloadQuery>,
     headers: HeaderMap,
 ) -> Response {
-    match download_inner(&state, &platform, &q, &headers).await {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    match download_inner(&state, &platform, &q, &headers, &ip).await {
         Ok(resp) => resp,
         Err(e) => e.into_response(),
     }
@@ -47,6 +50,7 @@ async fn download_inner(
     platform: &str,
     q: &DownloadQuery,
     headers: &HeaderMap,
+    ip: &str,
 ) -> ApiResult<Response> {
     let platform =
         Platform::parse(platform).ok_or_else(|| ApiError::not_found("agent platform"))?;
@@ -58,6 +62,15 @@ async fn download_inner(
     let token_label = match &admin {
         Some(_) => None,
         None => {
+            // Bakes are expensive (signing, notarization): unauthenticated token downloads
+            // are rate limited per client address; admins are not.
+            if !state.limits.download_ip.check(ip) {
+                return Err(ApiError::new(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "rate_limited",
+                    "too many downloads, try again in a minute",
+                ));
+            }
             let token = q.token.as_deref();
             match install::validate_token(&state.db, token).await {
                 Ok(row) => Some(row.label),
@@ -94,7 +107,14 @@ async fn download_inner(
             sign,
         )
         .await
-        .map_err(|e| ApiError::new(StatusCode::NOT_FOUND, "no_base_binary", format!("{e:#}")))?;
+        .map_err(|e| {
+            tracing::warn!(platform = platform.slug(), "bake failed: {e:#}");
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "no_base_binary",
+                "no agent binary is available for this platform",
+            )
+        })?;
 
     let actor_id = admin.as_ref().map(|u| u.id.clone());
     let actor_name = admin.as_ref().map(|u| u.name.clone());

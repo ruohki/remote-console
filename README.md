@@ -31,7 +31,12 @@ Configuration is via environment variables (see `.env.example`):
 | `MACOS_SIGN_P12` / `MACOS_SIGN_P12_PASSWORD` | – | Developer ID certificate for `rcodesign` on non-macOS hosts (Docker) |
 | `APPLE_API_KEY_JSON` | – | App Store Connect API key file for `rcodesign notary-submit` |
 | `WINDOWS_SIGN_PFX` / `WINDOWS_SIGN_PFX_PASSWORD` | – | reserved for Authenticode signing (not applied yet, see docs) |
-| `SESSION_TTL_HOURS` | `168` | login session lifetime |
+| `SESSION_TTL_HOURS` | `168` | absolute login session lifetime (sessions also expire after 12 h idle) |
+| `ALLOW_INSECURE_PUBLIC_URL` | – | set `1` to allow a plain-http public URL on a public host (never in production) |
+| `TRUST_PROXY` | – | set `1` behind a reverse proxy so `X-Forwarded-For`/`-Proto` are honoured |
+| `CONSOLE_MASTER_KEY` | – | 32 bytes base64; encrypts the bakery signing key at rest (see SECURITY.md) |
+| `CONSOLE_TLS_CERT_PEM` / `CONSOLE_TLS_SPKI_SHA256` | – | publish the console's TLS public-key pin in `/api/info` |
+| `TURN_HOST` | – | DNS name of the relay (docker-compose builds `turn:`/`turns:` URLs from it) |
 | `RUST_LOG` | `info` | log filter |
 
 Put the console behind a TLS terminating reverse proxy (Caddy/Traefik/nginx) — WebRTC in

@@ -264,7 +264,7 @@ impl Bakery {
         sign: bool,
     ) -> Result<Baked> {
         let base = self.base_binary(config, platform).await?;
-        let key = db::settings::signing_key(db).await?;
+        let key = db::settings::signing_key(db, config).await?;
         let server_url = config.public_url.clone();
         let issued_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -120,17 +120,49 @@ pub async fn create_login_session(db: &Db, user_id: &str, ttl_hours: i64) -> Res
     Ok(id)
 }
 
-/// Resolve a cookie value to its (enabled, unexpired) user.
+/// Resolve a cookie value to its (enabled, unexpired, not idle) user and refresh the
+/// session's activity timestamp (at most every few minutes to keep writes low).
 pub async fn user_by_login_session(db: &Db, session_id: &str) -> Result<Option<UserRow>> {
-    sqlx::query_as::<_, UserRow>(
+    let now_ts = Utc::now();
+    let idle_cutoff = format_ts(now_ts - Duration::hours(crate::config::SESSION_IDLE_HOURS));
+    let user = sqlx::query_as::<_, UserRow>(
         "SELECT u.* FROM users u
          JOIN user_sessions s ON s.user_id = u.id
-         WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0",
+         WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0
+           AND COALESCE(s.last_seen_at, s.created_at) > ?",
     )
     .bind(session_id)
-    .bind(now())
+    .bind(format_ts(now_ts))
+    .bind(&idle_cutoff)
     .fetch_optional(db)
-    .await
+    .await?;
+    if user.is_some() {
+        let refresh_cutoff = format_ts(now_ts - Duration::minutes(5));
+        sqlx::query(
+            "UPDATE user_sessions SET last_seen_at = ?
+             WHERE id = ? AND (last_seen_at IS NULL OR last_seen_at < ?)",
+        )
+        .bind(format_ts(now_ts))
+        .bind(session_id)
+        .bind(&refresh_cutoff)
+        .execute(db)
+        .await?;
+    }
+    Ok(user)
+}
+
+/// Mark a session idle-expired (tests / admin tooling).
+pub async fn touch_login_session(
+    db: &Db,
+    session_id: &str,
+    last_seen: chrono::DateTime<Utc>,
+) -> Result<()> {
+    sqlx::query("UPDATE user_sessions SET last_seen_at = ? WHERE id = ?")
+        .bind(format_ts(last_seen))
+        .bind(session_id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 pub async fn delete_login_session(db: &Db, session_id: &str) -> Result<()> {

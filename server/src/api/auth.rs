@@ -96,8 +96,9 @@ pub async fn login(
     jar: CookieJar,
     Json(body): Json<LoginBody>,
 ) -> ApiResult<impl IntoResponse> {
-    let ip = auth::client_ip(&headers, Some(&ConnectInfo(peer)));
-    if state.limiter.is_blocked(&ip) {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    let account = body.email.trim().to_lowercase();
+    if state.limiter.is_blocked(&ip) || state.limits.login_account.is_blocked(&account) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -106,7 +107,9 @@ pub async fn login(
     }
 
     let user = db::users::by_email(&state.db, &body.email).await?;
-    // Always run the hash to keep timing uniform for unknown emails.
+    // Always run the hash to keep timing uniform for unknown emails; bound concurrency so
+    // a flood of logins cannot exhaust the CPU with argon2.
+    let _slot = state.limits.verify_slots.acquire().await;
     let (ok, user) = match user {
         Some(u) => {
             let ok =
@@ -119,9 +122,11 @@ pub async fn login(
             (false, None)
         }
     };
+    drop(_slot);
 
     if !ok {
         state.limiter.record_failure(&ip);
+        state.limits.login_account.record_failure(&account);
         db::audit::record_lossy(
             &state.db,
             None,
@@ -139,6 +144,12 @@ pub async fn login(
 
     let user = user.ok_or_else(ApiError::unauthorized)?;
     state.limiter.clear(&ip);
+    state.limits.login_account.clear(&account);
+    // Session rotation: a cookie presented at login (fixation attempt or stale session) is
+    // invalidated; the new session always gets a fresh id.
+    if let Some(old) = jar.get(auth::SESSION_COOKIE).map(|c| c.value().to_string()) {
+        let _ = db::users::delete_login_session(&state.db, &old).await;
+    }
     db::users::set_last_login(&state.db, &user.id).await?;
     db::audit::record_lossy(
         &state.db,

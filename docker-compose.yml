@@ -1,4 +1,9 @@
 # remote-console + coturn. Copy .env.example to .env and adjust before `docker compose up -d`.
+#
+# Put a TLS-terminating reverse proxy (Caddy/Traefik/nginx) in front of :8080 and set
+# CONSOLE_PUBLIC_URL=https://… and TRUST_PROXY=1 — the console refuses a plain-http public
+# URL on a public host. coturn serves plain TURN on 3478 and TURN-over-TLS (turns:) on 443;
+# both need the ports open on the host firewall (see coturn/README.md).
 services:
   console:
     image: ghcr.io/ruohki/remote-console:latest
@@ -7,13 +12,15 @@ services:
       dockerfile: remote-console/Dockerfile
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "127.0.0.1:8080:8080"   # only the reverse proxy on this host talks to the console
     env_file: .env
     environment:
       DATABASE_URL: "sqlite:///data/console.db?mode=rwc"
       LISTEN_ADDR: "0.0.0.0:8080"
-      TURN_URLS: "${TURN_URLS:-turn:${TURN_PUBLIC_IP}:3478?transport=udp,turn:${TURN_PUBLIC_IP}:3478?transport=tcp}"
+      TRUST_PROXY: "${TRUST_PROXY:-1}"
+      TURN_URLS: "${TURN_URLS:-turn:${TURN_HOST}:3478?transport=udp,turns:${TURN_HOST}:443?transport=tcp}"
       TURN_SECRET: "${TURN_SECRET}"
+      STUN_URLS: "${STUN_URLS:-stun:${TURN_HOST}:3478}"
     volumes:
       - ./data:/data
     depends_on:
@@ -26,9 +33,12 @@ services:
     network_mode: host
     volumes:
       - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      # TLS certificate + key for turns: (fullchain.pem / privkey.pem, e.g. from certbot)
+      - ./coturn/certs:/etc/coturn/certs:ro
     command:
       - "-c"
       - "/etc/coturn/turnserver.conf"
       - "--static-auth-secret=${TURN_SECRET}"
       - "--realm=${TURN_REALM:-remote}"
       - "--external-ip=${TURN_PUBLIC_IP}"
+      - "--server-name=${TURN_HOST}"

@@ -1,4 +1,4 @@
-//! Passwords, cookie sessions, role extractors, login rate limiting and the JSON guard.
+//! Passwords, cookie sessions, role extractors, rate limiting and the CSRF guard.
 
 pub mod access;
 
@@ -7,7 +7,7 @@ use crate::db::models::UserRow;
 use crate::error::ApiError;
 use argon2::password_hash::{phc::PasswordHash, PasswordHasher, PasswordVerifier};
 use argon2::Argon2;
-use axum::extract::{ConnectInfo, FromRequestParts, Request};
+use axum::extract::{ConnectInfo, FromRequestParts, Request, State};
 use axum::http::{header, request::Parts, HeaderMap, Method, StatusCode};
 use axum::middleware::Next;
 use axum::response::Response;
@@ -53,12 +53,15 @@ pub fn validate_password(password: &str) -> Result<(), ApiError> {
             "password must be at least {MIN_PASSWORD_LEN} characters"
         )));
     }
+    if password.chars().count() > 256 {
+        return Err(ApiError::validation("password is too long"));
+    }
     Ok(())
 }
 
 pub fn validate_email(email: &str) -> Result<(), ApiError> {
     let e = email.trim();
-    if e.len() < 3 || !e.contains('@') || e.contains(char::is_whitespace) {
+    if e.len() < 3 || e.len() > 254 || !e.contains('@') || e.contains(char::is_whitespace) {
         return Err(ApiError::validation("invalid email address"));
     }
     Ok(())
@@ -66,6 +69,9 @@ pub fn validate_email(email: &str) -> Result<(), ApiError> {
 
 // ── cookies ───────────────────────────────────────────────────────────────────
 
+/// `SameSite=Lax` (not `Strict`) on purpose: top-level navigations to deep links from other
+/// sites (a device link in a chat) must still carry the cookie. Cross-site *requests* are
+/// blocked by [`csrf_guard`] (JSON content type + `Origin` check), so Lax loses nothing here.
 pub fn session_cookie(secure: bool, session_id: String, ttl_hours: i64) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE, session_id))
         .path("/")
@@ -90,7 +96,7 @@ pub fn session_id_from_headers(headers: &HeaderMap) -> Option<String> {
     CookieJar::from_headers(headers)
         .get(SESSION_COOKIE)
         .map(|c| c.value().to_string())
-        .filter(|v| !v.is_empty())
+        .filter(|v| !v.is_empty() && v.len() <= 128)
 }
 
 /// Resolve the current user from the request cookies.
@@ -165,35 +171,111 @@ impl AdminUser {
 
 // ── client IP ─────────────────────────────────────────────────────────────────
 
-/// Best-effort client address: first `X-Forwarded-For` entry, else the socket peer.
-pub fn client_ip(headers: &HeaderMap, peer: Option<&ConnectInfo<SocketAddr>>) -> String {
-    if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
-        if let Some(first) = xff
-            .split(',')
-            .next()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-        {
-            return first.to_string();
+/// Client address for rate limiting and audit. Forwarding headers are only honoured when
+/// `trust_proxy` is set (a reverse proxy in front of the console); otherwise anyone could
+/// spoof `X-Forwarded-For` to dodge limits or forge audit entries.
+pub fn client_ip(
+    headers: &HeaderMap,
+    peer: Option<&ConnectInfo<SocketAddr>>,
+    trust_proxy: bool,
+) -> String {
+    if trust_proxy {
+        if let Some(xff) = headers.get("x-forwarded-for").and_then(|v| v.to_str().ok()) {
+            if let Some(first) = xff
+                .split(',')
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && s.len() <= 64)
+            {
+                return first.to_string();
+            }
         }
-    }
-    if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
-        if !real.trim().is_empty() {
-            return real.trim().to_string();
+        if let Some(real) = headers.get("x-real-ip").and_then(|v| v.to_str().ok()) {
+            let real = real.trim();
+            if !real.is_empty() && real.len() <= 64 {
+                return real.to_string();
+            }
         }
     }
     peer.map(|c| c.0.ip().to_string())
         .unwrap_or_else(|| "unknown".into())
 }
 
-// ── login rate limiting ───────────────────────────────────────────────────────
+/// Whether the request arrived over TLS from the client's point of view.
+pub fn request_is_https(headers: &HeaderMap, trust_proxy: bool, public_https: bool) -> bool {
+    if trust_proxy {
+        if let Some(proto) = headers
+            .get("x-forwarded-proto")
+            .and_then(|v| v.to_str().ok())
+        {
+            return proto
+                .split(',')
+                .next()
+                .map(str::trim)
+                .is_some_and(|p| p.eq_ignore_ascii_case("https"));
+        }
+    }
+    public_https
+}
 
-/// Fixed-window failure counter per IP: after `max_failures` within `window` the IP is blocked.
-pub struct LoginLimiter {
-    max_failures: u32,
+// ── rate limiting ─────────────────────────────────────────────────────────────
+
+/// Fixed-window counter per key: at most `max` events within `window`.
+pub struct RateLimiter {
+    max: u32,
     window: Duration,
     entries: Mutex<HashMap<String, (u32, Instant)>>,
 }
+
+impl RateLimiter {
+    pub fn new(max: u32, window: Duration) -> Self {
+        Self {
+            max,
+            window,
+            entries: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Whether `key` has exhausted its budget (does not count).
+    pub fn is_blocked(&self, key: &str) -> bool {
+        let mut map = self.entries.lock();
+        match map.get(key) {
+            Some((count, since)) if since.elapsed() < self.window => *count >= self.max,
+            Some(_) => {
+                map.remove(key);
+                false
+            }
+            None => false,
+        }
+    }
+
+    /// Count one event; returns `false` when the budget is exhausted (the event is rejected).
+    pub fn check(&self, key: &str) -> bool {
+        let mut map = self.entries.lock();
+        let entry = map.entry(key.to_string()).or_insert((0, Instant::now()));
+        if entry.1.elapsed() >= self.window {
+            *entry = (0, Instant::now());
+        }
+        entry.0 += 1;
+        let ok = entry.0 <= self.max;
+        if map.len() > 20_000 {
+            let window = self.window;
+            map.retain(|_, (_, since)| since.elapsed() < window);
+        }
+        ok
+    }
+
+    pub fn record_failure(&self, key: &str) {
+        let _ = self.check(key);
+    }
+
+    pub fn clear(&self, key: &str) {
+        self.entries.lock().remove(key);
+    }
+}
+
+/// Per-IP login failure limiter (kept as its own type for the existing state field).
+pub struct LoginLimiter(RateLimiter);
 
 impl Default for LoginLimiter {
     fn default() -> Self {
@@ -203,40 +285,107 @@ impl Default for LoginLimiter {
 
 impl LoginLimiter {
     pub fn new(max_failures: u32, window: Duration) -> Self {
+        Self(RateLimiter::new(max_failures, window))
+    }
+    pub fn is_blocked(&self, ip: &str) -> bool {
+        self.0.is_blocked(ip)
+    }
+    pub fn record_failure(&self, ip: &str) {
+        self.0.record_failure(ip)
+    }
+    pub fn clear(&self, ip: &str) {
+        self.0.clear(ip)
+    }
+}
+
+/// Exponential backoff per key: after `threshold` consecutive failures the key is blocked
+/// for `base`, doubling with every further failure up to `max`. Success clears it.
+pub struct BackoffLimiter {
+    threshold: u32,
+    base: Duration,
+    max: Duration,
+    entries: Mutex<HashMap<String, (u32, Option<Instant>)>>,
+}
+
+impl BackoffLimiter {
+    pub fn new(threshold: u32, base: Duration, max: Duration) -> Self {
         Self {
-            max_failures,
-            window,
+            threshold,
+            base,
+            max,
             entries: Mutex::new(HashMap::new()),
         }
     }
 
-    pub fn is_blocked(&self, ip: &str) -> bool {
+    /// Remaining block time for `key`, if blocked.
+    pub fn blocked_for(&self, key: &str) -> Option<Duration> {
+        let map = self.entries.lock();
+        let (_, until) = map.get(key)?;
+        let until = (*until)?;
+        let now = Instant::now();
+        (until > now).then(|| until - now)
+    }
+
+    pub fn is_blocked(&self, key: &str) -> bool {
+        self.blocked_for(key).is_some()
+    }
+
+    pub fn record_failure(&self, key: &str) {
         let mut map = self.entries.lock();
-        match map.get(ip) {
-            Some((count, since)) if since.elapsed() < self.window => *count >= self.max_failures,
-            Some(_) => {
-                map.remove(ip);
-                false
-            }
-            None => false,
+        let entry = map.entry(key.to_string()).or_insert((0, None));
+        entry.0 = entry.0.saturating_add(1);
+        if entry.0 >= self.threshold {
+            let exp = (entry.0 - self.threshold).min(16);
+            let delay = self.base.saturating_mul(1u32 << exp).min(self.max);
+            entry.1 = Some(Instant::now() + delay);
+        }
+        if map.len() > 20_000 {
+            map.retain(|_, (_, until)| until.is_some_and(|u| u > Instant::now()));
         }
     }
 
-    pub fn record_failure(&self, ip: &str) {
-        let mut map = self.entries.lock();
-        let entry = map.entry(ip.to_string()).or_insert((0, Instant::now()));
-        if entry.1.elapsed() >= self.window {
-            *entry = (0, Instant::now());
-        }
-        entry.0 += 1;
-        if map.len() > 10_000 {
-            let window = self.window;
-            map.retain(|_, (_, since)| since.elapsed() < window);
-        }
+    pub fn clear(&self, key: &str) {
+        self.entries.lock().remove(key);
     }
+}
 
-    pub fn clear(&self, ip: &str) {
-        self.entries.lock().remove(ip);
+/// All request limiters, keyed by client IP / account / token.
+pub struct Limits {
+    /// Failed logins per IP.
+    pub login_ip: LoginLimiter,
+    /// Failed logins per account (email), exponential backoff.
+    pub login_account: BackoffLimiter,
+    /// Enrollment attempts per IP.
+    pub enroll_ip: RateLimiter,
+    /// Enrollment attempts per token hash.
+    pub enroll_token: RateLimiter,
+    /// Agent downloads (bakes) per IP.
+    pub download_ip: RateLimiter,
+    /// Failed agent WebSocket hellos per IP.
+    pub agent_hello_ip: BackoffLimiter,
+    /// Bound on concurrent argon2 verifications (agent hellos + logins).
+    pub verify_slots: tokio::sync::Semaphore,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            login_ip: LoginLimiter::default(),
+            login_account: BackoffLimiter::new(
+                5,
+                Duration::from_secs(60),
+                Duration::from_secs(60 * 60),
+            ),
+            enroll_ip: RateLimiter::new(10, Duration::from_secs(60)),
+            enroll_token: RateLimiter::new(10, Duration::from_secs(60)),
+            download_ip: RateLimiter::new(10, Duration::from_secs(60)),
+            agent_hello_ip: BackoffLimiter::new(
+                10,
+                Duration::from_secs(60),
+                Duration::from_secs(15 * 60),
+            ),
+            verify_slots: tokio::sync::Semaphore::new(4),
+        }
     }
 }
 
@@ -245,16 +394,25 @@ pub fn parse_ip(s: &str) -> Option<IpAddr> {
     s.parse().ok()
 }
 
-// ── JSON guard (CSRF) ─────────────────────────────────────────────────────────
+// ── CSRF guard ────────────────────────────────────────────────────────────────
 
-/// Mutating `/api` requests must be JSON: a non-JSON `Content-Type`, or a body without one,
-/// is rejected with 415. Together with `SameSite=Lax` this blocks cross-site form posts.
-pub async fn json_guard(req: Request, next: Next) -> Response {
+/// Cross-site request protection for the cookie-authenticated surface:
+///
+/// * mutating `/api` requests must be JSON (a non-JSON `Content-Type`, or a body without
+///   one, is rejected with 415 — forms cannot produce that);
+/// * when the browser sends an `Origin` header on a mutating `/api` request or on the UI
+///   WebSocket upgrade, it must match the console's own origin (public URL or the request
+///   `Host`). Requests without `Origin` (agents, curl) are unaffected — they carry no cookie.
+pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let path = req.uri().path();
     let mutating = matches!(
         *req.method(),
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
     );
-    if mutating && req.uri().path().starts_with("/api/") {
+    let api_mutation = mutating && path.starts_with("/api/");
+    let ui_ws = path == protocol::UI_WS_PATH;
+
+    if api_mutation {
         let content_type = req
             .headers()
             .get(header::CONTENT_TYPE)
@@ -280,7 +438,62 @@ pub async fn json_guard(req: Request, next: Next) -> Response {
             .into_response_pub();
         }
     }
+
+    if api_mutation || ui_ws {
+        if let Some(origin) = req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+        {
+            if !origin_allowed(origin, req.headers(), &state.config.public_origin()) {
+                tracing::warn!(%origin, %path, "cross-origin request rejected");
+                return ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "cross_origin",
+                    "cross-origin requests are not allowed",
+                )
+                .into_response_pub();
+            }
+        }
+    }
+
     next.run(req).await
+}
+
+/// `Origin` must match the public origin or the request's own `Host` (any scheme).
+fn origin_allowed(origin: &str, headers: &HeaderMap, public_origin: &str) -> bool {
+    if origin.eq_ignore_ascii_case("null") {
+        return false;
+    }
+    if !public_origin.is_empty() && origin.eq_ignore_ascii_case(public_origin) {
+        return true;
+    }
+    let origin_host = url::Url::parse(origin)
+        .ok()
+        .and_then(|u| {
+            u.host_str().map(|h| match u.port() {
+                Some(p) => format!("{h}:{p}"),
+                None => h.to_string(),
+            })
+        })
+        .unwrap_or_default();
+    if origin_host.is_empty() {
+        return false;
+    }
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .trim();
+    // Compare host[:port] with default ports normalised away.
+    normalise_host(&origin_host) == normalise_host(host)
+}
+
+fn normalise_host(h: &str) -> String {
+    let h = h.to_ascii_lowercase();
+    h.trim_end_matches(":443")
+        .trim_end_matches(":80")
+        .to_string()
 }
 
 impl ApiError {
@@ -324,13 +537,54 @@ mod tests {
     }
 
     #[test]
-    fn client_ip_prefers_forwarded() {
+    fn rate_limiter_counts_and_rejects() {
+        let l = RateLimiter::new(2, Duration::from_secs(60));
+        assert!(l.check("k"));
+        assert!(l.check("k"));
+        assert!(!l.check("k"), "third event in the window is rejected");
+        assert!(l.is_blocked("k"));
+        assert!(l.check("other"));
+    }
+
+    #[test]
+    fn backoff_doubles_and_clears() {
+        let l = BackoffLimiter::new(2, Duration::from_millis(100), Duration::from_millis(350));
+        l.record_failure("acct");
+        assert!(!l.is_blocked("acct"), "below threshold");
+        l.record_failure("acct");
+        let first = l.blocked_for("acct").expect("blocked at threshold");
+        assert!(first <= Duration::from_millis(100));
+        l.record_failure("acct");
+        let second = l.blocked_for("acct").expect("still blocked");
+        assert!(second > first, "delay doubles");
+        for _ in 0..5 {
+            l.record_failure("acct");
+        }
+        assert!(
+            l.blocked_for("acct").unwrap() <= Duration::from_millis(350),
+            "capped"
+        );
+        l.clear("acct");
+        assert!(!l.is_blocked("acct"));
+    }
+
+    #[test]
+    fn client_ip_only_trusts_forwarding_when_told() {
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", "203.0.113.9, 10.0.0.1".parse().unwrap());
         let peer = ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 5)));
-        assert_eq!(client_ip(&headers, Some(&peer)), "203.0.113.9");
-        assert_eq!(client_ip(&HeaderMap::new(), Some(&peer)), "127.0.0.1");
+        assert_eq!(client_ip(&headers, Some(&peer), true), "203.0.113.9");
+        assert_eq!(
+            client_ip(&headers, Some(&peer), false),
+            "127.0.0.1",
+            "spoofed header ignored without TRUST_PROXY"
+        );
+        assert_eq!(client_ip(&HeaderMap::new(), Some(&peer), true), "127.0.0.1");
         assert!(parse_ip("203.0.113.9").is_some());
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        assert!(request_is_https(&h, true, false));
+        assert!(!request_is_https(&h, false, false));
     }
 
     #[test]
@@ -340,5 +594,43 @@ mod tests {
         assert_eq!(c.secure(), Some(true));
         assert_eq!(c.http_only(), Some(true));
         assert_eq!(c.same_site(), Some(SameSite::Lax));
+    }
+
+    #[test]
+    fn origin_policy() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, "console.example.com".parse().unwrap());
+        assert!(origin_allowed(
+            "https://console.example.com",
+            &headers,
+            "https://console.example.com"
+        ));
+        assert!(origin_allowed(
+            "https://console.example.com:443",
+            &headers,
+            ""
+        ));
+        assert!(!origin_allowed(
+            "https://evil.example",
+            &headers,
+            "https://console.example.com"
+        ));
+        assert!(!origin_allowed(
+            "null",
+            &headers,
+            "https://console.example.com"
+        ));
+        let mut local = HeaderMap::new();
+        local.insert(header::HOST, "localhost:8080".parse().unwrap());
+        assert!(origin_allowed(
+            "http://localhost:8080",
+            &local,
+            "http://localhost:8080"
+        ));
+        assert!(!origin_allowed(
+            "http://localhost:9999",
+            &local,
+            "http://localhost:8080"
+        ));
     }
 }

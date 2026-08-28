@@ -19,6 +19,15 @@ pub async fn enroll(
     headers: HeaderMap,
     Json(req): Json<EnrollRequest>,
 ) -> ApiResult<(StatusCode, Json<EnrollResponse>)> {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    let token_key = ids::sha256_hex(req.token.trim());
+    if !state.limits.enroll_ip.check(&ip) || !state.limits.enroll_token.check(&token_key) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "too many enrollment attempts, try again later",
+        ));
+    }
     let token = match validate_token(&state.db, Some(&req.token)).await {
         Ok(t) => t,
         Err(TokenProblem::Exhausted) => {
@@ -96,7 +105,6 @@ pub async fn enroll(
         }
     }
 
-    let ip = auth::client_ip(&headers, Some(&ConnectInfo(peer)));
     db::audit::record(
         &state.db,
         None,

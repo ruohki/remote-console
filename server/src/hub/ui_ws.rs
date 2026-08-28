@@ -3,7 +3,7 @@
 use super::{Hub, UiConn};
 use crate::app::AppState;
 use crate::auth::access::AccessMap;
-use crate::auth::{self, AuthUser};
+use crate::auth::AuthUser;
 use crate::db::{self, sessions::Filter};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
@@ -21,6 +21,8 @@ use tokio_util::sync::CancellationToken;
 
 /// Sockets without any client message for this long are closed.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+/// Largest WebSocket message accepted from a browser (SDP offers are a few KiB).
+pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 
 pub async fn upgrade(
     ws: WebSocketUpgrade,
@@ -29,8 +31,10 @@ pub async fn upgrade(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let ip = auth::client_ip(&headers, Some(&ConnectInfo(peer)));
-    ws.on_upgrade(move |socket| handle(state.hub, socket, user, ip))
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    ws.max_message_size(MAX_MESSAGE_BYTES)
+        .max_frame_size(MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle(state.hub, socket, user, ip))
 }
 
 async fn handle(hub: Arc<Hub>, socket: WebSocket, user: db::models::UserRow, ip: String) {
@@ -107,6 +111,10 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, user: db::models::UserRow, ip:
         let text = match incoming {
             Message::Text(t) => t,
             Message::Close(_) => break,
+            Message::Binary(_) => {
+                tracing::warn!(conn = conn_id, "binary frame on ui socket; closing");
+                break;
+            }
             _ => continue,
         };
         let msg = match serde_json::from_str::<UiToConsole>(&text) {

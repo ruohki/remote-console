@@ -24,6 +24,9 @@ pub const CLOSE_BAD_CREDENTIALS: u16 = 4401;
 pub const CLOSE_DEVICE_DELETED: u16 = 4409;
 pub const CLOSE_PROTOCOL_VERSION: u16 = 4426;
 const CLOSE_PROTOCOL_ERROR: u16 = 4400;
+const CLOSE_RATE_LIMITED: u16 = 4429;
+/// Largest WebSocket message accepted from an agent (JSON only; file data never comes here).
+pub const MAX_MESSAGE_BYTES: usize = 256 * 1024;
 
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(30);
@@ -34,11 +37,20 @@ pub async fn upgrade(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let ip = auth::client_ip(&headers, Some(&ConnectInfo(peer)));
-    ws.on_upgrade(move |socket| handle(state.hub, socket, ip))
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    let limits = state.limits.clone();
+    ws.max_message_size(MAX_MESSAGE_BYTES)
+        .max_frame_size(MAX_MESSAGE_BYTES)
+        .on_upgrade(move |socket| handle(state.hub, limits, socket, ip))
 }
 
-async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
+async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSocket, ip: String) {
+    if let Some(wait) = limits.agent_hello_ip.blocked_for(&ip) {
+        tracing::warn!(%ip, ?wait, "agent hello rate limited");
+        let (mut sink, _) = socket.split();
+        let _ = close(&mut sink, CLOSE_RATE_LIMITED, "too many failed connections").await;
+        return;
+    }
     let (mut sink, mut stream) = socket.split();
 
     // ── hello ────────────────────────────────────────────────────────────────
@@ -47,7 +59,6 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
             match stream.next().await {
                 Some(Ok(Message::Text(t))) => return Some(t.to_string()),
                 Some(Ok(Message::Ping(_) | Message::Pong(_))) => continue,
-                Some(Ok(Message::Binary(_))) => continue,
                 _ => return None,
             }
         }
@@ -117,6 +128,7 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
     let device = match db::devices::by_id(&hub.db, &hello.device_id).await {
         Ok(Some(d)) => d,
         Ok(None) => {
+            limits.agent_hello_ip.record_failure(&ip);
             let _ = close(&mut sink, CLOSE_DEVICE_DELETED, "unknown device").await;
             return;
         }
@@ -126,11 +138,17 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
             return;
         }
     };
-    if !auth::verify_password_async(hello.device_secret.clone(), device.secret_hash.clone()).await {
+    let verified = {
+        let _slot = limits.verify_slots.acquire().await;
+        auth::verify_password_async(hello.device_secret.clone(), device.secret_hash.clone()).await
+    };
+    if !verified {
+        limits.agent_hello_ip.record_failure(&ip);
         tracing::warn!(device = %hello.device_id, %ip, "agent hello with bad secret");
         let _ = close(&mut sink, CLOSE_BAD_CREDENTIALS, "bad credentials").await;
         return;
     }
+    limits.agent_hello_ip.clear(&ip);
 
     let config = device.config();
     let device_id = device.id.clone();
@@ -239,6 +257,10 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
                 let text = match msg {
                     Message::Text(t) => t,
                     Message::Close(_) => break,
+                    Message::Binary(_) => {
+                        tracing::warn!(device = %device_id, "binary frame from agent; closing");
+                        break;
+                    }
                     _ => continue,
                 };
                 let parsed = match serde_json::from_str::<AgentToConsole>(&text) {
