@@ -1,4 +1,4 @@
-import { ArrowDownToLine, ArrowUpFromLine, Clipboard, MessageSquare, MonitorSmartphone, Volume2 } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Clipboard, Hand, MessageSquare, MonitorSmartphone, Volume2 } from 'lucide-react'
 import type { SessionSummary } from '@/protocol'
 import { Dialog, EmptyState, Skeleton } from '@/components/ui'
 import { CodecBadge, SessionStateBadge } from '@/components/badges'
@@ -86,6 +86,8 @@ function iconFor(r: SessionEventRow) {
       return <MonitorSmartphone size={14} />
     case 'audio_changed':
       return <Volume2 size={14} />
+    case 'control_paused':
+      return <Hand size={14} />
     default:
       return null
   }
@@ -125,6 +127,8 @@ function describe(r: SessionEventRow): React.ReactNode {
       return <>Streaming displays: {e.active.length ? e.active.map((i) => `#${i + 1}`).join(', ') : 'none'}</>
     case 'audio_changed':
       return <>Audio {e.enabled ? 'enabled' : 'disabled'}</>
+    case 'control_paused':
+      return e.paused ? <span className="font-medium text-amber-300">Remote control paused by the person at the device</span> : <>Remote control resumed by the person at the device</>
     default:
       return JSON.stringify(e)
   }

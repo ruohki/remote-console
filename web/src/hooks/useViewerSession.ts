@@ -1,3 +1,4 @@
+import { reduceControlPaused } from '@/lib/controlPause'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
 import { applyChatLine, mergeChatSeed, type ChatLine } from '@/features/chat/transcript'
@@ -62,6 +63,8 @@ export interface ViewerState {
   unreadChat: number
   filesOpen: boolean
   observers: string[]
+  /** the person at the device paused remote control (only they can resume) */
+  controlPaused: boolean
 }
 
 const initial: ViewerState = {
@@ -87,6 +90,7 @@ const initial: ViewerState = {
   unreadChat: 0,
   filesOpen: false,
   observers: [],
+  controlPaused: false,
 }
 
 const CREATE_TIMEOUT_MS = 10_000
@@ -200,9 +204,12 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     return true
   }, [])
 
+  const controlPausedRef = useRef(false)
   const sendInput = useCallback((ev: InputEvent) => {
     const ch = inputRef.current
     if (!ch || ch.readyState !== 'open') return false
+    // While the device user has paused control only key releases may go through.
+    if (controlPausedRef.current && ev.t !== 'rel') return false
     ch.send(JSON.stringify(ev))
     return true
   }, [])
@@ -276,6 +283,14 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
           teardown()
           patch({ phase: 'ended', endReason: 'device_user_closed' })
           break
+        case 'control_paused': {
+          const next = reduceControlPaused({ controlPaused: controlPausedRef.current }, msg.paused)
+          if (next.notice === null) break
+          controlPausedRef.current = next.controlPaused
+          if (next.controlPaused) sendInput({ t: 'rel' })
+          patch({ controlPaused: next.controlPaused })
+          break
+        }
         default: {
           // Newer control messages (e.g. observers joining) are surfaced generically.
           const m = msg as { t: string; name?: string }
@@ -285,12 +300,16 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
         }
       }
     },
-    [patch, teardown, receiveChat],
+    [patch, teardown, receiveChat, sendInput],
   )
+
+  // Dev/test hook: inject a control-channel message as if the agent had sent it.
+  const debugPushControl = useCallback((msg: ControlMessage) => handleControl(msg), [handleControl])
 
   const start = useCallback(async () => {
     teardown()
     sessionIdRef.current = null
+    controlPausedRef.current = false
     patch({ ...initial, phase: 'connecting' })
 
     if (uiSocket.status !== 'open') {
@@ -554,7 +573,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
 
   const clearRichClipboard = useCallback(() => patch({ remoteClipboardRich: null }), [patch])
 
-  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat }
+  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl }
 }
 
 class SessionError extends Error {

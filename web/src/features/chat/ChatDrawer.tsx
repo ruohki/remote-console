@@ -20,7 +20,10 @@ export function ChatDrawer({ lines, deviceName, connected, onSend, onClose }: { 
 
   const submit = () => {
     if (!draft.trim()) return
-    if (onSend(draft)) setDraft('')
+    if (onSend(draft)) {
+      setDraft('')
+      if (inputRef.current) inputRef.current.style.height = ''
+    }
   }
 
   return (
@@ -55,7 +58,13 @@ export function ChatDrawer({ lines, deviceName, connected, onSend, onClose }: { 
         <textarea
           ref={inputRef}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onChange={(e) => {
+            setDraft(e.target.value)
+            // Single line by default (same height as the send button); grows up to ~6 lines.
+            const el = e.currentTarget
+            el.style.height = 'auto'
+            el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+          }}
           onKeyDown={(e) => {
             // The viewer captures keys for the remote machine; keep them here.
             e.stopPropagation()
@@ -65,13 +74,13 @@ export function ChatDrawer({ lines, deviceName, connected, onSend, onClose }: { 
             }
           }}
           onKeyUp={(e) => e.stopPropagation()}
-          rows={2}
+          rows={1}
           placeholder={connected ? 'Type a message… (Enter to send)' : 'Not connected'}
           disabled={!connected}
-          className="max-h-32 min-h-[2.5rem] flex-1 resize-none rounded-md border border-white/10 bg-black/30 px-2.5 py-1.5 text-[13px] text-white placeholder:text-[#6b7381] focus:border-[#6cb6ff] focus:outline-none disabled:opacity-50"
+          className="h-10 max-h-40 min-h-10 flex-1 resize-none rounded-md border border-white/10 bg-black/30 px-3 py-[9px] text-[13px] leading-[22px] text-white placeholder:text-[#6b7381] focus:border-[#6cb6ff] focus:outline-none disabled:opacity-50"
         />
-        <button type="submit" disabled={!connected || !draft.trim()} className="rounded-md bg-[#6cb6ff] p-2 text-[#0b1220] disabled:opacity-40" aria-label="Send">
-          <Send size={14} />
+        <button type="submit" disabled={!connected || !draft.trim()} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-[#6cb6ff] text-[#0b1220] disabled:opacity-40" aria-label="Send">
+          <Send size={15} />
         </button>
       </form>
     </aside>

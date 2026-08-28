@@ -12,6 +12,7 @@ import {
   ClipboardPaste,
   Eye,
   FolderOpen,
+  Hand,
   Keyboard,
   KeyboardOff,
   LayoutGrid,
@@ -20,7 +21,6 @@ import {
   Minimize2,
   MonitorSmartphone,
   RefreshCw,
-  Shield,
   Square,
   Volume2,
   VolumeX,
@@ -36,6 +36,7 @@ import { api } from '@/lib/api'
 import { Button, Select, cx } from '@/components/ui'
 import { CODEC_LABEL, END_REASON_LABEL, bytes, kbps } from '@/lib/format'
 import { toast } from '@/lib/toast'
+import { effectiveControl } from '@/lib/controlPause'
 import type { ControlMessage, DisplayInfo, InputEvent } from '@/protocol'
 import type { DeviceDetail } from '@/lib/types'
 import { FilesDrawer, readDestDir } from '@/features/files/FilesDrawer'
@@ -67,7 +68,7 @@ export function Viewer() {
 
   const [chatPulse, setChatPulse] = useState(0)
   const [chatSound, setChatSound] = useState(chatSoundEnabled)
-  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat } = useViewerSession(deviceId, {
+  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl } = useViewerSession(deviceId, {
     knownDisplays,
     wantAudio: allowAudio,
     onChatNotify: (line: ChatLine, drawerOpen: boolean) => {
@@ -116,7 +117,17 @@ export function Viewer() {
   }, [])
 
   const connected = state.phase === 'connected'
-  const controlling = connected && inputEnabled
+  const control = effectiveControl({ connected, inputEnabled, controlPaused: state.controlPaused })
+  const controlling = control.controlling
+
+  // Tell the operator when the person at the device pauses / resumes remote control.
+  const prevPausedRef = useRef(false)
+  useEffect(() => {
+    if (state.controlPaused === prevPausedRef.current) return
+    prevPausedRef.current = state.controlPaused
+    if (state.controlPaused) toast.info('Remote control paused by the person at the device', 'Screen sharing continues; only they can resume control.')
+    else toast.success('Remote control resumed')
+  }, [state.controlPaused])
 
   /* ───── chat transcript from persisted events (reconnects) ───── */
   const events = useSessionEvents(state.sessionId, { enabled: !!state.sessionId })
@@ -155,12 +166,12 @@ export function Viewer() {
   useEffect(() => {
     const enabled = import.meta.env.DEV || new URLSearchParams(window.location.search).get('debug') === '1'
     if (!enabled) return
-    const w = window as unknown as { __viewerDebug?: { pushChat: (text: string) => void } }
-    w.__viewerDebug = { pushChat: debugPushDeviceChat }
+    const w = window as unknown as { __viewerDebug?: { pushChat: (text: string) => void; pushControl: (msg: ControlMessage) => void } }
+    w.__viewerDebug = { pushChat: debugPushDeviceChat, pushControl: debugPushControl }
     return () => {
       delete w.__viewerDebug
     }
-  }, [debugPushDeviceChat])
+  }, [debugPushDeviceChat, debugPushControl])
 
   // The remembered destination applies to drops and pastes even before the Files drawer was opened
   // (the drawer itself keeps the manager in sync while it is open).
@@ -459,14 +470,16 @@ export function Viewer() {
         </div>
         <div className="ml-auto flex items-center gap-0.5">
           <HudButton
-            active={inputEnabled}
+            active={inputEnabled && !control.toggleLocked}
+            disabled={control.toggleLocked}
             onClick={() => {
+              if (control.toggleLocked) return
               setInputEnabled((v) => !v)
               if (inputEnabled) sendInput({ t: 'rel' })
             }}
-            title={inputEnabled ? 'Input on — click to view only' : 'Input off — click to control'}
+            title={control.toggleTitle}
           >
-            {inputEnabled ? <Keyboard size={14} /> : <KeyboardOff size={14} />}
+            {inputEnabled && !control.toggleLocked ? <Keyboard size={14} /> : <KeyboardOff size={14} />}
           </HudButton>
           <span className="relative">
             <HudButton
@@ -490,8 +503,12 @@ export function Viewer() {
               />
             )}
           </span>
-          <HudButton onClick={() => sendControl({ t: 'secure_attention' })} disabled={!connected} title="Send Ctrl+Alt+Del">
-            <Shield size={14} />
+          <HudButton
+            onClick={() => sendControl({ t: 'secure_attention' })}
+            disabled={!connected || device?.os === 'macos'}
+            title={device?.os === 'macos' ? 'Ctrl+Alt+Del is only available on Windows devices' : 'Send Ctrl+Alt+Del (secure attention)'}
+          >
+            <KeyCaps keys={['Ctrl', 'Alt', 'Del']} />
           </HudButton>
           <HudButton onClick={pasteToRemote} disabled={!connected || !allowClipboard} title="Send my clipboard text to the device (Ctrl/Cmd+V on the screen also sends images and files)">
             <ClipboardPaste size={14} />
@@ -601,8 +618,17 @@ export function Viewer() {
             </div>
           )}
 
+          {state.controlPaused && connected && (
+            <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex justify-center" role="status" aria-live="assertive">
+              <div className="flex items-center gap-2 rounded-b-lg border border-t-0 border-amber-400/40 bg-[#3a2a08] px-4 py-2 text-[13px] font-medium text-amber-200 shadow-pop">
+                <Hand size={15} />
+                Remote control paused by the person at the device — screen sharing continues
+              </div>
+            </div>
+          )}
+
           {state.observers.length > 0 && (
-            <div className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
+            <div className={cx('pointer-events-none absolute inset-x-0 z-10 flex justify-center', state.controlPaused ? 'top-12' : 'top-2')}>
               <div className="flex items-center gap-1.5 rounded-md bg-[#17283d] px-3 py-1 text-[12px] text-[#6cb6ff]">
                 <Eye size={13} /> {state.observers.join(', ')} {state.observers.length === 1 ? 'is' : 'are'} watching this session
               </div>
@@ -806,6 +832,19 @@ function DisplayTile({
 }
 
 /* ───────────── HUD parts ───────────── */
+
+/** Tiny key-cap badges, e.g. Ctrl · Alt · Del — Windows admins expect the words, not glyphs. */
+function KeyCaps({ keys }: { keys: string[] }) {
+  return (
+    <span className="flex items-center gap-[2px]" aria-hidden>
+      {keys.map((k) => (
+        <kbd key={k} className="mono rounded-[3px] border border-current/40 px-[3px] text-[9.5px] leading-[13px] font-medium tracking-tight">
+          {k}
+        </kbd>
+      ))}
+    </span>
+  )
+}
 
 function HudButton({ children, onClick, title, active, disabled, danger, badge, pulseKey }: { children: React.ReactNode; onClick: () => void; title: string; active?: boolean; disabled?: boolean; danger?: boolean; badge?: number; pulseKey?: number }) {
   return (
