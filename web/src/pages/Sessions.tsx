@@ -11,11 +11,13 @@ import { CodecBadge, SessionStateBadge } from '@/components/badges'
 import { dateTime, duration, END_REASON_LABEL } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useNow } from '@/hooks/useNow'
+import { SessionDetailDialog } from '@/components/SessionDetailDialog'
 
 export function Sessions() {
   const { user } = useAuth()
   const live = useLive((s) => s.sessions)
   const [scope, setScope] = useState<'active' | 'all'>('active')
+  const [openSession, setOpenSession] = useState<SessionSummary | null>(null)
   const qc = useQueryClient()
 
   const history = useQuery({
@@ -80,7 +82,7 @@ export function Sessions() {
               const mine = s.operator_id === user?.id
               const canEnd = s.state !== 'ended' && (mine || user?.role === 'admin')
               return (
-                <tr key={s.id} className="row-hover">
+                <tr key={s.id} className="row-hover cursor-pointer" onClick={() => setOpenSession(s)}>
                   <Td>
                     <SessionStateBadge state={s.state} />
                   </Td>
@@ -96,7 +98,7 @@ export function Sessions() {
                     <CodecBadge codec={s.codec} />
                   </Td>
                   <Td className="hidden lg:table-cell text-ink-muted">{s.end_reason ? END_REASON_LABEL[s.end_reason] : s.state === 'ended' ? '—' : ''}</Td>
-                  <Td className="text-right">
+                  <Td className="text-right" onClick={(e) => e.stopPropagation()}>
                     {canEnd && (
                       <Button size="sm" variant="danger" icon={<Square size={12} />} onClick={() => end.mutate(s.id)} loading={end.isPending && end.variables === s.id}>
                         End
@@ -114,6 +116,7 @@ export function Sessions() {
           </tbody>
         </Table>
       )}
+      <SessionDetailDialog session={openSession} open={!!openSession} onClose={() => setOpenSession(null)} />
     </div>
   )
 }

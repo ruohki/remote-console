@@ -89,3 +89,35 @@ export const END_REASON_LABEL = {
 } as const
 
 export const CODEC_LABEL = { h265: 'H.265', h264: 'H.264' } as const
+
+/** 1234567 → "1.2 MB" */
+export function bytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let v = n
+  let i = 0
+  while (v >= 1000 && i < units.length - 1) {
+    v /= 1000
+    i++
+  }
+  return `${i === 0 ? v.toFixed(0) : v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`
+}
+
+/** bytes per second → "12.3 MB/s" */
+export function throughput(bps: number): string {
+  return bps > 0 ? `${bytes(bps)}/s` : '—'
+}
+
+/** remaining seconds → "2m 05s" */
+export function eta(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return '—'
+  const s = Math.round(seconds)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${String(s % 60).padStart(2, '0')}s`
+  return `${Math.floor(m / 60)}h ${String(m % 60).padStart(2, '0')}m`
+}
+
+export function timeOfDay(ms: number): string {
+  return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}

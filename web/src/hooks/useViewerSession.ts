@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
+import type { ChatParty, ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
 import { uiSocket } from '@/lib/ws'
 import { applyCodecPreferences, fromRtcCandidate, readStats, toRtcCandidate, toRtcIceServers, type RtcStatsSnapshot } from '@/lib/webrtc'
+import { mapVideoTransceivers, primaryDisplay, videoTransceiverCount } from '@/lib/displays'
+import { RtcFilesChannel } from '@/features/files/channel'
+import { transferManager } from '@/features/files/store'
 
 export type ViewerPhase = 'idle' | 'connecting' | 'awaiting_approval' | 'connected' | 'ended' | 'error'
 
@@ -11,6 +14,7 @@ export interface ViewerError {
 }
 
 export interface AgentStats {
+  display: number
   codec: VideoCodec
   fps: number
   bitrate_kbps: number
@@ -18,6 +22,20 @@ export interface AgentStats {
   height: number
   pipeline_ms: number
   hardware: boolean
+}
+
+export interface ChatLine {
+  id: string
+  from: ChatParty
+  text: string
+  tsMs: number
+}
+
+export interface RemoteClipboardRich {
+  kind: ClipboardKind
+  names: string[]
+  totalBytes: number
+  at: number
 }
 
 export interface ViewerState {
@@ -29,12 +47,25 @@ export interface ViewerState {
   error: ViewerError | null
   endReason: EndReason | null
   displays: DisplayInfo[]
+  /** display `select_display` targets (input coordinates refer to it) */
   currentDisplay: number
-  agentStats: AgentStats | null
+  /** displays the agent is streaming */
+  activeDisplays: number[]
+  /** display index → stream */
+  streams: Record<number, MediaStream>
+  audioAvailable: boolean
+  audioEnabled: boolean
+  audioStream: MediaStream | null
+  /** per display */
+  agentStats: Record<number, AgentStats>
   rtcStats: RtcStatsSnapshot | null
   iceState: RTCIceConnectionState | 'new'
   remoteClipboard: string | null
-  stream: MediaStream | null
+  remoteClipboardRich: RemoteClipboardRich | null
+  chat: ChatLine[]
+  unreadChat: number
+  filesOpen: boolean
+  observers: string[]
 }
 
 const initial: ViewerState = {
@@ -46,11 +77,20 @@ const initial: ViewerState = {
   endReason: null,
   displays: [],
   currentDisplay: 0,
-  agentStats: null,
+  activeDisplays: [],
+  streams: {},
+  audioAvailable: false,
+  audioEnabled: false,
+  audioStream: null,
+  agentStats: {},
   rtcStats: null,
   iceState: 'new',
   remoteClipboard: null,
-  stream: null,
+  remoteClipboardRich: null,
+  chat: [],
+  unreadChat: 0,
+  filesOpen: false,
+  observers: [],
 }
 
 const CREATE_TIMEOUT_MS = 10_000
@@ -69,15 +109,26 @@ const ERROR_TEXT: Record<string, string> = {
   ws_closed: 'Lost the connection to the console.',
 }
 
+export interface ViewerSessionOptions {
+  /** Displays known from the device summary before connecting (one transceiver each). */
+  knownDisplays: DisplayInfo[]
+  /** Whether the device config allows audio (an audio transceiver is added anyway; the agent ignores it otherwise). */
+  wantAudio?: boolean
+  /** Whether this viewer is opened in "watch" mode by an admin (chat marks as observer). */
+  onChatNotify?: (line: ChatLine) => void
+}
+
 /**
- * Drives one remote control session: signaling over /ws/ui, the RTCPeerConnection,
- * the `input` and `control` data channels and statistics.
+ * Drives one remote control session: signaling over /ws/ui, the RTCPeerConnection with one
+ * video transceiver per display plus audio, the `input`, `control` and `files` data channels,
+ * chat and statistics.
  */
-export function useViewerSession(deviceId: string) {
+export function useViewerSession(deviceId: string, options: ViewerSessionOptions) {
   const [state, setState] = useState<ViewerState>(initial)
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const inputRef = useRef<RTCDataChannel | null>(null)
   const controlRef = useRef<RTCDataChannel | null>(null)
+  const filesRef = useRef<RTCDataChannel | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const pendingCandidates = useRef<RTCIceCandidateInit[]>([])
   const remoteSet = useRef(false)
@@ -85,10 +136,18 @@ export function useViewerSession(deviceId: string) {
   const timers = useRef<ReturnType<typeof setTimeout>[]>([])
   const statsTimer = useRef<ReturnType<typeof setInterval> | null>(null)
   const phaseRef = useRef<ViewerPhase>('idle')
+  const optionsRef = useRef(options)
+  useEffect(() => {
+    optionsRef.current = options
+  })
+  const chatOpenRef = useRef(false)
 
-  const patch = useCallback((p: Partial<ViewerState>) => {
-    if (p.phase) phaseRef.current = p.phase
-    setState((s) => ({ ...s, ...p }))
+  const patch = useCallback((p: Partial<ViewerState> | ((s: ViewerState) => Partial<ViewerState>)) => {
+    setState((s) => {
+      const next = typeof p === 'function' ? p(s) : p
+      if (next.phase) phaseRef.current = next.phase
+      return { ...s, ...next }
+    })
   }, [])
 
   const clearTimers = () => {
@@ -102,10 +161,13 @@ export function useViewerSession(deviceId: string) {
     clearTimers()
     unsubscribe.current?.()
     unsubscribe.current = null
+    transferManager.detach()
     inputRef.current?.close()
     controlRef.current?.close()
+    filesRef.current?.close()
     inputRef.current = null
     controlRef.current = null
+    filesRef.current = null
     pcRef.current?.close()
     pcRef.current = null
     remoteSet.current = false
@@ -123,7 +185,7 @@ export function useViewerSession(deviceId: string) {
   const sendControl = useCallback((msg: ControlMessage) => {
     const ch = controlRef.current
     if (!ch || ch.readyState !== 'open') return false
-    ch.send(JSON.stringify(msg))
+    ch.send(JSON.stringify(msg, (_k, v) => (typeof v === 'bigint' ? Number(v) : v)))
     return true
   }, [])
 
@@ -166,20 +228,24 @@ export function useViewerSession(deviceId: string) {
     (msg: ControlMessage) => {
       switch (msg.t) {
         case 'display_info':
-          patch({ displays: msg.displays, currentDisplay: msg.current })
+          patch({ displays: msg.displays, currentDisplay: msg.current, activeDisplays: msg.active ?? [], audioAvailable: !!msg.audio })
           break
         case 'stats':
-          patch({
+          patch((s) => ({
             agentStats: {
-              codec: msg.codec,
-              fps: msg.fps,
-              bitrate_kbps: msg.bitrate_kbps,
-              width: msg.width,
-              height: msg.height,
-              pipeline_ms: msg.pipeline_ms,
-              hardware: msg.hardware,
+              ...s.agentStats,
+              [msg.display ?? 0]: {
+                display: msg.display ?? 0,
+                codec: msg.codec,
+                fps: msg.fps,
+                bitrate_kbps: msg.bitrate_kbps,
+                width: msg.width,
+                height: msg.height,
+                pipeline_ms: msg.pipeline_ms,
+                hardware: msg.hardware,
+              },
             },
-          })
+          }))
           break
         case 'clipboard_changed':
           patch({ remoteClipboard: msg.text })
@@ -187,12 +253,26 @@ export function useViewerSession(deviceId: string) {
             /* needs a user gesture in some browsers; the toolbar offers a copy button */
           })
           break
+        case 'clipboard_available':
+          patch({ remoteClipboardRich: { kind: msg.kind, names: msg.names, totalBytes: Number(msg.total_bytes), at: Date.now() } })
+          break
+        case 'chat': {
+          const line: ChatLine = { id: `${Number(msg.ts_ms)}-${Math.random().toString(36).slice(2, 8)}`, from: msg.from, text: msg.text, tsMs: Number(msg.ts_ms) }
+          patch((s) => ({ chat: [...s.chat, line], unreadChat: chatOpenRef.current || msg.from === 'operator' ? s.unreadChat : s.unreadChat + 1 }))
+          if (msg.from === 'device' && !chatOpenRef.current) optionsRef.current.onChatNotify?.(line)
+          break
+        }
         case 'session_ended_by_user':
           teardown()
           patch({ phase: 'ended', endReason: 'device_user_closed' })
           break
-        default:
+        default: {
+          // Newer control messages (e.g. observers joining) are surfaced generically.
+          const m = msg as { t: string; name?: string }
+          if (m.t === 'observer_joined' && m.name) patch((s) => ({ observers: [...s.observers.filter((n) => n !== m.name), m.name!] }))
+          if (m.t === 'observer_left' && m.name) patch((s) => ({ observers: s.observers.filter((n) => n !== m.name) }))
           break
+        }
       }
     },
     [patch, teardown],
@@ -211,15 +291,27 @@ export function useViewerSession(deviceId: string) {
     const pc = new RTCPeerConnection({ iceCandidatePoolSize: 0 })
     pcRef.current = pc
 
-    const transceiver = pc.addTransceiver('video', { direction: 'recvonly' })
-    const requestedCodec = applyCodecPreferences(transceiver)
-    patch({ requestedCodec })
+    // One recvonly video transceiver per display, in DisplayInfo index order; the agent
+    // binds the i-th video m-line to display i.
+    const known = [...optionsRef.current.knownDisplays].sort((a, b) => a.index - b.index)
+    const videoTransceivers: RTCRtpTransceiver[] = []
+    let requestedCodec: 'h265' | 'h264' | 'unknown' = 'unknown'
+    for (let i = 0; i < videoTransceiverCount(known); i++) {
+      const tr = pc.addTransceiver('video', { direction: 'recvonly' })
+      requestedCodec = applyCodecPreferences(tr)
+      videoTransceivers.push(tr)
+    }
+    const bindings = mapVideoTransceivers(known, videoTransceivers)
+    const audioTransceiver = pc.addTransceiver('audio', { direction: 'recvonly' })
+    patch({ requestedCodec, displays: known, currentDisplay: primaryDisplay(known), activeDisplays: known.length ? [primaryDisplay(known)] : [0] })
 
     // Data channels are created by the browser (the offerer).
     const input = pc.createDataChannel('input', { ordered: true })
     const control = pc.createDataChannel('control', { ordered: true })
+    const files = pc.createDataChannel('files', { ordered: true })
     inputRef.current = input
     controlRef.current = control
+    filesRef.current = files
     control.onmessage = (ev) => {
       try {
         handleControl(JSON.parse(ev.data) as ControlMessage)
@@ -227,10 +319,20 @@ export function useViewerSession(deviceId: string) {
         /* ignore malformed */
       }
     }
+    files.onopen = () => {
+      transferManager.deviceId = deviceId
+      transferManager.attach(new RtcFilesChannel(files))
+    }
 
     pc.ontrack = (ev) => {
       const stream = ev.streams[0] ?? new MediaStream([ev.track])
-      patch({ stream })
+      if (ev.track.kind === 'audio' || ev.transceiver === audioTransceiver) {
+        patch({ audioStream: stream })
+        return
+      }
+      const b = bindings.find((x) => x.transceiver === ev.transceiver) ?? bindings.find((x) => x.transceiver.mid === ev.transceiver.mid)
+      const display = b ? b.display : Number(ev.transceiver.mid ?? 0)
+      patch((s) => ({ streams: { ...s.streams, [display]: stream } }))
     }
     pc.oniceconnectionstatechange = () => {
       patch({ iceState: pc.iceConnectionState })
@@ -392,7 +494,59 @@ export function useViewerSession(deviceId: string) {
     [sendControl, patch],
   )
 
-  return { state, start, end, sendInput, sendControl, selectDisplay }
+  const setActiveDisplays = useCallback(
+    (indices: number[]) => {
+      const uniq = Array.from(new Set(indices)).sort((a, b) => a - b)
+      if (uniq.length === 0) return
+      if (sendControl({ t: 'set_active_displays', indices: uniq })) patch({ activeDisplays: uniq })
+    },
+    [sendControl, patch],
+  )
+
+  const setAudio = useCallback(
+    (enabled: boolean) => {
+      if (sendControl({ t: 'set_audio', enabled })) patch({ audioEnabled: enabled })
+    },
+    [sendControl, patch],
+  )
+
+  const sendChat = useCallback(
+    (text: string) => {
+      const trimmed = text.trim()
+      if (!trimmed) return false
+      const tsMs = Date.now()
+      if (!sendControl({ t: 'chat', from: 'operator', text: trimmed, ts_ms: BigInt(tsMs) })) return false
+      patch((s) => ({ chat: [...s.chat, { id: `${tsMs}-op`, from: 'operator', text: trimmed, tsMs }] }))
+      return true
+    },
+    [sendControl, patch],
+  )
+
+  /** Called by the chat drawer so incoming lines don't count as unread while it is open. */
+  const setChatOpen = useCallback(
+    (open: boolean) => {
+      chatOpenRef.current = open
+      if (open) patch({ unreadChat: 0 })
+    },
+    [patch],
+  )
+
+  /** Seed the transcript from persisted session events (reconnect to the same session). */
+  const seedChat = useCallback(
+    (lines: ChatLine[]) => {
+      patch((s) => {
+        const known = new Set(s.chat.map((l) => `${l.tsMs}|${l.from}|${l.text}`))
+        const add = lines.filter((l) => !known.has(`${l.tsMs}|${l.from}|${l.text}`))
+        if (add.length === 0) return {}
+        return { chat: [...s.chat, ...add].sort((a, b) => a.tsMs - b.tsMs) }
+      })
+    },
+    [patch],
+  )
+
+  const clearRichClipboard = useCallback(() => patch({ remoteClipboardRich: null }), [patch])
+
+  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard }
 }
 
 class SessionError extends Error {

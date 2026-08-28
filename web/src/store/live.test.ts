@@ -14,6 +14,8 @@ const device = (id: string, online = true): DeviceSummary => ({
   online,
   codecs: ['h265', 'h264'],
   displays: [],
+  groups: [],
+  permission: 'connect',
 })
 
 const session = (id: string, state: SessionSummary['state'] = 'connected', started = '2026-08-28T10:00:00Z'): SessionSummary => ({
@@ -22,6 +24,8 @@ const session = (id: string, state: SessionSummary['state'] = 'connected', start
   device_name: 'dev_1',
   operator_id: 'u1',
   operator_name: 'Alice',
+  role: 'operator',
+  observers: [],
   state,
   started_at: started,
 })

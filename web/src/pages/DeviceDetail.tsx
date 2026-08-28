@@ -12,6 +12,7 @@ import { CodecBadge, ModeBadge, OsIcon, SessionStateBadge, StatusLed } from '@/c
 import { NotFound } from './NotFound'
 import { dateTime, duration, END_REASON_LABEL, OS_LABEL, relativeTime, CODEC_LABEL } from '@/lib/format'
 import { toast } from '@/lib/toast'
+import { SessionDetailDialog } from '@/components/SessionDetailDialog'
 
 export function DeviceDetail() {
   const { id = '' } = useParams()
@@ -25,6 +26,7 @@ export function DeviceDetail() {
     queryFn: () => api.get<Detail>(`/api/devices/${id}`),
     retry: false,
   })
+  const [openSession, setOpenSession] = useState<SessionSummary | null>(null)
   const sessions = useQuery({
     queryKey: ['device-sessions', id],
     queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: 50 }),
@@ -160,7 +162,7 @@ export function DeviceDetail() {
                 </thead>
                 <tbody>
                   {sessions.data.map((s) => (
-                    <tr key={s.id}>
+                    <tr key={s.id} className="row-hover cursor-pointer" onClick={() => setOpenSession(s)}>
                       <Td>
                         <SessionStateBadge state={s.state} />
                       </Td>
@@ -177,6 +179,7 @@ export function DeviceDetail() {
               </Table>
             )}
           </section>
+          <SessionDetailDialog session={openSession} open={!!openSession} onClose={() => setOpenSession(null)} />
         </div>
 
         <div className="flex flex-col gap-4">
@@ -347,7 +350,14 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
             <Toggle checked={cfg.allow_input} onChange={(v) => set('allow_input', v)} label="Allow mouse and keyboard control" />
             <Toggle checked={cfg.allow_clipboard} onChange={(v) => set('allow_clipboard', v)} label="Allow clipboard sync" />
             <Toggle checked={cfg.show_session_indicator} onChange={(v) => set('show_session_indicator', v)} label="Show a banner on the device during sessions" />
+            <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer and remote file browsing" />
+            <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow streaming the device's audio" />
           </div>
+          {cfg.allow_file_transfer && (
+            <Field label="Upload folder on the device" hint="Leave empty for Downloads/RemoteAgent in the user's home.">
+              <Input value={cfg.transfer_dir ?? ''} placeholder="~/Downloads/RemoteAgent" onChange={(e) => set('transfer_dir', e.target.value.trim() ? e.target.value : undefined)} />
+            </Field>
+          )}
           <Field label="Display name shown on the device">
             <Input value={cfg.display_name} onChange={(e) => set('display_name', e.target.value)} />
           </Field>

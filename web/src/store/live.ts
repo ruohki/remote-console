@@ -1,10 +1,20 @@
 import { create } from 'zustand'
-import type { ConsoleToUi, DeviceSummary, SessionSummary } from '@/protocol'
+import type { ConsoleToUi, DeviceSummary, SessionEvent, SessionSummary } from '@/protocol'
+
+/** One row of the session timeline (`GET /api/sessions/:id/events` and live pushes). */
+export interface SessionEventRow {
+  id: number
+  session_id: string
+  ts: string
+  event: SessionEvent
+}
 import type { WsStatus } from '@/lib/ws'
 
 export interface LiveState {
   devices: Record<string, DeviceSummary>
   sessions: Record<string, SessionSummary>
+  /** Live session events received on this connection, newest last, per session. */
+  sessionEvents: Record<string, SessionEventRow[]>
   /** true once the first `snapshot` arrived on this connection */
   hydrated: boolean
   wsStatus: WsStatus
@@ -13,11 +23,15 @@ export interface LiveState {
 export const initialLiveState: LiveState = {
   devices: {},
   sessions: {},
+  sessionEvents: {},
   hydrated: false,
   wsStatus: 'closed',
 }
 
 const MAX_SESSIONS_KEPT = 300
+const MAX_EVENTS_PER_SESSION = 500
+const MAX_EVENT_SESSIONS = 20
+let liveEventSeq = -1
 
 /** Pure reducer applying one console message to the live state (unit tested). */
 export function reduceLive(state: LiveState, msg: ConsoleToUi): LiveState {
@@ -53,6 +67,15 @@ export function reduceLive(state: LiveState, msg: ConsoleToUi): LiveState {
         for (const id of ids) if (!keep.has(id)) delete sessions[id]
       }
       return { ...state, sessions }
+    }
+    case 'session_event': {
+      // Live rows get negative ids so they never collide with persisted ones.
+      const row: SessionEventRow = { id: liveEventSeq--, session_id: msg.session_id, ts: msg.ts, event: msg.event }
+      const list = [...(state.sessionEvents[msg.session_id] ?? []), row].slice(-MAX_EVENTS_PER_SESSION)
+      const sessionEvents = { ...state.sessionEvents, [msg.session_id]: list }
+      const keys = Object.keys(sessionEvents)
+      if (keys.length > MAX_EVENT_SESSIONS) for (const k of keys.slice(0, keys.length - MAX_EVENT_SESSIONS)) delete sessionEvents[k]
+      return { ...state, sessionEvents }
     }
     default:
       return state

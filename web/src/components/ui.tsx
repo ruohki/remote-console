@@ -238,9 +238,9 @@ export function Th({ children, className }: { children?: ReactNode; className?: 
   return <th className={cx('eyebrow border-b border-line px-3 py-2 font-medium', className)}>{children}</th>
 }
 
-export function Td({ children, className, colSpan }: { children?: ReactNode; className?: string; colSpan?: number }) {
+export function Td({ children, className, colSpan, onClick }: { children?: ReactNode; className?: string; colSpan?: number; onClick?: React.MouseEventHandler<HTMLTableCellElement> }) {
   return (
-    <td colSpan={colSpan} className={cx('border-b border-line px-3 py-2 align-middle last:border-b-0', className)}>
+    <td colSpan={colSpan} onClick={onClick} className={cx('border-b border-line px-3 py-2 align-middle last:border-b-0', className)}>
       {children}
     </td>
   )
