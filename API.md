@@ -104,6 +104,14 @@ interface DeviceDetail extends protocol.DeviceSummary {
 
 Sessions are *created* over `/ws/ui` (see below), never over REST.
 
+## Session events (operator+)
+
+`GET /api/sessions/:id/events?limit=500` → `{ id: number, session_id, ts, event: protocol.SessionEvent }[]`
+(oldest first). Events (`{ type: "chat" | "transfer_started" | … }`) are reported by the agent (`AgentToConsole::SessionEvent`: chat lines,
+file transfers started/completed/failed, clipboard syncs, display/audio changes), stored by the
+console and pushed live to every UI as `ConsoleToUi::SessionEvent`. Transfers additionally
+create audit entries `session.transfer`.
+
 ## Audit log (admin)
 
 `GET /api/audit?limit=100&before=<id>` → `{ id, ts, user_id?, user_name?, action, target?, details }[]`
