@@ -20,6 +20,7 @@ import {
   MessageSquare,
   Minimize2,
   MonitorSmartphone,
+  MousePointer2,
   PenLine,
   RefreshCw,
   Square,
@@ -50,8 +51,13 @@ import { AnnotateCanvas } from '@/features/annotate/AnnotateCanvas'
 import { AnnotateToolbar } from '@/features/annotate/AnnotateToolbar'
 import { colorValue, useAnnotate } from '@/features/annotate/store'
 import { PointerThrottle, StrokeBatcher, strokeWidthPx } from '@/features/annotate/model'
+import { RemoteCursorLayer, type CursorStore } from '@/components/RemoteCursor'
+import { sameHint, viewportHint, type ViewportHint } from '@/lib/perf'
+import { LatencyProbe, rvfcSupported } from '@/lib/latencyProbe'
 
 const FPS_PRESETS = [15, 30, 60]
+const REMOTE_CURSOR_KEY = 'viewer.remoteCursor'
+const perfProbeRequested = () => new URLSearchParams(window.location.search).get('perf') === '1'
 const BITRATE_PRESETS = [2000, 4000, 8000, 15000, 30000]
 
 type Drawer = 'files' | 'chat' | null
@@ -74,7 +80,7 @@ export function Viewer() {
 
   const [chatPulse, setChatPulse] = useState(0)
   const [chatSound, setChatSound] = useState(chatSoundEnabled)
-  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl, debugFakeStream } = useViewerSession(deviceId, {
+  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream } = useViewerSession(deviceId, {
     knownDisplays,
     wantAudio: allowAudio,
     onChatNotify: (line: ChatLine, drawerOpen: boolean) => {
@@ -94,6 +100,9 @@ export function Viewer() {
   const audioRef = useRef<HTMLAudioElement>(null)
   const [inputEnabled, setInputEnabled] = useState(true)
   const [showStats, setShowStats] = useState(false)
+  const [showRemoteCursor, setShowRemoteCursor] = useState(() => localStorage.getItem(REMOTE_CURSOR_KEY) !== '0')
+  const probeRef = useRef<LatencyProbe | null>(null)
+  const perfEnabled = useMemo(() => perfProbeRequested() || import.meta.env.DEV || new URLSearchParams(window.location.search).get('debug') === '1', [])
   const [fullscreen, setFullscreen] = useState(false)
   const [toolbar, setToolbar] = useState(true)
   const [layout, setLayout] = useState<'single' | 'grid'>('single')
@@ -221,15 +230,37 @@ export function Viewer() {
   }, [state.phase])
 
   // Dev/test hook: inject a device chat line (`?debug=1` or dev builds).
+  const stateRef = useRef(state)
+  useEffect(() => {
+    stateRef.current = state
+  })
   useEffect(() => {
     const enabled = import.meta.env.DEV || new URLSearchParams(window.location.search).get('debug') === '1'
     if (!enabled) return
-    const w = window as unknown as { __viewerDebug?: { pushChat: (text: string) => void; pushControl: (msg: ControlMessage) => void; fakeStream: (display?: number, width?: number, height?: number) => void } }
-    w.__viewerDebug = { pushChat: debugPushDeviceChat, pushControl: debugPushControl, fakeStream: (d = 0, w2 = 1920, h = 1080) => debugFakeStream(d, w2, h) }
+    const w = window as unknown as {
+      __viewerDebug?: {
+        pushChat: (text: string) => void
+        pushControl: (msg: ControlMessage) => void
+        fakeStream: (display?: number, width?: number, height?: number) => void
+        latencyReset: () => void
+        latencySnapshot: () => ReturnType<LatencyProbe['snapshot']> | null
+        rtcBytes: () => Promise<{ bytes: number; framesDecoded: number } | null>
+        agentStats: () => Record<number, AgentStats>
+      }
+    }
+    w.__viewerDebug = {
+      pushChat: debugPushDeviceChat,
+      pushControl: debugPushControl,
+      fakeStream: (d = 0, w2 = 1920, h = 1080) => debugFakeStream(d, w2, h),
+      latencyReset: () => probeRef.current?.reset(),
+      latencySnapshot: () => probeRef.current?.snapshot() ?? null,
+      rtcBytes: () => readRawStats(),
+      agentStats: () => stateRef.current.agentStats,
+    }
     return () => {
       delete w.__viewerDebug
     }
-  }, [debugPushDeviceChat, debugPushControl, debugFakeStream])
+  }, [debugPushDeviceChat, debugPushControl, debugFakeStream, readRawStats])
 
   // The remembered destination applies to drops and pastes even before the Files drawer was opened
   // (the drawer itself keeps the manager in sync while it is open).
@@ -557,6 +588,18 @@ export function Viewer() {
           >
             {inputEnabled && !control.toggleLocked ? <Keyboard size={14} /> : <KeyboardOff size={14} />}
           </HudButton>
+          <HudButton
+            active={showRemoteCursor}
+            onClick={() => {
+              setShowRemoteCursor((v) => {
+                localStorage.setItem(REMOTE_CURSOR_KEY, v ? '0' : '1')
+                return !v
+              })
+            }}
+            title={showRemoteCursor ? 'Remote cursor: shown (drawn locally, never lags the video)' : 'Remote cursor: hidden'}
+          >
+            <MousePointer2 size={14} />
+          </HudButton>
           <span className="relative">
             <HudButton
               active={state.audioEnabled}
@@ -579,13 +622,11 @@ export function Viewer() {
               />
             )}
           </span>
-          <HudButton
-            onClick={() => sendControl({ t: 'secure_attention' })}
-            disabled={!connected || device?.os === 'macos'}
-            title={device?.os === 'macos' ? 'Ctrl+Alt+Del is only available on Windows devices' : 'Send Ctrl+Alt+Del (secure attention)'}
-          >
-            <KeyCaps keys={['Ctrl', 'Alt', 'Del']} />
-          </HudButton>
+          {device?.os === 'windows' && (
+            <HudButton onClick={() => sendControl({ t: 'secure_attention' })} disabled={!connected} title="Send Ctrl+Alt+Del (secure attention)">
+              <CadIcon />
+            </HudButton>
+          )}
           <HudButton onClick={pasteToRemote} disabled={!connected || !allowClipboard} title="Send my clipboard text to the device (Ctrl/Cmd+V on the screen also sends images and files)">
             <ClipboardPaste size={14} />
           </HudButton>
@@ -678,6 +719,11 @@ export function Viewer() {
                 onFocusRequest={() => focusDisplay(index)}
                 onPointerDownFocus={() => surfaceRef.current?.focus()}
                 sendInput={sendInput}
+                setViewport={setViewport}
+                cursorStore={cursorStore}
+                showRemoteCursor={showRemoteCursor}
+                fullscreen={fullscreen}
+                probeRef={index === state.currentDisplay && perfEnabled ? probeRef : null}
               />
             ))}
           </div>
@@ -789,6 +835,11 @@ function DisplayTile({
   onFocusRequest,
   onPointerDownFocus,
   sendInput,
+  setViewport,
+  cursorStore,
+  showRemoteCursor,
+  fullscreen,
+  probeRef,
 }: {
   display: DisplayInfo
   stream: MediaStream | null
@@ -804,9 +855,74 @@ function DisplayTile({
   onFocusRequest: () => void
   onPointerDownFocus: () => void
   sendInput: (ev: InputEvent) => boolean
+  setViewport: (display: number, width: number | null, height: number | null) => boolean
+  cursorStore: CursorStore
+  showRemoteCursor: boolean
+  fullscreen: boolean
+  /** set when this tile should run the glass-to-glass latency probe (rig / stats overlay) */
+  probeRef: React.MutableRefObject<LatencyProbe | null> | null
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [needsGesture, setNeedsGesture] = useState(false)
+  const [hovering, setHovering] = useState(false)
+  const [latency, setLatency] = useState<{ medianMs: number | null; p95Ms: number | null } | null>(null)
+
+  /* ───── viewport hint: ask the agent to encode no more pixels than we show ─────
+     Sent on mount, resize, layout/fullscreen change and whenever the stream (re)attaches;
+     debounced so a window drag produces one message. A failed send (channel not open yet)
+     leaves the last hint unset so the next trigger retries. */
+  const lastHint = useRef<ViewportHint | null>(null)
+  const hintTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const sendHint = useCallback(() => {
+    hintTimer.current = null
+    const v = videoRef.current
+    if (!v || display.width === 0) return
+    const r = v.getBoundingClientRect()
+    const hint = viewportHint({ width: r.width, height: r.height }, { width: display.width, height: display.height }, window.devicePixelRatio || 1, fullscreen)
+    if (probeRef) {
+      // Debug/rig aid: expose the latest computed hint even when no channel is open yet.
+      ;(window as unknown as { __viewerViewportHint?: unknown }).__viewerViewportHint = { display: display.index, ...hint, tile: { width: r.width, height: r.height } }
+    }
+    if (sameHint(lastHint.current, hint)) return
+    if (setViewport(display.index, hint.width, hint.height)) lastHint.current = hint
+  }, [display.width, display.height, display.index, fullscreen, setViewport, probeRef])
+  const scheduleHint = useCallback(() => {
+    if (hintTimer.current !== null) clearTimeout(hintTimer.current)
+    hintTimer.current = setTimeout(sendHint, 250)
+  }, [sendHint])
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v) return
+    const ro = new ResizeObserver(scheduleHint)
+    ro.observe(v)
+    scheduleHint()
+    return () => {
+      ro.disconnect()
+      if (hintTimer.current !== null) clearTimeout(hintTimer.current)
+    }
+  }, [scheduleHint, stream, fullscreen])
+  useEffect(() => {
+    // A new session must re-announce the viewport.
+    if (!stream) lastHint.current = null
+  }, [stream])
+
+  /* ───── latency probe (synthetic source strip) ───── */
+  useEffect(() => {
+    const v = videoRef.current
+    if (!probeRef || !v || !stream || !rvfcSupported()) return
+    const probe = new LatencyProbe(v)
+    probe.start()
+    probeRef.current = probe
+    const t = setInterval(() => {
+      const s = probe.snapshot()
+      setLatency(s.samples.length ? { medianMs: s.medianMs, p95Ms: s.p95Ms } : null)
+    }, 1000)
+    return () => {
+      clearInterval(t)
+      probe.stop()
+      if (probeRef.current === probe) probeRef.current = null
+    }
+  }, [probeRef, stream])
 
   useEffect(() => {
     const v = videoRef.current
@@ -968,15 +1084,20 @@ function DisplayTile({
     <div
       ref={tileRef}
       className={cx('group relative min-h-0 min-w-0 overflow-hidden', annotating ? 'cursor-crosshair' : controlling ? 'cursor-none' : 'cursor-default', multi && isCurrent && 'ring-1 ring-[#6cb6ff]/60 ring-inset')}
-      onPointerEnter={onEnter}
+      onPointerEnter={() => {
+        setHovering(true)
+        onEnter()
+      }}
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
       onPointerLeave={() => {
+        setHovering(false)
         if (annotating) laserAt(null, true)
       }}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={tileGeometry} suppressed={controlling && hovering} enabled={showRemoteCursor} />
       <AnnotateCanvas display={display.index} getGeometry={tileGeometry} />
       {!stream && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12.5px] text-[#6b7381]">
@@ -999,23 +1120,22 @@ function DisplayTile({
           <span className="text-sm opacity-80">Your browser blocked autoplay for this site (check the autoplay / Shields settings to avoid this).</span>
         </button>
       )}
-      {showStats && <StatsOverlay display={display} stats={stats} rtc={rtc} />}
+      {showStats && <StatsOverlay display={display} stats={stats} rtc={rtc} latency={latency} />}
     </div>
   )
 }
 
 /* ───────────── HUD parts ───────────── */
 
-/** Tiny key-cap badges, e.g. Ctrl · Alt · Del — Windows admins expect the words, not glyphs. */
-function KeyCaps({ keys }: { keys: string[] }) {
+/** Three tiny key caps (Ctrl · Alt · Del) in a HUD-sized 16×16 glyph. */
+function CadIcon() {
   return (
-    <span className="flex items-center gap-[2px]" aria-hidden>
-      {keys.map((k) => (
-        <kbd key={k} className="mono rounded-[3px] border border-current/40 px-[3px] text-[9.5px] leading-[13px] font-medium tracking-tight">
-          {k}
-        </kbd>
-      ))}
-    </span>
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden>
+      <rect x="1" y="2.5" width="6" height="5" rx="1.2" />
+      <rect x="9" y="2.5" width="6" height="5" rx="1.2" />
+      <rect x="5" y="8.5" width="6" height="5" rx="1.2" />
+      <path d="M2.6 5h2.8M10.6 5h2.8M6.6 11h2.8" strokeWidth="1" />
+    </svg>
   )
 }
 
@@ -1096,15 +1216,19 @@ function PhasePill({ state }: { state: ViewerState }) {
   )
 }
 
-function StatsOverlay({ display, stats: a, rtc }: { display: DisplayInfo; stats: AgentStats | null; rtc: ViewerState | null }) {
+function StatsOverlay({ display, stats: a, rtc, latency }: { display: DisplayInfo; stats: AgentStats | null; rtc: ViewerState | null; latency: { medianMs: number | null; p95Ms: number | null } | null }) {
   const r = rtc?.rtcStats
   const rows: [string, string][] = [['display', `#${display.index + 1} ${display.name}`.trim()]]
   if (a) {
     rows.push(['codec', `${CODEC_LABEL[a.codec]} ${a.hardware ? 'hw' : 'sw'}`])
-    rows.push(['size', `${a.width}×${a.height}`])
+    const scaled = a.encodedWidth && (a.encodedWidth !== a.width || a.encodedHeight !== a.height)
+    rows.push(['size', scaled ? `${a.width}×${a.height} → ${a.encodedWidth}×${a.encodedHeight}` : `${a.width}×${a.height}`])
     rows.push(['encoder fps', a.fps.toFixed(0)])
     rows.push(['bitrate', kbps(a.bitrate_kbps)])
-    rows.push(['pipeline', `${a.pipeline_ms.toFixed(1)} ms`])
+    rows.push(['capture→encoded', `${(a.captureToEncodedMs || a.pipeline_ms).toFixed(1)} ms`])
+    if (a.encodeMs) rows.push(['encode', `${a.encodeMs.toFixed(1)} ms`])
+    rows.push(['keyframes', String(a.keyframes)])
+    rows.push(['idle skipped', String(a.framesSkippedIdle)])
   } else {
     rows.push(['encoder', rtc?.phase === 'connected' ? 'waiting for agent stats…' : 'not connected'])
     if (rtc?.codec) rows.push(['codec', CODEC_LABEL[rtc.codec]])
@@ -1118,6 +1242,10 @@ function StatsOverlay({ display, stats: a, rtc }: { display: DisplayInfo; stats:
     rows.push(['lost', r.packetsLost !== undefined ? String(r.packetsLost) : '—'])
     rows.push(['path', r.candidateType === 'relay' ? 'TURN relay' : (r.candidateType ?? '—')])
     rows.push(['asked for', rtc!.requestedCodec === 'unknown' ? 'browser default' : rtc!.requestedCodec.toUpperCase()])
+    rows.push(['fast input', rtc!.fastInput === 'open' ? 'on' : rtc!.fastInput === 'connecting' ? 'negotiating' : 'off (reliable)'])
+  }
+  if (latency && latency.medianMs !== null) {
+    rows.push(['glass-to-glass', `${latency.medianMs.toFixed(0)} ms (p95 ${latency.p95Ms?.toFixed(0) ?? '—'})`])
   }
   return (
     <div className="mono pointer-events-none absolute top-2 right-2 z-10 rounded-md border border-white/10 bg-black/70 px-2.5 py-2 text-[11px] leading-[1.6] text-[#c8ced8] backdrop-blur">

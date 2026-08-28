@@ -9,6 +9,8 @@ import { applyCodecPreferences, fromRtcCandidate, readStats, toRtcCandidate, toR
 import { mapVideoTransceivers, primaryDisplay, videoTransceiverCount } from '@/lib/displays'
 import { RtcFilesChannel } from '@/features/files/channel'
 import { transferManager } from '@/features/files/store'
+import { CursorStore } from '@/components/RemoteCursor'
+import { moveChannel, type FastChannelState } from '@/lib/perf'
 
 export type ViewerPhase = 'idle' | 'connecting' | 'awaiting_approval' | 'connected' | 'ended' | 'error'
 
@@ -26,6 +28,13 @@ export interface AgentStats {
   height: number
   pipeline_ms: number
   hardware: boolean
+  /** encoded picture (smaller than the display when viewport scaling is active) */
+  encodedWidth: number
+  encodedHeight: number
+  captureToEncodedMs: number
+  encodeMs: number
+  keyframes: number
+  framesSkippedIdle: number
 }
 
 export interface RemoteClipboardRich {
@@ -67,6 +76,8 @@ export interface ViewerState {
   controlPaused: boolean
   /** the agent refused annotations (policy or device-side setting) */
   annotationsDisabled: boolean
+  /** the agent opened the unreliable pointer-move channel */
+  fastInput: FastChannelState
 }
 
 const initial: ViewerState = {
@@ -94,6 +105,7 @@ const initial: ViewerState = {
   observers: [],
   controlPaused: false,
   annotationsDisabled: false,
+  fastInput: 'closed',
 }
 
 const CREATE_TIMEOUT_MS = 10_000
@@ -131,6 +143,11 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
   const [state, setState] = useState<ViewerState>(initial)
   const pcRef = useRef<RTCPeerConnection | null>(null)
   const inputRef = useRef<RTCDataChannel | null>(null)
+  const fastInputRef = useRef<RTCDataChannel | null>(null)
+  const fastStateRef = useRef<FastChannelState>('closed')
+  const offerAtRef = useRef(0)
+  /** Remote cursor shape/position store shared with the tiles (positions bypass React state). */
+  const [cursorStore] = useState(() => new CursorStore())
   const controlRef = useRef<RTCDataChannel | null>(null)
   const filesRef = useRef<RTCDataChannel | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -181,16 +198,20 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     unsubscribe.current = null
     transferManager.detach()
     inputRef.current?.close()
+    fastInputRef.current?.close()
     controlRef.current?.close()
     filesRef.current?.close()
     inputRef.current = null
+    fastInputRef.current = null
+    fastStateRef.current = 'closed'
     controlRef.current = null
     filesRef.current = null
+    cursorStore.reset()
     pcRef.current?.close()
     pcRef.current = null
     remoteSet.current = false
     pendingCandidates.current = []
-  }, [])
+  }, [cursorStore])
 
   const fail = useCallback(
     (code: string, message?: string) => {
@@ -213,6 +234,20 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     if (!ch || ch.readyState !== 'open') return false
     // While the device user has paused control only key releases may go through.
     if (controlPausedRef.current && ev.t !== 'rel') return false
+    if (ev.t === 'mm') {
+      // Pointer moves go over the unordered/unreliable channel when the agent opened it: a
+      // lost move is superseded by the next one within a frame. Buttons and keys stay reliable.
+      const route = moveChannel(fastStateRef.current, performance.now() - offerAtRef.current)
+      if (route === 'fast') {
+        const fast = fastInputRef.current
+        if (fast && fast.readyState === 'open') {
+          fast.send(JSON.stringify(ev))
+          return true
+        }
+      } else if (route === 'drop') {
+        return true
+      }
+    }
     ch.send(JSON.stringify(ev))
     return true
   }, [])
@@ -264,9 +299,21 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
                 height: msg.height,
                 pipeline_ms: msg.pipeline_ms,
                 hardware: msg.hardware,
+                encodedWidth: msg.encoded_width || msg.width,
+                encodedHeight: msg.encoded_height || msg.height,
+                captureToEncodedMs: msg.capture_to_encoded_ms ?? 0,
+                encodeMs: msg.encode_ms ?? 0,
+                keyframes: msg.keyframes ?? 0,
+                framesSkippedIdle: msg.frames_skipped_idle ?? 0,
               },
             },
           }))
+          break
+        case 'cursor_shape':
+          cursorStore.setShape({ id: msg.id, url: `data:image/png;base64,${msg.png_base64}`, hotspotX: msg.hotspot_x, hotspotY: msg.hotspot_y, width: msg.width, height: msg.height })
+          break
+        case 'cursor_position':
+          cursorStore.setPosition({ display: msg.display, x: msg.x, y: msg.y, shapeId: msg.shape_id, visible: msg.visible })
           break
         case 'clipboard_changed':
           patch({ remoteClipboard: msg.text })
@@ -306,7 +353,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
         }
       }
     },
-    [patch, teardown, receiveChat, sendInput],
+    [patch, teardown, receiveChat, sendInput, cursorStore],
   )
 
   // Dev/test hook: inject a control-channel message as if the agent had sent it.
@@ -373,9 +420,25 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     const input = pc.createDataChannel('input', { ordered: true })
     const control = pc.createDataChannel('control', { ordered: true })
     const files = pc.createDataChannel('files', { ordered: true })
+    // Unordered + unreliable: pointer moves only (see sendInput). Older agents ignore it.
+    const fast = pc.createDataChannel('input-fast', { ordered: false, maxRetransmits: 0 })
     inputRef.current = input
     controlRef.current = control
     filesRef.current = files
+    fastInputRef.current = fast
+    fastStateRef.current = 'connecting'
+    fast.onopen = () => {
+      fastStateRef.current = 'open'
+      patch({ fastInput: 'open' })
+    }
+    fast.onclose = () => {
+      fastStateRef.current = 'closed'
+      patch({ fastInput: 'closed' })
+    }
+    fast.onerror = () => {
+      fastStateRef.current = 'closed'
+      patch({ fastInput: 'closed' })
+    }
     control.onmessage = (ev) => {
       try {
         handleControl(JSON.parse(ev.data) as ControlMessage)
@@ -389,6 +452,14 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     }
 
     pc.ontrack = (ev) => {
+      // Lowest-latency playout: no adaptive jitter buffer growth for our stream.
+      const receiver = ev.receiver as RTCRtpReceiver & { playoutDelayHint?: number; jitterBufferTarget?: number | null }
+      try {
+        if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = 0
+        if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = 0
+      } catch {
+        /* not supported by this browser */
+      }
       const stream = ev.streams[0] ?? new MediaStream([ev.track])
       if (ev.track.kind === 'audio' || ev.transceiver === audioTransceiver) {
         patch({ audioStream: stream })
@@ -440,6 +511,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     let offer: RTCSessionDescriptionInit
     try {
       offer = await pc.createOffer()
+      offerAtRef.current = performance.now()
     } catch (e) {
       fail('agent_error', `Could not create an offer: ${(e as Error).message}`)
       return
@@ -567,6 +639,13 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     [sendControl, patch],
   )
 
+  /** Tell the agent the size at which `display` is rendered (null = full resolution). */
+  const setViewport = useCallback(
+    (display: number, width: number | null, height: number | null) =>
+      sendControl({ t: 'set_viewport', display, width: width ?? undefined, height: height ?? undefined }),
+    [sendControl],
+  )
+
   const setAudio = useCallback(
     (enabled: boolean) => {
       if (sendControl({ t: 'set_audio', enabled })) patch({ audioEnabled: enabled })
@@ -608,7 +687,23 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
 
   const clearRichClipboard = useCallback(() => patch({ remoteClipboardRich: null }), [patch])
 
-  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl, debugFakeStream }
+  /** Cumulative inbound video counters for the latency rig (bytes + decoded frames). */
+  const readRawStats = useCallback(async () => {
+    const pc = pcRef.current
+    if (!pc) return null
+    const report = await pc.getStats()
+    let bytes = 0
+    let framesDecoded = 0
+    report.forEach((r) => {
+      if (r.type === 'inbound-rtp' && (r as { kind?: string }).kind === 'video') {
+        bytes = (r as { bytesReceived?: number }).bytesReceived ?? 0
+        framesDecoded = (r as { framesDecoded?: number }).framesDecoded ?? 0
+      }
+    })
+    return { bytes, framesDecoded }
+  }, [])
+
+  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream }
 }
 
 class SessionError extends Error {

@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "sync-protocol": "sh scripts/sync-protocol.sh",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit -p tsconfig.app.json"
+    "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "perf:latency": "node perf/latency.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
