@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { FileEntry, FileMessage } from '@/protocol'
 import { TransferManager, type Transfer } from './manager'
+import { readCompression } from './prefs'
 
 /**
  * One manager for the whole app (a single viewer is open at a time). The zustand store
@@ -47,6 +48,8 @@ export const useFiles = create<FilesStore>((set, get) => ({
 }))
 
 transferManager.subscribe((t) => useFiles.getState().setTransfers(t))
+// The compression preference applies to drops and pastes before the drawer was ever opened.
+transferManager.setCompression(readCompression() !== 'off')
 
 /** Count of transfers that are still moving (badge on the Files button). */
 export function activeTransferCount(transfers: Transfer[]): number {

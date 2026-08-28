@@ -7,6 +7,7 @@ export type { BakedConfig } from './BakedConfig';
 export type { BakedPayload } from './BakedPayload';
 export type { Branding } from './Branding';
 export type { ChatParty } from './ChatParty';
+export type { ChunkCodec } from './ChunkCodec';
 export type { ClipboardKind } from './ClipboardKind';
 export type { ConsoleToAgent } from './ConsoleToAgent';
 export type { ConsoleToUi } from './ConsoleToUi';
