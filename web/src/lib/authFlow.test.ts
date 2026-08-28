@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { allowedWhileEnrollmentPending, initialLoginState, loginErrorText, nextRouteAfterLogin, providerErrorText, reduceLogin } from './authFlow'
+import { allowedWhileEnrollmentPending, initialLoginState, loginErrorText, nextRouteAfterLogin, parseLoginParams, providerErrorText, reduceLogin, require2faText } from './authFlow'
+import { parseRetryAfter } from './api'
 
 describe('login state machine', () => {
   it('goes straight to done on 200', () => {
@@ -54,7 +55,7 @@ describe('messages', () => {
 
   it('maps SSO callback errors', () => {
     expect(providerErrorText(new URLSearchParams('error=access_denied'))).toMatch(/denied/)
-    expect(providerErrorText(new URLSearchParams('error=weird&error_description=nope'))).toBe('weird: nope')
+    expect(providerErrorText(new URLSearchParams('error=weird&error_description=nope'))).toMatch(/weird.*nope/)
     expect(providerErrorText(new URLSearchParams(''))).toBeNull()
   })
 })
@@ -75,5 +76,54 @@ describe('post-login routing', () => {
   it('only lets pending users reach the setup page', () => {
     expect(allowedWhileEnrollmentPending('/security/setup')).toBe(true)
     expect(allowedWhileEnrollmentPending('/devices')).toBe(false)
+  })
+})
+
+describe('login URL parameters written by SSO redirects', () => {
+  it('jumps into the second-factor step with the offered methods', () => {
+    const p = parseLoginParams('?pending=two_factor&challenge_id=ch9&methods=totp,passkey&return=%2Fdevices%2Fd1')
+    expect(p.pending).toEqual({ pending: 'two_factor', challenge_id: 'ch9', methods: ['totp', 'passkey'] })
+    expect(p.returnTo).toBe('/devices/d1')
+    expect(p.ssoError).toBeNull()
+  })
+
+  it('ignores a pending marker without a challenge and unknown methods', () => {
+    expect(parseLoginParams('?pending=two_factor').pending).toBeNull()
+    expect(parseLoginParams('?pending=two_factor&challenge_id=x&methods=sms').pending?.methods).toEqual(['totp'])
+  })
+
+  it('maps provider errors with the provider and message', () => {
+    const p = parseLoginParams('?error=provider_error&provider=saml&message=Signature%20invalid')
+    expect(p.ssoError).toMatch(/identity provider returned an error/)
+    expect(p.ssoError).toMatch(/Signature invalid/)
+    expect(parseLoginParams('?error=mapping_rejected').ssoError).toMatch(/no matching group rule/)
+  })
+
+  it('never returns to an external URL', () => {
+    expect(parseLoginParams('?return=https%3A%2F%2Fevil.example').returnTo).toBeNull()
+    expect(parseLoginParams('?return=%2F%2Fevil.example').returnTo).toBeNull()
+  })
+
+  it('prefers the server return_to over the remembered location', () => {
+    expect(nextRouteAfterLogin({ two_factor_required: false }, '/sessions', '/devices/d2')).toBe('/devices/d2')
+    expect(nextRouteAfterLogin({ two_factor_required: false }, '/sessions', '//evil')).toBe('/sessions')
+    expect(nextRouteAfterLogin({ two_factor_required: true }, '/sessions', '/devices/d2')).toBe('/security/setup')
+  })
+
+  it('describes the two-factor policy', () => {
+    expect(require2faText('admins')).toMatch(/administrators/)
+    expect(require2faText('all')).toMatch(/every account/)
+    expect(require2faText('off')).toBeNull()
+    expect(require2faText(undefined)).toBeNull()
+  })
+})
+
+describe('Retry-After parsing', () => {
+  it('accepts delta seconds and HTTP dates', () => {
+    expect(parseRetryAfter('60')).toBe(60)
+    const now = Date.parse('2026-08-29T10:00:00Z')
+    expect(parseRetryAfter('Sat, 29 Aug 2026 10:00:30 GMT', now)).toBe(30)
+    expect(parseRetryAfter(null)).toBeUndefined()
+    expect(parseRetryAfter('soon')).toBeUndefined()
   })
 })

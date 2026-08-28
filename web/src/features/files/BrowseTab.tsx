@@ -1,57 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowDownToLine, Check, ChevronDown, ChevronRight, ChevronUp, CornerLeftUp, Eye, EyeOff, FolderInput, FolderPlus, HardDrive, Pencil, RefreshCw, Search, Square, SquareCheck, SquareMinus, Trash2, Upload, X } from 'lucide-react'
+import { ArrowDownToLine, Check, ChevronDown, ChevronRight, ChevronUp, Copy, CornerLeftUp, Eye, EyeOff, FolderInput, FolderOpen, FolderPlus, HardDrive, Pencil, RefreshCw, Search, Square, SquareCheck, SquareMinus, Trash2, Upload, X } from 'lucide-react'
 import type { FileEntry } from '@/protocol'
 import { Button, ConfirmDialog, Input, cx } from '@/components/ui'
 import { bytes, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { transferManager, useFiles } from './store'
-import { BlobSink, FileSystemSink, MEMORY_SINK_WARN_BYTES, directoryPickerAvailable, fileSystemAccessAvailable, guessMime, pickDirectory, pickSaveFile } from './sinks'
-import { flattenDrop, isFileDrag, snapshotDrop } from './dnd'
+import { flattenDrop, snapshotDrop } from './dnd'
 import { FileTypeIcon } from './fileIcons'
 import { crumbsFor, joinPath, parentPath } from './paths'
 import { filterEntries, moveFocus, rangeSelect, sortEntries, toggleSort, type SortDir, type SortKey } from './browseModel'
+import { LargeDownloadDialog, fetchFiles, type FetchInto } from './fetchFiles'
+import { REMOTE_DRAG_TYPE, dragKind, setDragPayload } from './managerModel'
+import { ContextMenu, type MenuAnchor, type MenuItem } from './ContextMenu'
 
 export interface PickMode {
   onPick: (path: string) => void
   onCancel: () => void
-}
-
-/* Promise-based confirmation for large in-memory downloads (replaces window.confirm). */
-type LargeAsk = { label: string; size: number; resolve: (ok: boolean) => void }
-let largeAskListener: ((a: LargeAsk | null) => void) | null = null
-function askLargeDownload(label: string, size: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (!largeAskListener) return resolve(true)
-    largeAskListener({ label, size, resolve })
-  })
-}
-
-function LargeDownloadDialog() {
-  const [ask, setAsk] = useState<LargeAsk | null>(null)
-  useEffect(() => {
-    largeAskListener = setAsk
-    return () => {
-      largeAskListener = null
-    }
-  }, [])
-  const answer = (ok: boolean) => {
-    ask?.resolve(ok)
-    setAsk(null)
-  }
-  return (
-    <ConfirmDialog
-      open={!!ask}
-      onClose={() => answer(false)}
-      onConfirm={() => answer(true)}
-      title="Large download"
-      body={
-        <>
-          <b>{ask?.label}</b> is {ask ? bytes(ask.size) : ''}. This browser cannot stream to disk, so the whole content is held in memory before it is saved. Continue?
-        </>
-      }
-      confirmLabel="Download anyway"
-    />
-  )
 }
 
 function SortHeader({ k, sort, onSort, children, className }: { k: SortKey; sort: { key: SortKey; dir: SortDir }; onSort: (k: SortKey) => void; children: React.ReactNode; className?: string }) {
@@ -73,18 +37,33 @@ function longDate(ms: bigint | undefined): string | undefined {
   return ms === undefined ? undefined : new Date(Number(ms)).toLocaleString()
 }
 
-/**
- * Remote file browser: breadcrumbs / editable path, sortable columns, filter, multi-select
- * with keyboard navigation, bulk download/delete, rename, new folder, uploads into the
- * current folder or onto a folder row.
- */
 /** A folder the Transfers tab asked to show; `nonce` makes repeated requests for the same folder navigate again. */
 export interface Reveal {
   path: string
   nonce: number
 }
 
-export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: PickMode; onSetUploadDest?: (path: string) => void; reveal?: Reveal | null }) {
+export interface BrowseTabProps {
+  pickMode?: PickMode
+  onSetUploadDest?: (path: string) => void
+  reveal?: Reveal | null
+  /** Rows can be dragged out of the pane (the file manager fetches them into the local folder). */
+  dragSource?: boolean
+  /** A drag that started in the local pane was dropped here; `dir` is the device folder it landed in. */
+  onInternalDrop?: (dir: string) => void
+  /** Write fetched files straight into this local folder instead of prompting for a location. */
+  fetchInto?: FetchInto | null
+  onSelectionChange?: (entries: FileEntry[]) => void
+  /** Verb for pulling files off the device: "Download" in the drawer, "Fetch" in the manager. */
+  fetchLabel?: string
+}
+
+/**
+ * Remote file browser: breadcrumbs / editable path, sortable columns, filter, multi-select
+ * with keyboard navigation, bulk download/delete, rename, new folder, context menu, uploads
+ * into the current folder or onto a folder row (OS drops and drags from the local pane).
+ */
+export function BrowseTab({ pickMode, onSetUploadDest, reveal, dragSource, onInternalDrop, fetchInto, onSelectionChange, fetchLabel = 'Download' }: BrowseTabProps) {
   const listing = useFiles((s) => s.listing)
   const loading = useFiles((s) => s.listingLoading)
   const path = useFiles((s) => s.listingPath)
@@ -100,15 +79,19 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
   const [anchor, setAnchor] = useState<string | null>(null)
   const [focus, setFocus] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<string | null>(null)
+  const [paneHover, setPaneHover] = useState(false)
+  const [menu, setMenu] = useState<{ at: MenuAnchor; items: MenuItem[] } | null>(null)
+  const dragDepth = useRef(0)
   const uploadInput = useRef<HTMLInputElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const revealed = useRef(0)
 
   useEffect(() => {
-    if (!listing && !loading) requestListing(null)
-  }, [listing, loading, requestListing])
+    // A pending reveal (remembered folder) takes precedence over the roots view.
+    if (!listing && !loading && !(reveal && revealed.current !== reveal.nonce)) requestListing(null)
+  }, [listing, loading, requestListing, reveal])
 
-  // "Show in folder" from the Transfers tab.
+  // "Show in folder" from the transfer list.
   useEffect(() => {
     if (reveal && revealed.current !== reveal.nonce) {
       revealed.current = reveal.nonce
@@ -136,6 +119,10 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
 
   const fullPath = useCallback((e: FileEntry) => (atRoots ? (e.path ?? e.name) : joinPath(listing!.path, e.name)), [atRoots, listing])
 
+  useEffect(() => {
+    onSelectionChange?.(atRoots ? [] : entries.filter((e) => selected.has(e.name)))
+  }, [selected, entries, atRoots, onSelectionChange])
+
   const goUp = () => {
     if (!canGoUp) return
     requestListing(parent)
@@ -146,51 +133,38 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
     else void download([e])
   }
 
-  const download = async (files: FileEntry[]) => {
-    files = files.filter((f) => !f.is_dir)
-    if (!files.length) return
-    if (files.length === 1) {
-      const e = files[0]!
-      const size = Number(e.size)
-      if (fileSystemAccessAvailable()) {
-        const handle = await pickSaveFile(e.name)
-        if (!handle) return
-        await transferManager.download(fullPath(e), e.name, size, async (resume) => FileSystemSink.open(handle, resume ? await FileSystemSink.existingSize(handle) : 0))
-      } else {
-        if (size > MEMORY_SINK_WARN_BYTES && !(await askLargeDownload(e.name, size))) return
-        await transferManager.download(fullPath(e), e.name, size, async () => new BlobSink(e.name, guessMime(e.name), true))
-      }
-      toast.info(`Fetching ${e.name}`, 'Progress is in the Transfers tab.')
-      return
-    }
-    const total = files.reduce((a, f) => a + Number(f.size), 0)
-    if (directoryPickerAvailable()) {
-      const dir = await pickDirectory()
-      if (!dir) return
-      for (const e of files) {
-        await transferManager.download(fullPath(e), e.name, Number(e.size), async (resume) => {
-          const handle = await dir.getFileHandle(e.name, { create: true })
-          return FileSystemSink.open(handle, resume ? await FileSystemSink.existingSize(handle) : 0)
-        })
-      }
-    } else {
-      if (total > MEMORY_SINK_WARN_BYTES && !(await askLargeDownload(`${files.length} files`, total))) return
-      for (const e of files) await transferManager.download(fullPath(e), e.name, Number(e.size), async () => new BlobSink(e.name, guessMime(e.name), true))
-    }
-    toast.info(`Fetching ${files.length} files (${bytes(total)})`, 'Progress is in the Transfers tab.')
-  }
+  const download = (files: FileEntry[]) =>
+    fetchFiles(
+      files.filter((f) => !f.is_dir).map((f) => ({ name: f.name, path: fullPath(f), size: Number(f.size) })),
+      fetchInto ?? null,
+    )
 
   const uploadTo = (dir: string, files: File[]) => {
     if (!files.length) return
     onSetUploadDest?.(dir)
     for (const f of files) void transferManager.upload(f, { destDir: dir })
-    toast.info(`Sending ${files.length} file${files.length === 1 ? '' : 's'}`, dir)
+    toast.info(`Uploading ${files.length} file${files.length === 1 ? '' : 's'} to ${dir}`)
   }
 
   const uploadHere = (files: FileList | null) => {
     if (!files || atRoots || !listing) return
     uploadTo(listing.path, Array.from(files))
   }
+
+  /* ── drops: OS files anywhere, local-pane drags when the manager wires them up ── */
+  const acceptsDrop = (dt: DataTransfer | null) => {
+    const k = dragKind(dt?.types)
+    return k === 'os' || (k === 'local' && !!onInternalDrop)
+  }
+  const handleDrop = (dt: DataTransfer, dir: string) => {
+    const k = dragKind(dt.types)
+    if (k === 'local') onInternalDrop?.(dir)
+    else if (k === 'os') {
+      const snap = snapshotDrop(dt)
+      void flattenDrop(snap).then((files) => uploadTo(dir, files.map((f) => f.file)))
+    }
+  }
+  const paneDropActive = paneHover && dropTarget === null && !atRoots && !!listing
 
   /* ── selection ── */
   const select = (e: FileEntry, ev: { shiftKey: boolean; metaKey: boolean; ctrlKey: boolean }) => {
@@ -230,7 +204,7 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
   const allSelected = names.length > 0 && selected.size === names.length
 
   const onKeyDown = (ev: React.KeyboardEvent) => {
-    if (renaming || newDir !== null || editingPath !== null) return
+    if (renaming || newDir !== null || editingPath !== null || menu) return
     const target = ev.target as HTMLElement
     if (target.tagName === 'INPUT') return
     if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
@@ -270,6 +244,42 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
   }
 
   const onSort = (k: SortKey) => setSort((s) => toggleSort(s, k))
+
+  /* ── context menu ── */
+  const closeMenu = useCallback(() => setMenu(null), [])
+  // Built in the event handler (not during render): a right-clicked row becomes the selection.
+  const openMenu = (ev: React.MouseEvent, entry: FileEntry | null) => {
+    ev.preventDefault()
+    ev.stopPropagation()
+    const fresh = !!entry && !selected.has(entry.name)
+    if (fresh) {
+      setSelected(new Set([entry.name]))
+      setAnchor(entry.name)
+      setFocus(entry.name)
+    }
+    setMenu({ at: { x: ev.clientX, y: ev.clientY }, items: menuItemsFor(entry, fresh) })
+  }
+  const menuItemsFor = (e: FileEntry | null, fresh: boolean): MenuItem[] => {
+    if (!e) {
+      return [
+        { label: 'New folder', icon: <FolderPlus size={13} />, onClick: () => setNewDir(''), disabled: atRoots },
+        { label: 'Upload files…', icon: <Upload size={13} />, onClick: () => uploadInput.current?.click(), disabled: atRoots },
+        { label: 'Refresh', icon: <RefreshCw size={13} />, onClick: () => requestListing(path), divider: true },
+        { label: showHidden ? 'Hide hidden files' : 'Show hidden files', icon: showHidden ? <EyeOff size={13} /> : <Eye size={13} />, onClick: () => setShowHidden((v) => !v) },
+      ]
+    }
+    const group = !fresh && selected.size > 1 ? selectedEntries : [e]
+    const files = group.filter((x) => !x.is_dir)
+    const items: MenuItem[] = []
+    if (e.is_dir && group.length === 1) items.push({ label: 'Open', icon: <FolderOpen size={13} />, onClick: () => open(e) })
+    if (files.length) items.push({ label: files.length > 1 ? `${fetchLabel} ${files.length} files` : fetchLabel, icon: <ArrowDownToLine size={13} />, onClick: () => void download(files) })
+    if (!atRoots) {
+      if (group.length === 1) items.push({ label: 'Rename', icon: <Pencil size={13} />, onClick: () => setRenaming({ name: e.name, value: e.name }) })
+      items.push({ label: 'Copy path', icon: <Copy size={13} />, onClick: () => void navigator.clipboard?.writeText(group.map(fullPath).join('\n')).then(() => toast.success('Path copied')) })
+      items.push({ label: group.length > 1 ? `Delete ${group.length} items` : 'Delete', icon: <Trash2 size={13} />, danger: true, divider: true, onClick: () => setDeleting(group.map((x) => x.name)) })
+    }
+    return items
+  }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
@@ -351,9 +361,9 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
             <button onClick={() => uploadInput.current?.click()} className="rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white" title="Upload into this folder">
               <Upload size={13} />
             </button>
-            <input ref={uploadInput} type="file" multiple className="hidden" onChange={(e) => uploadHere(e.target.files)} />
           </>
         )}
+        <input ref={uploadInput} type="file" multiple className="hidden" onChange={(e) => uploadHere(e.target.files)} />
         <LargeDownloadDialog />
       </div>
 
@@ -418,7 +428,40 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
       )}
 
       {/* list */}
-      <div ref={listRef} className="min-h-0 flex-1 overflow-y-auto outline-none" tabIndex={0} role="listbox" aria-multiselectable aria-label="Files on the device">
+      <div
+        ref={listRef}
+        className={cx('relative min-h-0 flex-1 overflow-y-auto outline-none', paneDropActive && 'bg-[#6cb6ff]/10 ring-2 ring-[#6cb6ff] ring-inset')}
+        tabIndex={0}
+        role="listbox"
+        aria-multiselectable
+        aria-label="Files on the device"
+        data-testid="remote-list"
+        onContextMenu={(ev) => openMenu(ev, null)}
+        onDragEnter={(ev) => {
+          if (!acceptsDrop(ev.dataTransfer)) return
+          ev.preventDefault()
+          dragDepth.current++
+          setPaneHover(true)
+        }}
+        onDragOver={(ev) => {
+          if (atRoots || !acceptsDrop(ev.dataTransfer)) return
+          ev.preventDefault()
+          ev.dataTransfer.dropEffect = 'copy'
+        }}
+        onDragLeave={(ev) => {
+          if (!acceptsDrop(ev.dataTransfer)) return
+          dragDepth.current = Math.max(0, dragDepth.current - 1)
+          if (dragDepth.current === 0) setPaneHover(false)
+        }}
+        onDrop={(ev) => {
+          if (!acceptsDrop(ev.dataTransfer)) return
+          ev.preventDefault()
+          dragDepth.current = 0
+          setPaneHover(false)
+          setDropTarget(null)
+          if (!atRoots && listing) handleDrop(ev.dataTransfer, listing.path)
+        }}
+      >
         {listing?.error && <div className="px-3 py-2 text-[#f87171]">{listing.error}</div>}
         {!listing && loading && <div className="px-3 py-2 text-[#6b7381]">Loading…</div>}
         {listing && entries.length === 0 && !listing.error && <div className="px-3 py-6 text-center text-[#6b7381]">{query ? 'Nothing matches the filter' : 'Empty folder'}</div>}
@@ -432,6 +475,7 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
               data-name={e.name}
               role="option"
               aria-selected={isSel}
+              draggable={!!dragSource && !atRoots && renaming?.name !== e.name}
               className={cx(
                 'group flex cursor-default items-center gap-2 px-3 py-1.5 select-none',
                 isSel ? 'bg-[#6cb6ff]/15' : 'hover:bg-white/5',
@@ -440,9 +484,23 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
               )}
               onClick={(ev) => select(e, ev)}
               onDoubleClick={() => open(e)}
-              title={e.is_dir ? 'Double-click to open' : 'Double-click to download'}
+              onContextMenu={(ev) => openMenu(ev, e)}
+              title={e.is_dir ? 'Double-click to open' : `Double-click to ${fetchLabel.toLowerCase()}`}
+              onDragStart={(ev) => {
+                if (!dragSource || atRoots) return
+                const items = isSel ? selectedEntries : [e]
+                setDragPayload({ kind: 'remote', items: items.map((x) => ({ name: x.name, path: fullPath(x), size: Number(x.size), isDir: x.is_dir })) })
+                ev.dataTransfer.setData(REMOTE_DRAG_TYPE, String(items.length))
+                ev.dataTransfer.effectAllowed = 'copy'
+                if (!isSel) {
+                  setSelected(new Set([e.name]))
+                  setAnchor(e.name)
+                  setFocus(e.name)
+                }
+              }}
+              onDragEnd={() => setDragPayload(null)}
               onDragOver={(ev) => {
-                if (!e.is_dir || !isFileDrag(ev.dataTransfer)) return
+                if (!e.is_dir || !acceptsDrop(ev.dataTransfer)) return
                 ev.preventDefault()
                 ev.stopPropagation()
                 ev.dataTransfer.dropEffect = 'copy'
@@ -450,13 +508,13 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
               }}
               onDragLeave={() => dropTarget === e.name && setDropTarget(null)}
               onDrop={(ev) => {
-                if (!e.is_dir || !isFileDrag(ev.dataTransfer)) return
+                if (!e.is_dir || !acceptsDrop(ev.dataTransfer)) return
                 ev.preventDefault()
                 ev.stopPropagation()
+                dragDepth.current = 0
+                setPaneHover(false)
                 setDropTarget(null)
-                const snap = snapshotDrop(ev.dataTransfer)
-                const dir = fullPath(e)
-                void flattenDrop(snap).then((files) => uploadTo(dir, files.map((f) => f.file)))
+                handleDrop(ev.dataTransfer, fullPath(e))
               }}
             >
               {!atRoots && (
@@ -515,8 +573,8 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
                       void download([e])
                     }}
                     className="rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white"
-                    title="Download"
-                    aria-label={`Download ${e.name}`}
+                    title={fetchLabel}
+                    aria-label={`${fetchLabel} ${e.name}`}
                   >
                     <ArrowDownToLine size={12} />
                   </button>
@@ -547,6 +605,11 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
             </div>
           )
         })}
+        {paneDropActive && (
+          <div className="pointer-events-none sticky bottom-2 flex justify-center">
+            <span className="mono max-w-[90%] truncate rounded-md bg-[#6cb6ff] px-2.5 py-1 text-[11px] font-medium text-[#0e1116] shadow-lg">Drop to send into {listing?.path}</span>
+          </div>
+        )}
       </div>
 
       {/* bulk actions */}
@@ -557,8 +620,8 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
             {selectedEntries.some((e) => !e.is_dir) && <span className="mono ml-1 text-[#6b7381]">({bytes(selectedEntries.filter((e) => !e.is_dir).reduce((a, e) => a + Number(e.size), 0))})</span>}
           </span>
           {selectedEntries.some((e) => !e.is_dir) && (
-            <Button size="sm" icon={<ArrowDownToLine size={12} />} onClick={() => void download(selectedEntries)} title="Download the selected files">
-              Download
+            <Button size="sm" icon={<ArrowDownToLine size={12} />} onClick={() => void download(selectedEntries)} title={`${fetchLabel} the selected files`}>
+              {fetchLabel}
             </Button>
           )}
           <Button size="sm" variant="danger" icon={<Trash2 size={12} />} onClick={() => setDeleting([...selected])}>
@@ -569,6 +632,8 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal }: { pickMode?: Pi
           </button>
         </div>
       )}
+
+      {menu && <ContextMenu at={menu.at} items={menu.items} onClose={closeMenu} />}
 
       <ConfirmDialog
         open={!!deleting}

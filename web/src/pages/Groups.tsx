@@ -22,7 +22,7 @@ export function GroupsPage() {
   }, [groups.data, q])
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <PageHeader
         title="Groups"
         subtitle="Group devices, then decide per group which operators may view or connect. Admins always have full access."

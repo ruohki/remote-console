@@ -41,10 +41,11 @@ import { toast } from '@/lib/toast'
 import { effectiveControl } from '@/lib/controlPause'
 import type { ControlMessage, DisplayInfo, InputEvent } from '@/protocol'
 import type { DeviceDetail } from '@/lib/types'
-import { FilesDrawer, readDestDir } from '@/features/files/FilesDrawer'
+import { FileManager, readDestDir } from '@/features/files/FileManager'
 import { describeDrop, flattenDrop, isFileDrag, snapshotDrop } from '@/features/files/dnd'
 import { ChatDrawer } from '@/features/chat/ChatDrawer'
 import { activeTransferCount, transferManager, useFiles } from '@/features/files/store'
+import type { FilesChannel } from '@/features/files/channel'
 import { classifyPasteItems, clipboardImageName, toPngBlob, writeImageToClipboard } from '@/features/files/clipboard'
 import { BlobSink, FileSystemSink, directoryPickerAvailable, guessMime, pickDirectory } from '@/features/files/sinks'
 import { AnnotateCanvas } from '@/features/annotate/AnnotateCanvas'
@@ -79,6 +80,8 @@ export function Viewer() {
   const [drawer, setDrawer] = useState<Drawer>(null)
 
   const [chatPulse, setChatPulse] = useState(0)
+  const [chatBubble, setChatBubble] = useState<{ id: number; text: string } | null>(null)
+  const chatBubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [chatSound, setChatSound] = useState(chatSoundEnabled)
   const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream } = useViewerSession(deviceId, {
     knownDisplays,
@@ -89,6 +92,10 @@ export function Viewer() {
       if (d.toast) {
         toast.custom({ kind: 'info', title: `${deviceName} says`, detail: body, ttlMs: 8000, group: 'chat', action: { label: 'Open chat', onClick: () => setDrawer('chat') } })
         setChatPulse((n) => n + 1)
+        // In-surface bubble next to the Chat button: visible in fullscreen and over any overlay.
+        setChatBubble({ id: Date.now(), text: body })
+        if (chatBubbleTimer.current) clearTimeout(chatBubbleTimer.current)
+        chatBubbleTimer.current = setTimeout(() => setChatBubble(null), 8000)
       }
       if (d.system) showSystemNotification({ title: `${deviceName}: new message`, body, tag: `chat-${deviceId}`, onClick: () => setDrawer('chat') })
       if (d.sound) playChatSound()
@@ -246,6 +253,8 @@ export function Viewer() {
         latencySnapshot: () => ReturnType<LatencyProbe['snapshot']> | null
         rtcBytes: () => Promise<{ bytes: number; framesDecoded: number } | null>
         agentStats: () => Record<number, AgentStats>
+        /** Drive the files feature from a scripted channel (UI tests without a capturing agent). */
+        filesChannel: (ch: FilesChannel) => void
       }
     }
     w.__viewerDebug = {
@@ -256,14 +265,18 @@ export function Viewer() {
       latencySnapshot: () => probeRef.current?.snapshot() ?? null,
       rtcBytes: () => readRawStats(),
       agentStats: () => stateRef.current.agentStats,
+      filesChannel: (ch) => {
+        transferManager.deviceId = deviceId
+        transferManager.attach(ch)
+      },
     }
     return () => {
       delete w.__viewerDebug
     }
-  }, [debugPushDeviceChat, debugPushControl, debugFakeStream, readRawStats])
+  }, [debugPushDeviceChat, debugPushControl, debugFakeStream, readRawStats, deviceId])
 
-  // The remembered destination applies to drops and pastes even before the Files drawer was opened
-  // (the drawer itself keeps the manager in sync while it is open).
+  // The remembered destination applies to drops and pastes even before the file manager was opened
+  // (the manager itself keeps the transfer manager in sync while it is open).
   useEffect(() => {
     transferManager.setDefaultDestDir(destDir ?? undefined)
   }, [destDir])
@@ -641,12 +654,21 @@ export function Viewer() {
               refreshDestDir()
               setDrawer((d) => (d === 'files' ? null : 'files'))
             }}
-            title="Files: send, fetch and browse"
+            title="Files: side-by-side file manager"
             badge={activeTransfers || undefined}
           >
             <FolderOpen size={14} />
           </HudButton>
-          <HudButton active={drawer === 'chat'} onClick={() => setDrawer((d) => (d === 'chat' ? null : 'chat'))} title="Chat with the person at the device" badge={state.unreadChat || undefined} pulseKey={chatPulse}>
+          <HudButton
+            active={drawer === 'chat'}
+            onClick={() => {
+              setChatBubble(null)
+              setDrawer((d) => (d === 'chat' ? null : 'chat'))
+            }}
+            title="Chat with the person at the device"
+            badge={state.unreadChat || undefined}
+            pulseKey={chatPulse}
+          >
             <MessageSquare size={14} />
           </HudButton>
           <HudButton
@@ -683,7 +705,7 @@ export function Viewer() {
         <ChevronDown size={12} className={cx('transition-transform', toolbar && 'rotate-180')} />
       </button>
 
-      <div className="flex min-h-0 flex-1">
+      <div className="relative flex min-h-0 flex-1">
         {/* surface: all tiles share one focus target for the keyboard */}
         <div
           ref={surfaceRef}
@@ -801,10 +823,33 @@ export function Viewer() {
           )}
         </div>
 
+        {chatBubble && drawer !== 'chat' && (
+          <div className="animate-fade-up absolute top-2 right-3 z-40 flex w-[300px] max-w-[calc(100%-1.5rem)] items-start gap-2 rounded-lg border border-white/10 bg-[#161a21]/95 px-3 py-2 text-[12.5px] text-[#e6e9ef] shadow-xl backdrop-blur" role="status" data-testid="chat-bubble">
+            <MessageSquare size={14} className="mt-0.5 shrink-0 text-[#6cb6ff]" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[11px] font-medium text-[#9aa3b2]">{deviceName} says</div>
+              <div className="break-words">{chatBubble.text}</div>
+              <button
+                onClick={() => {
+                  setChatBubble(null)
+                  setDrawer('chat')
+                }}
+                className="mt-1.5 rounded-md bg-[#6cb6ff] px-2 py-0.5 text-[11.5px] font-medium text-[#0e1116] hover:opacity-90"
+              >
+                Open chat
+              </button>
+            </div>
+            <button onClick={() => setChatBubble(null)} className="-mr-1 rounded p-0.5 text-[#6b7381] hover:text-white" aria-label="Dismiss message preview">
+              <X size={13} />
+            </button>
+          </div>
+        )}
         {drawer === 'files' && (
-          <FilesDrawer
+          <FileManager
             deviceId={deviceId}
+            deviceName={deviceName}
             enabled={allowFiles}
+            connected={connected}
             onClose={() => {
               refreshDestDir()
               setDrawer(null)

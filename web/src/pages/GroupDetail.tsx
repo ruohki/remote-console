@@ -54,7 +54,7 @@ export function GroupDetail() {
   if (group.isError && group.error instanceof ApiError && group.error.status === 404) return <NotFound />
   if (group.isPending) {
     return (
-      <div className="mx-auto max-w-5xl">
+      <div className="w-full">
         <Skeleton className="mb-4 h-8 w-64" />
         <Skeleton className="h-64 w-full" />
       </div>
@@ -62,7 +62,7 @@ export function GroupDetail() {
   }
   if (group.isError) {
     return (
-      <div className="panel mx-auto max-w-5xl">
+      <div className="panel w-full">
         <EmptyState title="Could not load this group" detail={errorMessage(group.error)} />
       </div>
     )
@@ -70,7 +70,7 @@ export function GroupDetail() {
   const g = group.data
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <Link to="/groups" className="mb-3 inline-flex items-center gap-1 text-ink-muted hover:text-ink">
         <ArrowLeft size={14} /> Groups
       </Link>

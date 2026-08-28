@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { X } from 'lucide-react'
 
@@ -57,12 +59,24 @@ const KIND_CLASS: Record<ToastKind, string> = {
   error: 'border-l-danger',
 }
 
+/** The element in fullscreen, if any: only its subtree is visible, so the stack must live inside it. */
+function useFullscreenElement(): Element | null {
+  const [el, setEl] = useState<Element | null>(() => (typeof document === 'undefined' ? null : document.fullscreenElement))
+  useEffect(() => {
+    const onChange = () => setEl(document.fullscreenElement)
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+  return el
+}
+
 export function Toaster() {
   const toasts = useToasts((s) => s.toasts)
   const dismiss = useToasts((s) => s.dismiss)
+  const fullscreenEl = useFullscreenElement()
   if (toasts.length === 0) return null
-  return (
-    <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2" role="status" aria-live="polite">
+  const stack = (
+    <div className="pointer-events-none fixed right-4 bottom-4 z-50 flex w-[340px] max-w-[calc(100vw-2rem)] flex-col gap-2" role="status" aria-live="polite" data-testid="toaster">
       {toasts.map((t) => (
         <div
           key={t.id}
@@ -90,4 +104,5 @@ export function Toaster() {
       ))}
     </div>
   )
+  return fullscreenEl ? createPortal(stack, fullscreenEl) : stack
 }

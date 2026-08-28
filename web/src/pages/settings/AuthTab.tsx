@@ -2,7 +2,7 @@ import { useReducer, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, ExternalLink, FlaskConical, Save } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
-import type { AuthProviders, Group, MappedRole, OidcConfig, SamlConfig, SyncMode } from '@/lib/types'
+import type { AuthProviders, Group, LdapConfig, MappedRole, OidcConfig, SamlConfig, SyncMode } from '@/lib/types'
 import { fromRows, reduceMappings, toRows, validateRows } from '@/lib/mappings'
 import { Badge, Button, EmptyState, Field, Input, Select, Skeleton, Textarea, Toggle, cx } from '@/components/ui'
 import { MappingEditor } from '@/components/MappingEditor'
@@ -38,6 +38,25 @@ const DEFAULT_SAML: SamlConfig = {
   sync_mode: 'additive',
 }
 
+const DEFAULT_LDAP: LdapConfig = {
+  enabled: false,
+  display_name: 'Directory account',
+  url: '',
+  starttls: false,
+  bind_dn: '',
+  bind_password: '',
+  base_dn: '',
+  user_filter: '(|(mail={login})(sAMAccountName={login})(uid={login}))',
+  attribute_map: { email: 'mail', name: 'displayName', groups: 'memberOf' },
+  group_short_names: true,
+  auto_provision: true,
+  default_role: 'operator',
+  trust_idp_mfa: false,
+  allowed_domains: [],
+  mappings: [],
+  sync_mode: 'additive',
+}
+
 /** `/settings/auth` — policy overview and identity-provider configuration (admin). */
 export function AuthTab() {
   const providers = useQuery({
@@ -52,7 +71,7 @@ export function AuthTab() {
     },
   })
   const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.get<Group[]>('/api/groups') })
-  const [section, setSection] = useState<'oidc' | 'saml'>('oidc')
+  const [section, setSection] = useState<'oidc' | 'saml' | 'ldap'>('oidc')
 
   if (providers.isPending) return <Skeleton className="h-40 w-full" />
   if (providers.data === null)
@@ -66,14 +85,14 @@ export function AuthTab() {
     <div className="flex flex-col gap-4">
       <PolicySummary providers={providers.data} />
       <div className="flex gap-1 border-b border-line">
-        {(['oidc', 'saml'] as const).map((s) => (
+        {(['oidc', 'saml', 'ldap'] as const).map((s) => (
           <button
             key={s}
             onClick={() => setSection(s)}
             className={cx('-mb-px border-b-2 px-3 py-2 text-[13px]', section === s ? 'border-accent text-ink font-medium' : 'border-transparent text-ink-muted hover:text-ink')}
           >
-            {s === 'oidc' ? 'OpenID Connect' : 'SAML 2.0'}
-            {(s === 'oidc' ? providers.data?.oidc : providers.data?.saml) && (
+            {s === 'oidc' ? 'OpenID Connect' : s === 'saml' ? 'SAML 2.0' : 'LDAP directory'}
+            {(s === 'oidc' ? providers.data?.oidc : s === 'saml' ? providers.data?.saml : providers.data?.ldap) && (
               <Badge tone="live" className="ml-2">
                 On
               </Badge>
@@ -81,7 +100,7 @@ export function AuthTab() {
           </button>
         ))}
       </div>
-      {section === 'oidc' ? <OidcForm groups={groups.data ?? []} /> : <SamlForm groups={groups.data ?? []} />}
+      {section === 'oidc' ? <OidcForm groups={groups.data ?? []} /> : section === 'saml' ? <SamlForm groups={groups.data ?? []} /> : <LdapForm groups={groups.data ?? []} />}
     </div>
   )
 }
@@ -359,6 +378,130 @@ function SamlFormInner({ initial, groups }: { initial: SamlConfig; groups: Group
       <div className="flex justify-end">
         <Button variant="primary" icon={<Save size={14} />} loading={save.isPending} disabled={!canSave} onClick={() => save.mutate()} data-testid="saml-save">
           Save SAML settings
+        </Button>
+      </div>
+    </div>
+  )
+}
+
+/* ───────────── LDAP ───────────── */
+
+function LdapForm({ groups }: { groups: Group[] }) {
+  const cfg = useQuery({
+    queryKey: ['ldap-config'],
+    queryFn: async () => {
+      try {
+        return await api.get<LdapConfig>('/api/auth/ldap/config')
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null
+        throw err
+      }
+    },
+  })
+  if (cfg.isPending) return <Skeleton className="h-60 w-full" />
+  if (cfg.isError) return <EmptyState title="LDAP settings unavailable" detail={errorMessage(cfg.error)} />
+  if (cfg.data === null) return <EmptyState title="This console version has no LDAP support" detail="Update the console server to sign users in against a directory." />
+  return <LdapFormInner key={cfg.dataUpdatedAt} initial={cfg.data} groups={groups} />
+}
+
+function LdapFormInner({ initial, groups }: { initial: LdapConfig; groups: Group[] }) {
+  const qc = useQueryClient()
+  const [form, setForm] = useState<LdapConfig>(() => ({ ...DEFAULT_LDAP, ...initial, bind_password: '' }))
+  const [rows, dispatch] = useReducer(reduceMappings, initial.mappings ?? [], toRows)
+  const [domains, setDomains] = useState(() => (initial.allowed_domains ?? []).join(', '))
+  const payload = () => ({
+    ...form,
+    bind_password: form.bind_password || undefined,
+    allowed_domains: domains
+      .split(/[,\s]+/)
+      .map((d) => d.trim().toLowerCase())
+      .filter(Boolean),
+    mappings: fromRows(rows),
+  })
+  const save = useMutation({
+    mutationFn: () => api.put<LdapConfig>('/api/auth/ldap/config', payload()),
+    onSuccess: () => {
+      toast.success('LDAP settings saved')
+      void qc.invalidateQueries({ queryKey: ['ldap-config'] })
+      void qc.invalidateQueries({ queryKey: ['auth-providers'] })
+    },
+    onError: (e) => toast.error('Could not save', errorMessage(e)),
+  })
+  const test = useMutation({
+    mutationFn: () => api.post<{ ok: boolean; message?: string; bound_as?: string; users_found?: number }>('/api/auth/ldap/test', payload()),
+  })
+  const set = <K extends keyof LdapConfig>(k: K, v: LdapConfig[K]) => setForm((f) => ({ ...f, [k]: v }))
+  const setAttr = (k: keyof LdapConfig['attribute_map'], v: string) => setForm((f) => ({ ...f, attribute_map: { ...f.attribute_map, [k]: v } }))
+  const errors = validateRows(rows)
+  const canSave = form.url.trim() && form.base_dn.trim() && Object.keys(errors).length === 0
+
+  return (
+    <div className="flex flex-col gap-4">
+      <section className="panel grid gap-3 p-4 sm:grid-cols-2">
+        <div className="sm:col-span-2 flex items-center justify-between">
+          <h2 className="font-semibold">Directory</h2>
+          <Toggle checked={form.enabled} onChange={(v) => set('enabled', v)} label="Enabled" />
+        </div>
+        <Field label="Button label" hint="Shown on the sign-in page">
+          <Input value={form.display_name} onChange={(e) => set('display_name', e.target.value)} placeholder="Company directory" />
+        </Field>
+        <Field label="Server URL" hint="ldaps:// is strongly recommended; ldap:// only with StartTLS">
+          <Input value={form.url} onChange={(e) => set('url', e.target.value)} placeholder="ldaps://ldap.example.com:636" className="mono" />
+        </Field>
+        <Field label="Bind DN" hint="Service account used to look up users">
+          <Input value={form.bind_dn} onChange={(e) => set('bind_dn', e.target.value)} placeholder="cn=console,ou=service,dc=example,dc=com" className="mono" />
+        </Field>
+        <Field label="Bind password" hint={initial.bind_password_set ? 'Leave empty to keep the stored password' : undefined}>
+          <Input type="password" autoComplete="new-password" value={form.bind_password ?? ''} onChange={(e) => set('bind_password', e.target.value)} className="mono" />
+        </Field>
+        <Field label="Base DN">
+          <Input value={form.base_dn} onChange={(e) => set('base_dn', e.target.value)} placeholder="ou=people,dc=example,dc=com" className="mono" />
+        </Field>
+        <Field label="User filter" hint="{login} is replaced by what the user typed">
+          <Input value={form.user_filter} onChange={(e) => set('user_filter', e.target.value)} className="mono" />
+        </Field>
+        <Field label="Attributes" hint="email · display name · groups">
+          <div className="flex gap-2">
+            <Input value={form.attribute_map.email} onChange={(e) => setAttr('email', e.target.value)} placeholder="mail" className="mono" />
+            <Input value={form.attribute_map.name} onChange={(e) => setAttr('name', e.target.value)} placeholder="displayName" className="mono" />
+            <Input value={form.attribute_map.groups} onChange={(e) => setAttr('groups', e.target.value)} placeholder="memberOf" className="mono" />
+          </div>
+        </Field>
+        <Field label="Allowed email domains" hint="Comma separated; empty = any">
+          <Input value={domains} onChange={(e) => setDomains(e.target.value)} placeholder="example.com" className="mono" />
+        </Field>
+        <div className="sm:col-span-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          <Toggle checked={form.starttls} onChange={(v) => set('starttls', v)} label="StartTLS (ldap:// only)" />
+          <Toggle checked={form.group_short_names} onChange={(v) => set('group_short_names', v)} label="Match groups by CN, not full DN" />
+          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Create accounts automatically" />
+          <div>
+            <div className="eyebrow mb-1">Default role</div>
+            <DefaultRole value={form.default_role} onChange={(v) => set('default_role', v)} />
+          </div>
+        </div>
+        <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
+          <Button size="sm" icon={<FlaskConical size={13} />} onClick={() => test.mutate()} loading={test.isPending} disabled={!form.url.trim()} title="Binds with the service account and runs the user filter once">
+            Test connection
+          </Button>
+          {test.data && (
+            <span className={cx('text-[12px]', test.data.ok ? 'text-ink-muted' : 'text-danger')} data-testid="ldap-test-result">
+              {test.data.ok ? `OK — bound as ${test.data.bound_as ?? form.bind_dn}${test.data.users_found !== undefined ? `, ${test.data.users_found} users visible` : ''}` : test.data.message ?? 'Failed'}
+            </span>
+          )}
+          {test.isError && <span className="text-[12px] text-danger">{errorMessage(test.error)}</span>}
+          <span className="ml-auto text-[12px] text-ink-faint">Directory sign-ins still go through the console’s two-factor policy.</span>
+        </div>
+      </section>
+
+      <section className="panel p-4">
+        <h2 className="mb-1 font-semibold">Group mapping</h2>
+        <p className="mb-3 text-[12.5px] text-ink-muted">Map directory groups (memberOf) to a console role and device-group grants. Rules are evaluated top to bottom; every matching rule applies.</p>
+        <MappingEditor rows={rows} dispatch={dispatch} syncMode={form.sync_mode} onSyncMode={(m: SyncMode) => set('sync_mode', m)} groups={groups} defaultRole={form.default_role} provider="ldap" />
+      </section>
+
+      <div className="flex justify-end">
+        <Button variant="primary" icon={<Save size={14} />} loading={save.isPending} disabled={!canSave} onClick={() => save.mutate()} data-testid="ldap-save">
+          Save LDAP settings
         </Button>
       </div>
     </div>

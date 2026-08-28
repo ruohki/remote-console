@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Square } from 'lucide-react'
+import { Square, X } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
 import type { SessionSummary } from '@/protocol'
 import { useLive } from '@/store/live'
@@ -20,16 +20,25 @@ const PAGE = 25
 export function Sessions() {
   const { user } = useAuth()
   const live = useLive((s) => s.sessions)
-  const [scope, setScope] = useState<'active' | 'all'>('active')
+  const [searchParams, setSearchParams] = useSearchParams()
+  // `?device_id=` scopes the page to one device ("Show all" from a device page); it defaults to
+  // the full history since a device rarely has active sessions to show.
+  const deviceId = searchParams.get('device_id')
+  const [scope, setScope] = useState<'active' | 'all'>(deviceId ? 'all' : 'active')
   const [pg, setPg] = useState<PageState<string>>(firstPage<string>())
   const [openSession, setOpenSession] = useState<SessionSummary | null>(null)
   const [ending, setEnding] = useState<SessionSummary | null>(null)
   const qc = useQueryClient()
 
   const history = useQuery({
-    queryKey: ['sessions', scope, pg.current ?? null],
+    queryKey: ['sessions', scope, deviceId ?? null, pg.current ?? null],
     queryFn: () =>
-      api.get<SessionSummary[]>('/api/sessions', scope === 'active' ? { active: 1, limit: PAGE, before: pg.current } : { limit: PAGE, before: pg.current }),
+      api.get<SessionSummary[]>('/api/sessions', {
+        ...(scope === 'active' ? { active: 1 } : {}),
+        ...(deviceId ? { device_id: deviceId } : {}),
+        limit: PAGE,
+        before: pg.current,
+      }),
     placeholderData: keepPreviousData,
   })
 
@@ -44,8 +53,9 @@ export function Sessions() {
     if (firstPageShown) for (const s of Object.values(live)) if (s.state !== 'ended' || map.has(s.id)) map.set(s.id, s) // live wins
     return Array.from(map.values())
       .filter((s) => (scope === 'active' ? s.state !== 'ended' : true))
+      .filter((s) => (deviceId ? s.device_id === deviceId : true))
       .sort((a, b) => Number(b.state !== 'ended') - Number(a.state !== 'ended') || Date.parse(b.started_at) - Date.parse(a.started_at))
-  }, [page, live, scope, firstPageShown])
+  }, [page, live, scope, firstPageShown, deviceId])
 
   const end = useMutation({
     mutationFn: (id: string) => api.post(`/api/sessions/${id}/end`),
@@ -65,11 +75,28 @@ export function Sessions() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="w-full">
       <PageHeader
         title="Sessions"
         subtitle={`Every remote control session, live and past · ${PAGE} per page.`}
         actions={
+          <>
+            {deviceId && (
+              <span className="inline-flex items-center gap-1 rounded-full border border-line px-2.5 py-1 text-[12.5px]" data-testid="device-filter-chip">
+                Device: <Link to={`/devices/${deviceId}`} className="font-medium hover:underline">{rows[0]?.device_name ?? deviceId}</Link>
+                <button
+                  type="button"
+                  aria-label="Clear device filter"
+                  className="ml-1 rounded p-0.5 text-ink-muted hover:text-ink"
+                  onClick={() => {
+                    setSearchParams({})
+                    setPg(firstPage<string>())
+                  }}
+                >
+                  <X size={12} />
+                </button>
+              </span>
+            )}
           <Select
             value={scope}
             onChange={changeScope}
@@ -80,6 +107,7 @@ export function Sessions() {
               { value: 'all', label: 'All' },
             ]}
           />
+          </>
         }
       />
       {history.isPending && rows.length === 0 ? (

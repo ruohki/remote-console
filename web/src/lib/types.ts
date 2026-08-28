@@ -3,7 +3,8 @@ import type { AgentConfig, DeviceMode, DeviceSummary } from '@/protocol'
 
 export type Role = 'admin' | 'operator'
 
-export type AuthMethod = 'password' | 'passkey' | 'oidc' | 'saml'
+export type AuthMethod = 'password' | 'passkey' | 'oidc' | 'saml' | 'ldap'
+export type Require2fa = 'admins' | 'all' | 'off'
 
 export interface User {
   id: string
@@ -30,7 +31,35 @@ export interface AuthProviders {
   local_login: boolean
   oidc?: { display_name: string }
   saml?: { display_name: string }
+  ldap?: { display_name: string }
   passkeys: boolean
+  /** policy from `REQUIRE_2FA`; absent on older servers */
+  require_2fa?: Require2fa
+}
+
+/** LDAP simple-bind provider (`/api/auth/ldap/config`); the bind password is write-only. */
+export interface LdapConfig {
+  enabled: boolean
+  display_name: string
+  url: string
+  starttls: boolean
+  ca_cert_pem?: string
+  bind_dn: string
+  /** write-only: empty keeps the stored password */
+  bind_password?: string
+  /** read-only flag from the server */
+  bind_password_set?: boolean
+  base_dn: string
+  user_filter: string
+  attribute_map: { email: string; name: string; groups: string }
+  group_short_names: boolean
+  admin_group?: string
+  auto_provision: boolean
+  default_role: MappedRole | 'none'
+  trust_idp_mfa: boolean
+  allowed_domains?: string[]
+  mappings: Mapping[]
+  sync_mode: SyncMode
 }
 
 /** `202` answer of `POST /api/auth/login`. */

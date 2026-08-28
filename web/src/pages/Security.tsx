@@ -10,7 +10,7 @@ import { toast } from '@/lib/toast'
 import { webauthnSupported } from '@/lib/webauthn'
 import { PasskeyEnroll, RecoveryCodes, TotpEnroll } from './SecuritySetup'
 
-const METHOD_LABEL: Record<AuthMethod, string> = { password: 'Password', passkey: 'Passkey / security key', oidc: 'Single sign-on (OIDC)', saml: 'Single sign-on (SAML)' }
+const METHOD_LABEL: Record<AuthMethod, string> = { password: 'Password', passkey: 'Passkey / security key', oidc: 'Single sign-on (OIDC)', saml: 'Single sign-on (SAML)', ldap: 'Directory account (LDAP)' }
 
 /** `/security` — every user's own second factors, passkeys and sign-in methods. */
 export function SecurityPage() {
@@ -67,7 +67,7 @@ export function SecurityPage() {
   const policyApplies = !!user.two_factor_required || (user.role === 'admin' && totpOn) // best effort: the server decides on disable
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="w-full max-w-3xl">
       <PageHeader title="Account security" subtitle="Second factors, passkeys and how you sign in." />
 
       {/* ── current session ── */}

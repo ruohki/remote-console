@@ -26,7 +26,7 @@ export function MappingEditor({
   groups: Group[]
   defaultRole: MappedRole | 'none'
   /** which provider's server-side evaluator to use for "Test mapping" */
-  provider: 'oidc' | 'saml'
+  provider: 'oidc' | 'saml' | 'ldap'
 }) {
   const errors = useMemo(() => validateRows(rows), [rows])
   const [dragKey, setDragKey] = useState<string | null>(null)
@@ -170,7 +170,7 @@ function GroupChip({ name, value, onChange }: { name: string; value: GroupPermis
   )
 }
 
-function TestMapping({ rows, groups, defaultRole, provider }: { rows: MappingRow[]; groups: Group[]; defaultRole: MappedRole | 'none'; provider: 'oidc' | 'saml' }) {
+function TestMapping({ rows, groups, defaultRole, provider }: { rows: MappingRow[]; groups: Group[]; defaultRole: MappedRole | 'none'; provider: 'oidc' | 'saml' | 'ldap' }) {
   const [input, setInput] = useState('')
   const idpGroups = input
     .split(/[,\n]/)

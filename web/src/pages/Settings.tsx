@@ -21,7 +21,7 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   const isAdmin = useIsAdmin()
   const current: SettingsTab = isAdmin || tab === 'info' ? tab : 'info'
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <PageHeader title="Settings" subtitle="Console information, enrollment tokens, branding, agent downloads and authentication." />
       <div className="mb-4 flex flex-wrap gap-1 border-b border-line">
         <TabLink to="/settings" active={current === 'info'}>

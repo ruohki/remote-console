@@ -24,7 +24,7 @@ export function Audit() {
   const hasNext = q.isSuccess && !isLastPage(rows.length, PAGE)
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="w-full">
       <PageHeader title="Audit log" subtitle={`Who did what, newest first · ${PAGE} entries per page · click an entry for the full record.`} />
       {q.isPending ? (
         <Skeleton className="h-40 w-full" />

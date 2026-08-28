@@ -78,7 +78,7 @@ export function Devices() {
   const onlineCount = devices.filter((d) => d.online).length
 
   return (
-    <div className="mx-auto max-w-6xl">
+    <div className="w-full">
       <PageHeader
         title="Devices"
         subtitle={

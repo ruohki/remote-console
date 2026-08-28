@@ -1,8 +1,7 @@
 import { useState } from 'react'
 
-const SESSION_PAGE = 25
 import { Link, useNavigate, useParams } from 'react-router'
-import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Eye, FolderKanban, MonitorPlay, Save, Trash2 } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import type { DeviceDetail as Detail, Group } from '@/lib/types'
@@ -12,8 +11,7 @@ import { useLive } from '@/store/live'
 import { useAuth, useIsAdmin } from '@/store/auth'
 import { Badge, Button, DangerConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
 import { CodecBadge, GroupChips, ModeBadge, OsIcon, OverrideBadge, SessionStateBadge, StatusLed } from '@/components/badges'
-import { LoadMore } from '@/components/Pager'
-import { appendPage, isLastPage, timeCursor } from '@/lib/paging'
+import { RECENT_SESSIONS, allSessionsHref, truncateRecent } from '@/lib/sessionsList'
 import { hasOverrides, overrideLabels } from '@/lib/overrides'
 import { ShieldAlert } from 'lucide-react'
 import { NotFound } from './NotFound'
@@ -36,23 +34,13 @@ export function DeviceDetail() {
     retry: false,
   })
   const [openSession, setOpenSession] = useState<SessionSummary | null>(null)
-  // Session history: first page plus one query per "load older" cursor (no effects needed).
-  const [cursors, setCursors] = useState<string[]>([])
+  // Only a handful of recent sessions live here; the sessions page has the full, paged history.
   const sessions = useQuery({
-    queryKey: ['device-sessions', id],
-    queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: SESSION_PAGE }),
+    queryKey: ['device-sessions', id, 'recent'],
+    queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: RECENT_SESSIONS + 1 }),
   })
-  const olderQueries = useQueries({
-    queries: cursors.map((before) => ({
-      queryKey: ['device-sessions', id, before],
-      queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: SESSION_PAGE, before }),
-    })),
-  })
-  let sessionRows: SessionSummary[] = sessions.data ?? []
-  for (const q of olderQueries) if (q.data) sessionRows = appendPage(sessionRows, q.data)
-  const lastLoaded = olderQueries.length ? olderQueries.at(-1)?.data : sessions.data
-  const moreSessions = !!lastLoaded && !isLastPage(lastLoaded.length, SESSION_PAGE)
-  const olderLoading = olderQueries.some((q) => q.isFetching)
+  const recent = truncateRecent(sessions.data ?? [])
+  const sessionRows: SessionSummary[] = recent.rows
 
   const [deleting, setDeleting] = useState(false)
   const remove = useMutation({
@@ -67,7 +55,7 @@ export function DeviceDetail() {
   if (detail.isError && detail.error instanceof ApiError && detail.error.status === 404) return <NotFound />
   if (detail.isPending) {
     return (
-      <div className="mx-auto max-w-5xl">
+      <div className="w-full">
         <Skeleton className="mb-4 h-8 w-64" />
         <Skeleton className="h-64 w-full" />
       </div>
@@ -75,7 +63,7 @@ export function DeviceDetail() {
   }
   if (detail.isError) {
     return (
-      <div className="panel mx-auto max-w-5xl">
+      <div className="panel w-full">
         <EmptyState title="Could not load this device" detail={errorMessage(detail.error)} />
       </div>
     )
@@ -86,7 +74,7 @@ export function DeviceDetail() {
   const mayConnect = canConnect(d, user)
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <Link to="/devices" className="mb-3 inline-flex items-center gap-1 text-ink-muted hover:text-ink">
         <ArrowLeft size={14} /> Devices
       </Link>
@@ -184,7 +172,12 @@ export function DeviceDetail() {
           <MetaForm key={`${d.id}|${d.name}|${d.tags.join(',')}|${d.notes}`} device={d} editable={mayConnect} onSaved={() => qc.invalidateQueries({ queryKey: ['device', id] })} />
 
           <section className="panel">
-            <div className="border-b border-line px-4 py-2.5 font-medium">Recent sessions</div>
+            <div className="flex items-center border-b border-line px-4 py-2.5 font-medium">
+              Recent sessions
+              <Link to={allSessionsHref(id)} className="ml-auto text-[12.5px] font-normal text-accent hover:underline" data-testid="show-all-sessions">
+                Show all
+              </Link>
+            </div>
             {sessions.isPending ? (
               <Skeleton className="m-4 h-24" />
             ) : sessionRows.length === 0 ? (
@@ -219,17 +212,13 @@ export function DeviceDetail() {
                 </tbody>
               </Table>
             )}
-            {sessionRows.length > 0 && (
-              <LoadMore
-                shown={sessionRows.length}
-                hasMore={moreSessions}
-                loading={olderLoading}
-                onClick={() => {
-                  const c = timeCursor(lastLoaded ?? [])
-                  if (c !== undefined && !cursors.includes(c)) setCursors((cs) => [...cs, c])
-                }}
-                label="Load older sessions"
-              />
+            {recent.hasMore && (
+              <div className="border-t border-line px-4 py-2 text-[12.5px] text-ink-muted">
+                Showing the {RECENT_SESSIONS} most recent ·{' '}
+                <Link to={allSessionsHref(id)} className="text-accent hover:underline">
+                  Show all sessions
+                </Link>
+              </div>
             )}
           </section>
           <SessionDetailDialog session={openSession} open={!!openSession} onClose={() => setOpenSession(null)} />

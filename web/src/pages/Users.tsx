@@ -48,7 +48,7 @@ export function UsersPage() {
   })
 
   return (
-    <div className="mx-auto max-w-5xl">
+    <div className="w-full">
       <PageHeader
         title="Users"
         subtitle="Operators only see the device groups they are granted (view or connect). Admins see everything and manage users, groups, tokens and device settings."

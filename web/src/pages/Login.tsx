@@ -1,13 +1,13 @@
-import { type FormEvent, useEffect, useReducer, useState } from 'react'
+import { type FormEvent, useEffect, useMemo, useReducer, useState } from 'react'
 import { Navigate, useLocation, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { Fingerprint, KeyRound, LogIn, ShieldCheck } from 'lucide-react'
-import { useAuth } from '@/store/auth'
+import { Building2, Fingerprint, KeyRound, LogIn, ShieldCheck } from 'lucide-react'
+import { envelopeUser, useAuth } from '@/store/auth'
 import { Button, Field, Input } from '@/components/ui'
 import { Wordmark } from '@/components/Layout'
 import { api, ApiError, errorMessage } from '@/lib/api'
-import type { AuthProviders, User } from '@/lib/types'
-import { LEGACY_PROVIDERS, initialLoginState, nextRouteAfterLogin, providerErrorText, reduceLogin } from '@/lib/authFlow'
+import type { AuthMethod, AuthProviders, User } from '@/lib/types'
+import { LEGACY_PROVIDERS, initialLoginState, nextRouteAfterLogin, parseLoginParams, reduceLogin, require2faText } from '@/lib/authFlow'
 import { friendlyWebAuthnError, getCredential, webauthnSupported, type JsonRequestOptions } from '@/lib/webauthn'
 
 export function AuthShell({ children, title, subtitle }: { children: React.ReactNode; title: string; subtitle: React.ReactNode }) {
@@ -42,33 +42,41 @@ export function useAuthProviders() {
   })
 }
 
+/** Session-creating responses wrap the user with the method used and where to go next. */
+type LoginEnvelope = { user: User; two_factor_required?: boolean; auth_method?: AuthMethod; return_to?: string | null }
+
 function failedEvent(err: unknown) {
   const e = err instanceof ApiError ? err : null
+  // `Retry-After` (parsed by the API client) wins; the message pattern is the fallback for older servers.
   const retry = e && /(\d+)\s*s/.exec(e.message)
   return {
     type: 'failed' as const,
     status: e?.status ?? 0,
     code: e?.code ?? 'error',
     message: errorMessage(err),
-    retryAfterS: retry ? Number(retry[1]) : undefined,
+    retryAfterS: e?.retryAfterS ?? (retry ? Number(retry[1]) : undefined),
   }
 }
 
 export function Login() {
-  const { user, needsSetup, login, completeLogin } = useAuth()
+  const { user, needsSetup, login, loginLdap, completeLogin } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const providers = useAuthProviders()
-  const [state, dispatch] = useReducer(reduceLogin, initialLoginState)
+  // The server's SSO redirects land here with `?pending=two_factor…` or `?error=…` (see API.md).
+  const params = useMemo(() => parseLoginParams(location.search), [location.search])
+  const [state, dispatch] = useReducer(reduceLogin, initialLoginState, (s) => (params.pending ? reduceLogin(s, { type: 'pending', pending: params.pending }) : s))
   const [email, setEmail] = useState('')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
-  const [ssoError] = useState(() => providerErrorText(new URLSearchParams(location.search)))
+  const [ssoError] = useState(() => params.ssoError)
   const [breakGlass, setBreakGlass] = useState(false)
+  const [directory, setDirectory] = useState(false)
   const canWebAuthn = webauthnSupported()
 
-  const from = (location.state as { from?: string } | null)?.from ?? new URLSearchParams(location.search).get('return')
+  const from = (location.state as { from?: string } | null)?.from ?? params.returnTo
 
   // Countdown for a lockout message.
   const [, tick] = useState(0)
@@ -81,9 +89,10 @@ export function Login() {
   if (needsSetup) return <Navigate to="/setup" replace />
   if (user) return <Navigate to={nextRouteAfterLogin(user, from)} replace />
 
-  const finish = (u: User) => {
+  const finish = (env: LoginEnvelope) => {
+    const u = envelopeUser(env)
     completeLogin(u)
-    navigate(nextRouteAfterLogin(u, from), { replace: true })
+    navigate(nextRouteAfterLogin(u, from, env.return_to), { replace: true })
   }
 
   const submitPassword = async (e: FormEvent) => {
@@ -91,7 +100,7 @@ export function Login() {
     setBusy(true)
     dispatch({ type: 'submitted' })
     try {
-      const r = await login(email.trim(), password)
+      const r = useDirectory ? await loginLdap(username.trim(), password) : await login(email.trim(), password)
       if (r.kind === 'ok') {
         dispatch({ type: 'ok', user: r.user })
         navigate(nextRouteAfterLogin(r.user, from), { replace: true })
@@ -112,9 +121,9 @@ export function Login() {
     setBusy(true)
     dispatch({ type: 'submitted' })
     try {
-      const { user: u } = await api.post<{ user: User }>('/api/auth/2fa/verify', { challenge_id: state.challengeId, code: code.replace(/\s+/g, '') })
-      dispatch({ type: 'ok', user: u })
-      finish(u)
+      const env = await api.post<LoginEnvelope>('/api/auth/2fa/verify', { challenge_id: state.challengeId, code: code.replace(/\s+/g, '') })
+      dispatch({ type: 'ok', user: env.user })
+      finish(env)
     } catch (err) {
       dispatch(failedEvent(err))
       setCode('')
@@ -130,9 +139,9 @@ export function Login() {
     try {
       const options = await api.post<JsonRequestOptions>('/api/auth/2fa/passkey/start', { challenge_id: state.challengeId })
       const credential = await getCredential(options)
-      const { user: u } = await api.post<{ user: User }>('/api/auth/2fa/passkey/finish', { challenge_id: state.challengeId, credential })
-      dispatch({ type: 'ok', user: u })
-      finish(u)
+      const env = await api.post<LoginEnvelope>('/api/auth/2fa/passkey/finish', { challenge_id: state.challengeId, credential })
+      dispatch({ type: 'ok', user: env.user })
+      finish(env)
     } catch (err) {
       if (err instanceof ApiError) dispatch(failedEvent(err))
       else dispatch({ type: 'failed', status: 0, code: 'webauthn', message: friendlyWebAuthnError(err).message })
@@ -145,11 +154,13 @@ export function Login() {
     setBusy(true)
     dispatch({ type: 'submitted' })
     try {
-      const options = await api.post<JsonRequestOptions>('/api/auth/passkeys/login/start', {})
+      const options = await api.post<JsonRequestOptions & { challenge_id?: string }>('/api/auth/passkeys/login/start', {})
       const credential = await getCredential(options)
-      const { user: u } = await api.post<{ user: User }>('/api/auth/passkeys/login/finish', credential)
-      dispatch({ type: 'ok', user: u })
-      finish(u)
+      // Newer servers hand out a challenge id with the options and expect it back with the assertion.
+      const body = options.challenge_id ? { challenge_id: options.challenge_id, credential } : credential
+      const env = await api.post<LoginEnvelope>('/api/auth/passkeys/login/finish', body)
+      dispatch({ type: 'ok', user: env.user })
+      finish(env)
     } catch (err) {
       if (err instanceof ApiError) dispatch(failedEvent(err))
       else dispatch({ type: 'failed', status: 0, code: 'webauthn', message: friendlyWebAuthnError(err).message })
@@ -162,6 +173,11 @@ export function Login() {
   const ssoReturn = encodeURIComponent(from && from.startsWith('/') && !from.startsWith('//') ? from : '/devices')
   const showSso = !!(p.oidc || p.saml)
   const showPasskey = canWebAuthn && p.passkeys
+  const showLdap = !!p.ldap
+  const localAvailable = p.local_login || breakGlass
+  // Directory sign-in is the only credential form when passwords are off; otherwise it is a toggle.
+  const useDirectory = showLdap && (directory || !localAvailable)
+  const policyNote = require2faText(p.require_2fa)
 
   if (state.step === 'second_factor') {
     return (
@@ -266,21 +282,53 @@ export function Login() {
             <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
           </div>
         )}
-        {p.local_login || breakGlass ? (
-          <form onSubmit={submitPassword} className="flex flex-col gap-3">
-            <Field label="Email">
-              <Input type="email" autoComplete="username webauthn" autoFocus={!showSso} required value={email} onChange={(e) => setEmail(e.target.value)} />
-            </Field>
+        {localAvailable || showLdap ? (
+          <form onSubmit={submitPassword} className="flex flex-col gap-3" data-testid={useDirectory ? 'ldap-form' : 'password-form'}>
+            {showLdap && localAvailable && (
+              <div className="flex rounded-md border border-line p-0.5 text-[12.5px]" role="tablist" aria-label="Account type">
+                {(
+                  [
+                    ['local', 'Console account'],
+                    ['ldap', p.ldap?.display_name || 'Directory account'],
+                  ] as const
+                ).map(([k, label]) => (
+                  <button
+                    key={k}
+                    type="button"
+                    role="tab"
+                    aria-selected={useDirectory === (k === 'ldap')}
+                    onClick={() => setDirectory(k === 'ldap')}
+                    className={`flex-1 rounded px-2 py-1 ${useDirectory === (k === 'ldap') ? 'bg-accent-soft text-ink font-medium' : 'text-ink-muted hover:text-ink'}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
+            {useDirectory ? (
+              <Field label="Username" hint={p.ldap?.display_name ? `Your ${p.ldap.display_name} account` : undefined}>
+                <Input autoComplete="username" autoFocus={!showSso} required value={username} onChange={(e) => setUsername(e.target.value)} data-testid="ldap-username" />
+              </Field>
+            ) : (
+              <Field label="Email">
+                <Input type="email" autoComplete="username webauthn" autoFocus={!showSso} required value={email} onChange={(e) => setEmail(e.target.value)} />
+              </Field>
+            )}
             <Field label="Password">
               <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
             </Field>
             {state.error && <ErrorBox>{state.error}</ErrorBox>}
-            <Button type="submit" variant="primary" loading={busy} disabled={!!state.lockedForS} className="mt-1">
-              Sign in
+            <Button type="submit" variant="primary" loading={busy} disabled={!!state.lockedForS} className="mt-1" icon={useDirectory ? <Building2 size={14} /> : undefined}>
+              {useDirectory ? `Sign in with ${p.ldap?.display_name || 'directory account'}` : 'Sign in'}
             </Button>
           </form>
         ) : (
           !showSso && !showPasskey && <ErrorBox>No sign-in method is available. An administrator needs to enable single sign-on or password login.</ErrorBox>
+        )}
+        {policyNote && (
+          <p className="text-[12px] text-ink-faint" data-testid="require-2fa-note">
+            {policyNote}
+          </p>
         )}
         {!p.local_login && !breakGlass && (
           <p className="text-[12px] text-ink-faint">

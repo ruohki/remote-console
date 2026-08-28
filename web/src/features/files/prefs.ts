@@ -58,3 +58,14 @@ export function readDrawerWidth(): number {
 export function writeDrawerWidth(n: number) {
   write(WIDTH_KEY, String(clampDrawerWidth(n)))
 }
+
+const QUEUE_KEY = 'remote.files.queueOpen'
+
+/** Whether the file manager's transfer list is expanded (open by default). */
+export function readQueueOpen(): boolean {
+  return read(QUEUE_KEY) !== '0'
+}
+
+export function writeQueueOpen(open: boolean) {
+  write(QUEUE_KEY, open ? null : '0')
+}

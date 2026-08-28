@@ -4,12 +4,15 @@ import type { ApiErrorBody } from './types'
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
+  /** Seconds to wait, from a `Retry-After` header (rate limits / lockouts). */
+  readonly retryAfterS?: number
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, retryAfterS?: number) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    if (retryAfterS !== undefined) this.retryAfterS = retryAfterS
   }
 
   get isUnauthorized() {
@@ -77,9 +80,19 @@ async function requestWithStatus<T>(method: string, path: string, body?: unknown
     if (res.status === 403 && code === 'two_factor_required' && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('console:two-factor-required'))
     }
-    throw new ApiError(res.status, code, err?.message ?? res.statusText ?? 'Request failed')
+    throw new ApiError(res.status, code, err?.message ?? res.statusText ?? 'Request failed', parseRetryAfter(res.headers.get('Retry-After')))
   }
   return { status: res.status, data: json as T }
+}
+
+/** `Retry-After` is either delta-seconds or an HTTP date. */
+export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined
+  const v = value.trim()
+  if (/^\d+$/.test(v)) return Number(v)
+  const t = Date.parse(v)
+  if (Number.isNaN(t)) return undefined
+  return Math.max(0, Math.ceil((t - now) / 1000))
 }
 
 export const api = {

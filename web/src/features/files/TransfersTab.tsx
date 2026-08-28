@@ -26,6 +26,7 @@ export function TransfersTab({
   onResetDest,
   onChangeCompression,
   onReveal,
+  hint = 'or drop files anywhere',
 }: {
   deviceId: string
   destDir: string | null
@@ -34,6 +35,8 @@ export function TransfersTab({
   onResetDest: () => void
   onChangeCompression: (p: CompressionPref) => void
   onReveal: (dir: string) => void
+  /** Text next to the "Send files…" button. */
+  hint?: string
 }) {
   const transfers = useFiles((s) => s.transfers)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -74,7 +77,7 @@ export function TransfersTab({
           Send files…
         </Button>
         <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => onPick(e.target.files)} data-testid="send-files-input" />
-        <span className="text-[11.5px] text-[#6b7381]">or drop files anywhere</span>
+        <span className="text-[11.5px] text-[#6b7381]">{hint}</span>
         <span className="ml-auto flex items-center gap-1">
           {failed.length > 0 && failed.some((t) => t.resumable) && (
             <button onClick={() => transferManager.retryFailed()} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-[#9aa3b2] hover:bg-white/10 hover:text-white" title="Retry every failed transfer">
@@ -143,7 +146,7 @@ export function TransfersTab({
           <div className="flex flex-col items-center gap-2 px-6 py-10 text-center text-[#6b7381]">
             <Inbox size={28} className="text-[#3b4250]" />
             <div className="text-[13px] text-[#9aa3b2]">No transfers yet</div>
-            <div className="text-[12px]">Drop files on the screen or the drawer to send them, or fetch files from the Browse tab.</div>
+            <div className="text-[12px]">Drop files on the screen or the device pane to send them; double-click or fetch files on the device to bring them here.</div>
           </div>
         )}
         {active.length > 0 && (
