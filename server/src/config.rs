@@ -22,6 +22,8 @@ pub struct Config {
     pub agent_download_base: String,
     /// Lifetime of a login session.
     pub session_ttl_hours: i64,
+    /// Optional directory holding base agent binaries to bake (release-named files).
+    pub agent_binary_dir: Option<PathBuf>,
 }
 
 pub const DEFAULT_PUBLIC_URL: &str = "http://localhost:8080";
@@ -60,6 +62,11 @@ impl Config {
                 .trim_end_matches('/')
                 .to_string(),
             session_ttl_hours: session_ttl_hours.max(1),
+            agent_binary_dir: std::env::var("AGENT_BINARY_DIR")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from),
         })
     }
 
@@ -74,7 +81,17 @@ impl Config {
             stun_urls: split_list(DEFAULT_STUN_URLS),
             agent_download_base: DEFAULT_AGENT_DOWNLOAD_BASE.to_string(),
             session_ttl_hours: DEFAULT_SESSION_TTL_HOURS,
+            agent_binary_dir: None,
         }
+    }
+
+    /// Directory for server-managed data (agent cache, etc.). Derived from the SQLite path's
+    /// parent, else `data/`.
+    pub fn data_dir(&self) -> PathBuf {
+        self.sqlite_path()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .filter(|d| !d.as_os_str().is_empty())
+            .unwrap_or_else(|| PathBuf::from("data"))
     }
 
     /// Whether cookies must carry the `Secure` attribute.

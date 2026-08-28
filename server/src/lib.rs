@@ -1,6 +1,7 @@
 //! remote-console library: everything except the CLI entry point lives here so the
 //! integration tests can build the application in-process.
 
+pub mod agent_bakery;
 pub mod api;
 pub mod app;
 pub mod auth;

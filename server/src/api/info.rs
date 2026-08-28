@@ -12,14 +12,32 @@ pub struct Info {
     pub public_url: String,
     pub stun_urls: Vec<String>,
     pub turn_enabled: bool,
+    pub console_public_key: String,
+    pub branding_product_name: String,
 }
 
 pub async fn info(State(state): State<AppState>) -> Json<Info> {
+    use base64::Engine;
+    let (public_key, product_name) = match (
+        crate::db::settings::signing_key(&state.db).await,
+        crate::db::settings::branding(&state.db).await,
+    ) {
+        (Ok(key), Ok(branding)) => (
+            base64::engine::general_purpose::STANDARD.encode(key.verifying_key().as_bytes()),
+            branding.product_name,
+        ),
+        _ => (
+            String::new(),
+            crate::db::settings::default_branding().product_name,
+        ),
+    };
     Json(Info {
         version: crate::VERSION,
         protocol_version: protocol::PROTOCOL_VERSION,
         public_url: state.config.public_url.clone(),
         stun_urls: state.config.stun_urls.clone(),
         turn_enabled: state.config.turn_enabled(),
+        console_public_key: public_key,
+        branding_product_name: product_name,
     })
 }

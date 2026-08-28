@@ -70,11 +70,38 @@ pub async fn validate_token(
     Ok(row)
 }
 
-fn render(template: &str, server_url: &str, token: &str, download_base: &str) -> String {
+fn render(
+    template: &str,
+    server_url: &str,
+    token: &str,
+    download_base: &str,
+    use_console: &str,
+) -> String {
     template
         .replace("{{SERVER_URL}}", server_url)
         .replace("{{TOKEN}}", token)
         .replace("{{DOWNLOAD_BASE}}", download_base)
+        .replace("{{USE_CONSOLE}}", use_console)
+}
+
+/// Console-available platforms as the flag each script expects.
+async fn console_available(state: &AppState, windows: bool) -> String {
+    let avail = state.bakery.availability(&state.config).await;
+    let ok = |slug: &str| avail.iter().any(|a| a.platform == slug && a.available);
+    if windows {
+        let mut arches = Vec::new();
+        if ok("windows-x86_64") {
+            arches.push("x86_64");
+        }
+        if ok("windows-aarch64") {
+            arches.push("aarch64");
+        }
+        arches.join(",")
+    } else if ok("macos-universal") {
+        "1".to_string()
+    } else {
+        "0".to_string()
+    }
 }
 
 /// Tokens are base62 by construction; refuse anything else so they cannot break out
@@ -100,6 +127,7 @@ pub async fn install_sh(State(state): State<AppState>, Query(q): Query<InstallQu
             &state.config.public_url,
             token,
             &state.config.agent_download_base,
+            &console_available(&state, false).await,
         ),
         Ok(_) => error_sh(TokenProblem::Unknown.message()),
         Err(problem) => error_sh(problem.message()),
@@ -115,6 +143,7 @@ pub async fn install_ps1(State(state): State<AppState>, Query(q): Query<InstallQ
             &state.config.public_url,
             token,
             &state.config.agent_download_base,
+            &console_available(&state, true).await,
         ),
         Ok(_) => error_ps1(TokenProblem::Unknown.message()),
         Err(problem) => error_ps1(problem.message()),
@@ -151,7 +180,7 @@ mod tests {
     #[test]
     fn templates_render_all_placeholders() {
         for t in [SH_TEMPLATE, PS1_TEMPLATE] {
-            let out = render(t, "https://c.example", "abc123", "https://dl.example");
+            let out = render(t, "https://c.example", "abc123", "https://dl.example", "1");
             assert!(!out.contains("{{"));
             assert!(out.contains("https://c.example"));
             assert!(out.contains("abc123"));

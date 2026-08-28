@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $ServerUrl    = '{{SERVER_URL}}'
 $Token        = '{{TOKEN}}'
 $DownloadBase = '{{DOWNLOAD_BASE}}'
+$UseConsole   = '{{USE_CONSOLE}}'   # comma list of console-available arches, e.g. "x86_64,aarch64"
 $InstallDir   = Join-Path $env:ProgramFiles 'RemoteAgent'
 $Binary       = Join-Path $InstallDir 'remote-agent.exe'
 
@@ -20,24 +21,29 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $arch = $env:PROCESSOR_ARCHITECTURE
 if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
 switch ($arch) {
-    'AMD64' { $Asset = 'remote-agent-windows-x86_64.exe' }
-    'ARM64' { $Asset = 'remote-agent-windows-aarch64.exe' }
+    'AMD64' { $Asset = 'remote-agent-windows-x86_64.exe';  $Slug = 'windows-x86_64';  $ArchKey = 'x86_64' }
+    'ARM64' { $Asset = 'remote-agent-windows-aarch64.exe'; $Slug = 'windows-aarch64'; $ArchKey = 'aarch64' }
     default { Fail "unsupported architecture: $arch" }
 }
+$Console = ($UseConsole -split ',') -contains $ArchKey
 
 $Tmp = Join-Path $env:TEMP ("remote-agent-" + [Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $Tmp | Out-Null
 try {
-    Write-Step "Downloading $Asset from $DownloadBase"
-    Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/$Asset" -OutFile (Join-Path $Tmp $Asset)
-    Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/SHA256SUMS" -OutFile (Join-Path $Tmp 'SHA256SUMS')
-
-    Write-Step 'Verifying checksum'
-    $line = Get-Content (Join-Path $Tmp 'SHA256SUMS') | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1
-    if (-not $line) { Fail "no checksum for $Asset in SHA256SUMS" }
-    $expected = ($line -split '\s+')[0].ToLower()
-    $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $Tmp $Asset)).Hash.ToLower()
-    if ($expected -ne $actual) { Fail "checksum mismatch (expected $expected, got $actual)" }
+    if ($Console) {
+        Write-Step "Downloading branded agent from $ServerUrl"
+        Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/api/agent/download/$Slug`?token=$Token" -OutFile (Join-Path $Tmp $Asset)
+    } else {
+        Write-Step "Downloading $Asset from $DownloadBase"
+        Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/$Asset" -OutFile (Join-Path $Tmp $Asset)
+        Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/SHA256SUMS" -OutFile (Join-Path $Tmp 'SHA256SUMS')
+        Write-Step 'Verifying checksum'
+        $line = Get-Content (Join-Path $Tmp 'SHA256SUMS') | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1
+        if (-not $line) { Fail "no checksum for $Asset in SHA256SUMS" }
+        $expected = ($line -split '\s+')[0].ToLower()
+        $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $Tmp $Asset)).Hash.ToLower()
+        if ($expected -ne $actual) { Fail "checksum mismatch (expected $expected, got $actual)" }
+    }
 
     Write-Step "Installing to $Binary"
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -52,9 +58,15 @@ try {
         [Environment]::SetEnvironmentVariable('Path', "$machinePath;$InstallDir", 'Machine')
     }
 
-    Write-Step "Enrolling with $ServerUrl"
-    & $Binary enroll --server $ServerUrl --token $Token
-    if ($LASTEXITCODE -ne 0) { Fail 'enrollment failed' }
+    # A baked binary carries a signed trailer and enrolls itself; otherwise enroll explicitly.
+    & $Binary bake-info *> $null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Step 'Branded build detected; it will enroll itself'
+    } else {
+        Write-Step "Enrolling with $ServerUrl"
+        & $Binary enroll --server $ServerUrl --token $Token
+        if ($LASTEXITCODE -ne 0) { Fail 'enrollment failed' }
+    }
 
     Write-Step 'Installing Windows service'
     & $Binary service install

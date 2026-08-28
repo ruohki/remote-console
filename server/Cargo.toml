@@ -43,6 +43,7 @@ sha1 = "0.10"
 time = "0.3"
 hex = "0.4"
 base64 = "0.22"
+ed25519-dalek = { version = "2", features = ["std"] }
 subtle = "2.6"
 
 tracing = "0.1"
@@ -59,6 +60,7 @@ parking_lot = "0.12"
 url = "2.5"
 ipnet = "2.11"
 async-trait = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 
 [dev-dependencies]
 tempfile = "3.24"

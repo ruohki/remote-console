@@ -1,5 +1,6 @@
 //! Application state and router assembly.
 
+use crate::agent_bakery::Bakery;
 use crate::auth::LoginLimiter;
 use crate::config::Config;
 use crate::db::Db;
@@ -20,6 +21,7 @@ pub struct AppState {
     pub db: Db,
     pub hub: Arc<Hub>,
     pub limiter: Arc<LoginLimiter>,
+    pub bakery: Arc<Bakery>,
 }
 
 impl AppState {
@@ -41,6 +43,7 @@ impl AppState {
             db,
             hub,
             limiter: Arc::new(LoginLimiter::default()),
+            bakery: Bakery::new(),
         })
     }
 }

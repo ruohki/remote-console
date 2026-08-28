@@ -1877,3 +1877,246 @@ async fn groups_and_rbac_enforcement() {
     }
     drop(admin_cookie);
 }
+
+// ── branding & agent bakery ─────────────────────────────────────────────────────────
+
+/// Spawn an app whose config points `AGENT_BINARY_DIR` at a temp dir seeded with a fake
+/// macOS base binary, so baking has something to append to without any network.
+async fn spawn_app_with_binaries() -> (TestApp, Vec<u8>) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("console.db");
+    let bin_dir = dir.path().join("bins");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let base = b"\x7fELF fake-remote-agent base binary".to_vec();
+    std::fs::write(bin_dir.join("remote-agent-macos-universal"), &base).unwrap();
+
+    let mut config = Config::for_tests(format!("sqlite://{}?mode=rwc", db_path.display()));
+    config.agent_binary_dir = Some(bin_dir);
+    let state = AppState::init(config).await.expect("state");
+    let app = build_router(state);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+    (
+        TestApp {
+            base: format!("http://{addr}"),
+            ws_base: format!("ws://{addr}"),
+            _dir: dir,
+        },
+        base,
+    )
+}
+
+#[tokio::test]
+async fn branding_and_agent_bakery() {
+    use base64::Engine;
+    use protocol::bakery::{read_trailer, verify_payload};
+
+    let (app, base) = spawn_app_with_binaries().await;
+    let admin = client();
+    let cookie = setup_admin(&app, &admin).await;
+
+    // default branding is public
+    let b: Value = admin
+        .get(format!("{}/api/branding", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(b["product_name"], "Remote Console");
+
+    // update branding (admin)
+    let r = admin
+        .put(format!("{}/api/branding", app.base))
+        .json(&json!({ "product_name": "Acme Remote", "accent": "#12ab34", "support_text": "call us", "organization": "Acme" }))
+        .send().await.unwrap();
+    assert_eq!(r.status(), 200);
+    // public read reflects it
+    let pub_b: Value = reqwest::Client::new()
+        .get(format!("{}/api/branding", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(pub_b["product_name"], "Acme Remote");
+    assert_eq!(pub_b["accent"], "#12ab34");
+
+    // info exposes the public key
+    let info: Value = reqwest::Client::new()
+        .get(format!("{}/api/info", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let pk_b64 = info["console_public_key"].as_str().unwrap().to_string();
+    assert!(!pk_b64.is_empty());
+    assert_eq!(info["branding_product_name"], "Acme Remote");
+
+    // downloads listing (admin) shows the local macOS binary available
+    let downloads: Vec<Value> = admin
+        .get(format!("{}/api/agent/downloads", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let mac = downloads
+        .iter()
+        .find(|d| d["platform"] == "macos-universal")
+        .unwrap();
+    assert_eq!(mac["available"], true);
+    assert_eq!(mac["source"], "local");
+
+    // bake with a valid token (admin cookie path)
+    let token = create_token(&app, &admin, "unattended").await;
+    let token_str = token["token"].as_str().unwrap().to_string();
+    let resp = admin
+        .get(format!(
+            "{}/api/agent/download/macos-universal?token={token_str}&quick=1",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let cd = resp
+        .headers()
+        .get("content-disposition")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        cd.contains("Acme-Remote-macos-universal"),
+        "disposition: {cd}"
+    );
+    let baked = resp.bytes().await.unwrap().to_vec();
+    assert!(
+        baked.len() > base.len(),
+        "baked binary should be larger than the base"
+    );
+    assert_eq!(&baked[..base.len()], &base[..], "base bytes preserved");
+
+    // trailer verifies against the console key and carries our config
+    let payload = read_trailer(&baked).unwrap().expect("trailer present");
+    let key = verify_payload(&payload).expect("signature valid");
+    assert_eq!(
+        base64::engine::general_purpose::STANDARD.encode(key.as_bytes()),
+        pk_b64
+    );
+    assert_eq!(payload.config.server_url, "http://localhost:8080");
+    assert_eq!(
+        payload.config.enroll_token.as_deref(),
+        Some(token_str.as_str())
+    );
+    assert!(payload.config.quick_support);
+    assert_eq!(payload.config.branding.product_name, "Acme Remote");
+
+    // token-only download (no cookie) works too
+    let anon = reqwest::Client::new();
+    let r = anon
+        .get(format!(
+            "{}/api/agent/download/macos-universal?token={token_str}",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // no auth at all → 401
+    let r = anon
+        .get(format!("{}/api/agent/download/macos-universal", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+
+    // unknown platform → 404
+    let r = admin
+        .get(format!("{}/api/agent/download/linux-x86_64", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+
+    // windows arch with no base binary → 404 (helpful, not 500)
+    let r = admin
+        .get(format!(
+            "{}/api/agent/download/windows-x86_64?token={token_str}",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+
+    // exhausted token → 410
+    let one_use = create_token_max1(&app, &admin).await;
+    let _ = enroll(&app, &one_use).await; // consumes the single use
+    let r = anon
+        .get(format!(
+            "{}/api/agent/download/macos-universal?token={one_use}",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 410);
+
+    // branding.update + agent.bake audited
+    let audit: Vec<Value> = admin
+        .get(format!("{}/api/audit?limit=200", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for action in ["branding.update", "agent.bake"] {
+        assert!(
+            audit.iter().any(|a| a["action"] == action),
+            "missing audit {action}"
+        );
+    }
+
+    // install.sh renders the console download URL when a base binary is available
+    let script = anon
+        .get(format!("{}/install.sh?token={token_str}", app.base))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        script.contains("/api/agent/download/macos-universal"),
+        "script:\n{script}"
+    );
+
+    drop(cookie);
+}
+
+async fn create_token_max1(app: &TestApp, c: &reqwest::Client) -> String {
+    let v: Value = c
+        .post(format!("{}/api/enroll-tokens", app.base))
+        .json(&json!({ "label": "one", "default_mode": "unattended", "default_tags": [], "max_uses": 1 }))
+        .send().await.unwrap().json().await.unwrap();
+    v["token"].as_str().unwrap().to_string()
+}

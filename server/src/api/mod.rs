@@ -1,7 +1,9 @@
 //! REST API (`/api/*`). Paths and bodies follow `API.md`.
 
+pub mod agent;
 pub mod audit;
 pub mod auth;
+pub mod branding;
 pub mod devices;
 pub mod enroll;
 pub mod groups;
@@ -21,6 +23,9 @@ pub fn router() -> Router<AppState> {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/info", get(info::info))
+        .route("/branding", get(branding::get).put(branding::put))
+        .route("/agent/downloads", get(agent::downloads))
+        .route("/agent/download/{platform}", get(agent::download))
         .route("/users", get(users::list).post(users::create))
         .route(
             "/users/{id}",

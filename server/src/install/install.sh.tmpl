@@ -6,6 +6,7 @@ set -eu
 SERVER_URL="{{SERVER_URL}}"
 TOKEN="{{TOKEN}}"
 DOWNLOAD_BASE="{{DOWNLOAD_BASE}}"
+USE_CONSOLE="{{USE_CONSOLE}}"
 INSTALL_DIR="/usr/local/bin"
 BINARY="$INSTALL_DIR/remote-agent"
 ASSET="remote-agent-macos-universal"
@@ -20,15 +21,20 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 TMP="$(mktemp -d /tmp/remote-agent.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
-log "Downloading $ASSET from $DOWNLOAD_BASE"
-curl -fsSL --retry 3 -o "$TMP/$ASSET" "$DOWNLOAD_BASE/$ASSET" || fail "download failed: $DOWNLOAD_BASE/$ASSET"
-curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$DOWNLOAD_BASE/SHA256SUMS" || fail "download failed: $DOWNLOAD_BASE/SHA256SUMS"
-
-log "Verifying checksum"
-EXPECTED="$(grep " $ASSET\$" "$TMP/SHA256SUMS" | awk '{print $1}' | head -n 1)"
-[ -n "$EXPECTED" ] || fail "no checksum for $ASSET in SHA256SUMS"
-ACTUAL="$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')"
-[ "$EXPECTED" = "$ACTUAL" ] || fail "checksum mismatch (expected $EXPECTED, got $ACTUAL)"
+if [ "$USE_CONSOLE" = "1" ]; then
+    log "Downloading branded agent from $SERVER_URL"
+    curl -fsSL --retry 3 -o "$TMP/$ASSET" "$SERVER_URL/api/agent/download/macos-universal?token=$TOKEN" \
+        || fail "download failed from the console"
+else
+    log "Downloading $ASSET from $DOWNLOAD_BASE"
+    curl -fsSL --retry 3 -o "$TMP/$ASSET" "$DOWNLOAD_BASE/$ASSET" || fail "download failed: $DOWNLOAD_BASE/$ASSET"
+    curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$DOWNLOAD_BASE/SHA256SUMS" || fail "download failed: $DOWNLOAD_BASE/SHA256SUMS"
+    log "Verifying checksum"
+    EXPECTED="$(grep " $ASSET\$" "$TMP/SHA256SUMS" | awk '{print $1}' | head -n 1)"
+    [ -n "$EXPECTED" ] || fail "no checksum for $ASSET in SHA256SUMS"
+    ACTUAL="$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')"
+    [ "$EXPECTED" = "$ACTUAL" ] || fail "checksum mismatch (expected $EXPECTED, got $ACTUAL)"
+fi
 
 log "Installing to $BINARY"
 mkdir -p "$INSTALL_DIR"
@@ -38,8 +44,13 @@ fi
 install -m 755 "$TMP/$ASSET" "$BINARY"
 xattr -d com.apple.quarantine "$BINARY" >/dev/null 2>&1 || true
 
-log "Enrolling with $SERVER_URL"
-"$BINARY" enroll --server "$SERVER_URL" --token "$TOKEN"
+# A baked binary carries a signed trailer and enrolls itself; otherwise enroll explicitly.
+if "$BINARY" bake-info >/dev/null 2>&1; then
+    log "Branded build detected; it will enroll itself"
+else
+    log "Enrolling with $SERVER_URL"
+    "$BINARY" enroll --server "$SERVER_URL" --token "$TOKEN"
+fi
 
 log "Installing background service"
 "$BINARY" service install

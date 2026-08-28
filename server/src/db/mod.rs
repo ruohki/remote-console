@@ -6,6 +6,7 @@ pub mod groups;
 pub mod models;
 pub mod session_events;
 pub mod sessions;
+pub mod settings;
 pub mod tokens;
 pub mod users;
 
