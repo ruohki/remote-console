@@ -10,6 +10,9 @@
  */
 import { STRIP_CELLS, STRIP_CELL_PX, decodeStrip, percentile, stripLatencyMs } from './perf'
 
+/** Native width of the synthetic source frame the strip is laid out for. */
+const SOURCE_WIDTH_PX = 1920
+
 export interface LatencySample {
   at: number
   latencyMs: number
@@ -77,9 +80,12 @@ export class LatencyProbe {
     if (!ctx) return
     // Scale the strip (top-left 13 cells × 64 px) down to one pixel per cell: the average
     // luminance of a cell is robust against codec ringing at the cell edges.
-    const stripW = STRIP_CELLS * STRIP_CELL_PX
-    if (v.videoWidth < stripW) return
-    ctx.drawImage(v, 0, 8, stripW, STRIP_CELL_PX - 16, 0, 0, STRIP_CELLS, 1)
+    // The agent may encode a downscaled picture (viewport hint), so the strip geometry is
+    // scaled by the decoded width relative to the synthetic source's native 1920 px.
+    const scale = v.videoWidth / SOURCE_WIDTH_PX
+    if (!(scale > 0)) return
+    const stripW = STRIP_CELLS * STRIP_CELL_PX * scale
+    ctx.drawImage(v, 0, 8 * scale, stripW, (STRIP_CELL_PX - 16) * scale, 0, 0, STRIP_CELLS, 1)
     const data = ctx.getImageData(0, 0, STRIP_CELLS, 1).data
     const luma: number[] = []
     for (let i = 0; i < STRIP_CELLS; i++) {
