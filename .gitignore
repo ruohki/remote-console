@@ -1,0 +1,10 @@
+/target
+/server/target
+/web/node_modules
+/web/dist
+/data
+*.db
+*.db-*
+.env
+.DS_Store
+*.log

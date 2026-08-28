@@ -1,0 +1,58 @@
+[package]
+name = "remote-console"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "Management console for remote-agent: device registry, enrollment, WebRTC signaling hub and embedded web UI"
+
+[[bin]]
+name = "remote-console"
+path = "src/main.rs"
+
+[dependencies]
+# Shared wire protocol. Local dev: sibling checkout. CI clones remote-agent next to this repo.
+protocol = { path = "../../remote-agent/crates/protocol" }
+
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-extra = { version = "0.10", features = ["cookie", "typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "cors", "compression-gzip", "set-header"] }
+hyper = "1"
+tokio = { version = "1.53", features = ["full"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "sqlite", "postgres", "macros", "migrate", "chrono", "uuid", "json"] }
+
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.26", features = ["v4", "serde"] }
+
+argon2 = "0.6"
+rand = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+subtle = "2.6"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+
+anyhow = "1.0"
+thiserror = "2.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+dotenvy = "0.15"
+mime_guess = "2.0"
+rust-embed = { version = "8.12", features = ["include-exclude"] }
+dashmap = "6.1"
+parking_lot = "0.12"
+url = "2.5"
+ipnet = "2.11"
+async-trait = "0.1"
+
+[dev-dependencies]
+tempfile = "3.24"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
