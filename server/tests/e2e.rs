@@ -98,6 +98,7 @@ async fn enroll(app: &TestApp, token: &str) -> EnrollResponse {
             os: Os::Macos,
             arch: Arch::Aarch64,
             agent_version: "0.1.0".into(),
+            display_name: None,
         })
         .send()
         .await

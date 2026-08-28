@@ -50,12 +50,19 @@ pub async fn enroll(
     } else {
         hostname
     };
+    // Operator-facing name: `--name` from the installer/CLI when given, else the hostname.
+    let name = req
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .unwrap_or(hostname);
     let device_id = ids::device_id();
     let device_secret = ids::secret();
     let secret_hash = auth::hash_password(&device_secret)?;
 
     let config = AgentConfig {
-        display_name: hostname.to_string(),
+        display_name: name.to_string(),
         mode: token.default_mode(),
         ice_servers: crate::turn::ice_servers(&state.config, &device_id, 0)
             .into_iter()
@@ -69,7 +76,7 @@ pub async fn enroll(
         &state.db,
         NewDevice {
             id: &device_id,
-            name: hostname,
+            name,
             hostname,
             os: req.os,
             arch: req.arch,

@@ -18,7 +18,7 @@ Configuration is via environment variables (see `.env.example`):
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `CONSOLE_PUBLIC_URL` | `http://localhost:8080` | URL agents and install scripts use |
-| `DATABASE_URL` | `sqlite:///data/console.db` | SQLite (default) or `postgres://…` |
+| `DATABASE_URL` | `sqlite://data/console.db?mode=rwc` | SQLite (Postgres support is compiled in but not wired up yet) |
 | `LISTEN_ADDR` | `0.0.0.0:8080` | HTTP/WebSocket listener |
 | `TURN_URLS` | – | e.g. `turn:turn.example.com:3478?transport=udp,turns:…:5349` |
 | `TURN_SECRET` | – | coturn `static-auth-secret` for short-lived credentials |
