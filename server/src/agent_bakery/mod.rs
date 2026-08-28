@@ -510,6 +510,7 @@ mod tests {
                 apply_to_console: true,
             },
             issued_at,
+            console_tls_spki_sha256: None,
         };
         assert_eq!(
             bundle_cache_key(b"bin", &mk(1, "A")),

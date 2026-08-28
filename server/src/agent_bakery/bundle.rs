@@ -398,6 +398,7 @@ mod tests {
                     apply_to_console: true,
                 },
                 issued_at: 1,
+                console_tls_spki_sha256: None,
             },
             &key,
         )
