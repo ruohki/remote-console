@@ -280,13 +280,13 @@ function BrowseTab() {
   }, [listing?.path])
 
   const open = (e: FileEntry) => {
-    if (e.is_dir) requestListing(atRoots ? e.name : join(listing!.path, e.name))
+    if (e.is_dir) requestListing(atRoots ? (e.path ?? e.name) : join(listing!.path, e.name))
     else void download(e)
   }
 
   const download = async (e: FileEntry) => {
     const size = Number(e.size)
-    const remotePath = atRoots ? e.name : join(listing!.path, e.name)
+    const remotePath = atRoots ? (e.path ?? e.name) : join(listing!.path, e.name)
     if (fileSystemAccessAvailable()) {
       const handle = await pickSaveFile(e.name)
       if (!handle) return
