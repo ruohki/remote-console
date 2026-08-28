@@ -143,6 +143,19 @@ Audit actions: `group.create|update|delete|members|grants`, `device.groups`.
 
 Sessions are *created* over `/ws/ui` (see below), never over REST.
 
+## Session shadowing (admin)
+
+An admin can watch a running operator session. The browser sends
+`session_offer { device_id, shadow_of: <operator session id> }` (admins only, else `forbidden`);
+the console creates a second session row with `role = observer`, forwards
+`session_request { role: observer, shadow_of, notify_operator }` to the agent (which fans out
+the same encoded video/audio to the extra peer and ignores its `input` channel), lists the admin in
+the operator session's `SessionSummary.observers`, and — when `notify_operator` (console setting
+`SHADOW_NOTIFY_OPERATOR`, default `true`) — the operator's viewer receives
+`ControlMessage::ObserverJoined/Left` from the agent. Audit: `session.shadow` (start/stop);
+timeline: `observer_joined` / `observer_left`. Ending the operator session ends its observers.
+`POST /api/sessions/:id/end` on an operator session by an admin remains the "kill switch".
+
 ## Session events (operator+)
 
 `GET /api/sessions/:id/events?limit=500` → `{ id: number, session_id, ts, event: protocol.SessionEvent }[]`
