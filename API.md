@@ -164,6 +164,42 @@ Install scripts (`/install.sh`, `/install.ps1`) download the **baked** binary fr
 binary is available) and then only run `remote-agent service install`; the agent enrolls itself
 from the trailer token when it is not enrolled yet. Audit: `branding.update`, `agent.bake`.
 
+## Device-side overrides
+
+The person at the device can restrict what operators may do from the agent app's Settings
+screen (`protocol.LocalOverrides`: require approval, block input / audio / clipboard / file
+transfer). Overrides can only **tighten** the console config; they are reported in `hello`
+and `heartbeat` and exposed read-only as `DeviceSummary.local_overrides` so admins see the
+effective policy (the device detail page shows them next to the console config, and the
+config form no longer has a banner toggle — the branded banner is always shown).
+
+## macOS app bundle & code signing
+
+For `macos-universal` the bakery returns a **zip** (`<Product>.zip`, `application/zip`)
+containing `<Product>.app` (`Contents/Info.plist` with `CFBundleName`/`CFBundleIdentifier`
+`com.remoteagent.<slug>`, `LSUIElement` false, `Contents/MacOS/remote-agent`,
+`Contents/Resources/baked.json` = the signed `BakedPayload` as a sidecar, `Contents/Resources/AppIcon.icns`
+from the branding logo when present). The agent reads the sidecar when running from a bundle,
+else the executable trailer. When signing is configured the console signs and notarizes the
+bundle before zipping:
+
+| Variable | Purpose |
+|----------|---------|
+| `MACOS_SIGN_IDENTITY` | e.g. `Developer ID Application: Name (TEAMID)`; uses `codesign` when running on macOS, else `rcodesign` with `MACOS_SIGN_P12` + `MACOS_SIGN_P12_PASSWORD` |
+| `MACOS_NOTARY_PROFILE` | `notarytool` keychain profile (macOS host); or `APPLE_API_KEY_JSON` for `rcodesign notary-submit` |
+
+`GET /api/agent/downloads` reports `signed: boolean` and `notarized: boolean` per platform (from
+the last bake) and the bake endpoint accepts `?sign=0` to skip signing. Unsigned bundles are
+still produced (Gatekeeper then requires "Open Anyway"). Windows Authenticode signing:
+`WINDOWS_SIGN_PFX` + `WINDOWS_SIGN_PFX_PASSWORD` via `osslsigncode` when available (optional).
+
+## List pagination
+
+`GET /api/sessions?limit=50&before=<started_at ISO>` and `GET /api/devices/:id/sessions?limit=&before=`
+return rows ordered by `started_at` desc; pass the last row's `started_at` as `before` for the
+next page. `GET /api/audit?limit=100&before=<id>` unchanged. Responses stay plain arrays; a page
+shorter than `limit` is the last one.
+
 ## Session shadowing (admin)
 
 An admin can watch a running operator session. The browser sends
