@@ -134,6 +134,7 @@ pub struct ConfigPatch {
     /// `""` (or whitespace) clears the override back to the agent default.
     pub transfer_dir: Option<String>,
     pub allow_audio: Option<bool>,
+    pub allow_annotations: Option<bool>,
 }
 
 impl ConfigPatch {
@@ -203,6 +204,9 @@ impl ConfigPatch {
         if let Some(v) = self.allow_audio {
             cfg.allow_audio = v;
         }
+        if let Some(v) = self.allow_annotations {
+            cfg.allow_annotations = v;
+        }
         Ok(cfg)
     }
 }
@@ -230,6 +234,7 @@ pub async fn update_config(
             "allow_file_transfer": new_config.allow_file_transfer,
             "transfer_dir": new_config.transfer_dir,
             "allow_audio": new_config.allow_audio,
+            "allow_annotations": new_config.allow_annotations,
         }),
     )
     .await?;
