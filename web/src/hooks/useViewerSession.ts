@@ -99,6 +99,7 @@ const CONNECT_TIMEOUT_MS = 30_000
 const ERROR_TEXT: Record<string, string> = {
   device_offline: 'The device is offline.',
   device_busy: 'Someone else is already connected to this device.',
+  forbidden: "You don't have connect permission for this device — ask an admin.",
   denied: 'The person at the device declined the request.',
   approval_timeout: 'Nobody answered at the device.',
   agent_error: 'The agent reported an error.',

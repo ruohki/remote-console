@@ -6,7 +6,7 @@ import { api, errorMessage } from '@/lib/api'
 import type { EnrollToken, ServerInfo } from '@/lib/types'
 import { useIsAdmin } from '@/store/auth'
 import { Badge, Button, ConfirmDialog, EmptyState, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
-import { ModeBadge, Tags } from '@/components/badges'
+import { GroupChips, ModeBadge, Tags } from '@/components/badges'
 import { AddDeviceDialog } from '@/components/AddDeviceDialog'
 import { dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
@@ -158,6 +158,7 @@ function TokensTab() {
                 <Td className="hidden md:table-cell">
                   <div className="flex items-center gap-2">
                     <ModeBadge mode={t.default_mode} />
+                    {t.default_group && <GroupChips groups={[t.default_group]} />}
                     <Tags tags={t.default_tags} />
                   </div>
                 </Td>

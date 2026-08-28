@@ -25,6 +25,32 @@ export interface EnrollToken {
   revoked: boolean
   default_mode: DeviceMode
   default_tags: string[]
+  default_group?: { id: string; name: string } | null
+}
+
+/* ── device groups & access control ── */
+
+export type GroupPermission = 'view' | 'connect'
+
+export interface Group {
+  id: string
+  name: string
+  description: string
+  device_count: number
+  created_at: string
+}
+
+export interface GroupGrant {
+  user_id: string
+  user_name: string
+  user_email: string
+  permission: GroupPermission
+}
+
+export interface UserGrant {
+  group_id: string
+  group_name: string
+  permission: GroupPermission
 }
 
 export interface EnrollTokenCreated extends EnrollToken {
@@ -38,6 +64,7 @@ export interface EnrollTokenInput {
   max_uses?: number
   default_mode: DeviceMode
   default_tags: string[]
+  default_group_id?: string
 }
 
 export interface DeviceDetail extends DeviceSummary {

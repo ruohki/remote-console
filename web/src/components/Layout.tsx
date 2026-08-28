@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router'
-import { Activity, ClipboardList, LogOut, Menu, MonitorSmartphone, Moon, Settings, Sun, SunMoon, Users, X } from 'lucide-react'
+import { Activity, ClipboardList, FolderKanban, LogOut, Menu, MonitorSmartphone, Moon, Settings, Sun, SunMoon, Users, X } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { useLive } from '@/store/live'
 import { applyTheme, readTheme, type Theme } from '@/lib/theme'
@@ -10,6 +10,7 @@ import { toast } from '@/lib/toast'
 const NAV = [
   { to: '/devices', label: 'Devices', icon: MonitorSmartphone },
   { to: '/sessions', label: 'Sessions', icon: Activity },
+  { to: '/groups', label: 'Groups', icon: FolderKanban, admin: true },
   { to: '/users', label: 'Users', icon: Users, admin: true },
   { to: '/audit', label: 'Audit', icon: ClipboardList, admin: true },
   { to: '/settings', label: 'Settings', icon: Settings },

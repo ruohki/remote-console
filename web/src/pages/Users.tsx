@@ -1,8 +1,10 @@
 import { type FormEvent, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { KeyRound, Plus, Trash2, UserX, UserCheck } from 'lucide-react'
+import { FolderKanban, KeyRound, Plus, Trash2, UserX, UserCheck } from 'lucide-react'
+import { Link } from 'react-router'
 import { api, errorMessage } from '@/lib/api'
-import type { Role, User } from '@/lib/types'
+import type { Role, User, UserGrant } from '@/lib/types'
+import { GROUP_PERMISSION_LABEL } from '@/lib/access'
 import { useAuth } from '@/store/auth'
 import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Th } from '@/components/ui'
 import { dateTime, relativeTime } from '@/lib/format'
@@ -15,6 +17,7 @@ export function UsersPage() {
   const [creating, setCreating] = useState(false)
   const [resetFor, setResetFor] = useState<User | null>(null)
   const [deleting, setDeleting] = useState<User | null>(null)
+  const [accessFor, setAccessFor] = useState<User | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['users'] })
 
@@ -38,7 +41,7 @@ export function UsersPage() {
     <div className="mx-auto max-w-5xl">
       <PageHeader
         title="Users"
-        subtitle="Operators can connect to devices. Admins also manage users, tokens and device settings."
+        subtitle="Operators only see the device groups they are granted (view or connect). Admins see everything and manage users, groups, tokens and device settings."
         actions={
           <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
             Add user
@@ -58,6 +61,7 @@ export function UsersPage() {
               <Th>Name</Th>
               <Th>Email</Th>
               <Th>Role</Th>
+              <Th className="hidden md:table-cell">Access</Th>
               <Th className="hidden md:table-cell">Last sign-in</Th>
               <Th className="hidden lg:table-cell">Created</Th>
               <Th className="w-40" />
@@ -87,6 +91,15 @@ export function UsersPage() {
                     <option value="operator">Operator</option>
                   </Select>
                 </Td>
+                <Td className="hidden md:table-cell">
+                  {u.role === 'admin' ? (
+                    <span className="text-ink-faint">All devices</span>
+                  ) : (
+                    <Button size="sm" variant="ghost" icon={<FolderKanban size={13} />} onClick={() => setAccessFor(u)}>
+                      Groups
+                    </Button>
+                  )}
+                </Td>
                 <Td className="hidden md:table-cell text-ink-muted">{relativeTime(u.last_login_at)}</Td>
                 <Td className="hidden lg:table-cell text-ink-muted">{dateTime(u.created_at)}</Td>
                 <Td>
@@ -110,6 +123,7 @@ export function UsersPage() {
       )}
 
       <CreateUserDialog open={creating} onClose={() => setCreating(false)} onCreated={invalidate} />
+      <UserAccessDialog user={accessFor} onClose={() => setAccessFor(null)} />
       <ResetPasswordDialog user={resetFor} onClose={() => setResetFor(null)} onSubmit={(pw) => patch.mutateAsync({ id: resetFor!.id, body: { password: pw } })} />
       <ConfirmDialog
         open={!!deleting}
@@ -126,6 +140,49 @@ export function UsersPage() {
         loading={remove.isPending}
       />
     </div>
+  )
+}
+
+function UserAccessDialog({ user, onClose }: { user: User | null; onClose: () => void }) {
+  const grants = useQuery({
+    queryKey: ['user-grants', user?.id],
+    queryFn: () => api.get<UserGrant[]>(`/api/users/${user!.id}/grants`),
+    enabled: !!user,
+  })
+  return (
+    <Dialog open={!!user} onClose={onClose} title={`Device access for ${user?.name ?? ''}`} width="max-w-md">
+      <p className="-mt-1 mb-3 text-ink-muted">Operators only see devices in groups listed here. Grants are edited on the group page.</p>
+      {grants.isPending ? (
+        <Skeleton className="h-20 w-full" />
+      ) : grants.isError ? (
+        <EmptyState title="Could not load access" detail={errorMessage(grants.error)} />
+      ) : grants.data.length === 0 ? (
+        <EmptyState
+          title="No access yet"
+          detail="This operator cannot see any device. Grant them a group."
+          action={
+            <Link to="/groups" onClick={onClose}>
+              <Button size="sm">Go to groups</Button>
+            </Link>
+          }
+        />
+      ) : (
+        <ul className="divide-y divide-line rounded-md border border-line">
+          {grants.data.map((g) => (
+            <li key={g.group_id} className="flex items-center gap-3 px-3 py-2">
+              <FolderKanban size={14} className="text-ink-faint" />
+              <Link to={`/groups/${g.group_id}`} onClick={onClose} className="min-w-0 flex-1 truncate font-medium hover:underline">
+                {g.group_name}
+              </Link>
+              <Badge tone={g.permission === 'connect' ? 'accent' : 'neutral'}>{GROUP_PERMISSION_LABEL[g.permission]}</Badge>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="mt-4 flex justify-end">
+        <Button onClick={onClose}>Close</Button>
+      </div>
+    </Dialog>
   )
 }
 
@@ -163,9 +220,9 @@ function CreateUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
         <Field label="Password" hint="At least 10 characters. Share it with the user; they can't reset it themselves.">
           <Input type="password" required minLength={10} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
-        <Field label="Role">
+        <Field label="Role" hint={role === 'operator' ? 'Operators see nothing until you grant them a device group.' : undefined}>
           <Select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-            <option value="operator">Operator — connects to devices</option>
+            <option value="operator">Operator — connects to granted device groups</option>
             <option value="admin">Admin — full access</option>
           </Select>
         </Field>

@@ -1,14 +1,15 @@
 import { useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, MonitorPlay, Save, Trash2 } from 'lucide-react'
+import { ArrowLeft, Eye, FolderKanban, MonitorPlay, Save, Trash2 } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
-import type { DeviceDetail as Detail } from '@/lib/types'
+import type { DeviceDetail as Detail, Group } from '@/lib/types'
+import { canConnect } from '@/lib/access'
 import type { AgentConfig, SessionSummary } from '@/protocol'
 import { useLive } from '@/store/live'
-import { useIsAdmin } from '@/store/auth'
-import { Badge, Button, ConfirmDialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
-import { CodecBadge, ModeBadge, OsIcon, SessionStateBadge, StatusLed } from '@/components/badges'
+import { useAuth, useIsAdmin } from '@/store/auth'
+import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
+import { CodecBadge, GroupChips, ModeBadge, OsIcon, SessionStateBadge, StatusLed } from '@/components/badges'
 import { NotFound } from './NotFound'
 import { dateTime, duration, END_REASON_LABEL, OS_LABEL, relativeTime, CODEC_LABEL } from '@/lib/format'
 import { toast } from '@/lib/toast'
@@ -19,7 +20,9 @@ export function DeviceDetail() {
   const qc = useQueryClient()
   const navigate = useNavigate()
   const isAdmin = useIsAdmin()
+  const { user } = useAuth()
   const live = useLive((s) => s.devices[id])
+  const [editingGroups, setEditingGroups] = useState(false)
 
   const detail = useQuery({
     queryKey: ['device', id],
@@ -61,6 +64,7 @@ export function DeviceDetail() {
 
   // Live fields win over the fetched snapshot.
   const d: Detail = { ...detail.data, ...(live ?? {}) }
+  const mayConnect = canConnect(d, user)
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -86,11 +90,17 @@ export function DeviceDetail() {
                 Remove
               </Button>
             )}
-            <Link to={`/viewer/${d.id}`}>
-              <Button variant="primary" icon={<MonitorPlay size={14} />} disabled={!d.online}>
-                {d.active_session_id ? 'Join session' : 'Connect'}
-              </Button>
-            </Link>
+            {mayConnect ? (
+              <Link to={`/viewer/${d.id}`}>
+                <Button variant="primary" icon={<MonitorPlay size={14} />} disabled={!d.online}>
+                  {d.active_session_id ? 'Join session' : 'Connect'}
+                </Button>
+              </Link>
+            ) : (
+              <Badge className="h-8 gap-1 px-2.5">
+                <Eye size={13} /> View-only access
+              </Badge>
+            )}
           </>
         }
       />
@@ -118,6 +128,15 @@ export function DeviceDetail() {
                 {d.enrolled_with && <span className="text-ink-faint"> via {d.enrolled_with}</span>}
               </Item>
             </dl>
+            <div className="flex flex-wrap items-center gap-2 border-t border-line px-4 py-3">
+              <span className="eyebrow">Groups</span>
+              {d.groups.length > 0 ? <GroupChips groups={d.groups} linked={isAdmin} /> : <span className="text-ink-faint">{isAdmin ? 'Not in any group — only admins can see this device.' : 'None'}</span>}
+              {isAdmin && (
+                <Button size="sm" variant="ghost" icon={<FolderKanban size={13} />} className="ml-auto" onClick={() => setEditingGroups(true)}>
+                  Edit groups
+                </Button>
+              )}
+            </div>
             {d.displays.length > 0 && (
               <div className="border-t border-line px-4 py-3">
                 <div className="eyebrow mb-2">Displays</div>
@@ -140,7 +159,7 @@ export function DeviceDetail() {
           </section>
 
           {/* keyed on the saved values so the form resets when fresh data arrives */}
-          <MetaForm key={`${d.id}|${d.name}|${d.tags.join(',')}|${d.notes}`} device={d} onSaved={() => qc.invalidateQueries({ queryKey: ['device', id] })} />
+          <MetaForm key={`${d.id}|${d.name}|${d.tags.join(',')}|${d.notes}`} device={d} editable={mayConnect} onSaved={() => qc.invalidateQueries({ queryKey: ['device', id] })} />
 
           <section className="panel">
             <div className="border-b border-line px-4 py-2.5 font-medium">Recent sessions</div>
@@ -187,6 +206,18 @@ export function DeviceDetail() {
         </div>
       </div>
 
+      {isAdmin && (
+        <GroupsEditor
+          open={editingGroups}
+          onClose={() => setEditingGroups(false)}
+          device={d}
+          onSaved={() => {
+            qc.invalidateQueries({ queryKey: ['device', id] })
+            qc.invalidateQueries({ queryKey: ['groups'] })
+          }}
+        />
+      )}
+
       <ConfirmDialog
         open={deleting}
         onClose={() => setDeleting(false)}
@@ -214,7 +245,71 @@ function Item({ label, children }: { label: string; children: React.ReactNode })
   )
 }
 
-function MetaForm({ device, onSaved }: { device: Detail; onSaved: () => void }) {
+function GroupsEditor({ open, onClose, device, onSaved }: { open: boolean; onClose: () => void; device: Detail; onSaved: () => void }) {
+  const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.get<Group[]>('/api/groups'), enabled: open })
+  const [selected, setSelected] = useState<Set<string> | null>(null)
+  const savedIds = new Set(device.groups.map((g) => g.id))
+  const current = selected ?? savedIds
+  const save = useMutation({
+    mutationFn: () => api.put<Detail>(`/api/devices/${device.id}/groups`, { group_ids: [...current] }),
+    onSuccess: () => {
+      toast.success('Groups updated')
+      setSelected(null)
+      onSaved()
+      onClose()
+    },
+    onError: (e) => toast.error('Could not update groups', errorMessage(e)),
+  })
+  const toggle = (gid: string) => {
+    const next = new Set(current)
+    if (next.has(gid)) next.delete(gid)
+    else next.add(gid)
+    setSelected(next)
+  }
+  return (
+    <Dialog open={open} onClose={onClose} title={`Groups for ${device.name}`} width="max-w-md">
+      {groups.isPending ? (
+        <Skeleton className="h-24 w-full" />
+      ) : !groups.data?.length ? (
+        <EmptyState
+          title="No groups yet"
+          detail="Create a group first."
+          action={
+            <Link to="/groups">
+              <Button size="sm">Go to groups</Button>
+            </Link>
+          }
+        />
+      ) : (
+        <ul className="max-h-80 divide-y divide-line overflow-auto rounded-md border border-line">
+          {groups.data
+            .slice()
+            .sort((a, b) => a.name.localeCompare(b.name))
+            .map((g) => (
+              <li key={g.id}>
+                <label className="flex cursor-pointer items-center gap-3 px-3 py-2 hover:bg-raised">
+                  <input type="checkbox" className="accent-accent" checked={current.has(g.id)} onChange={() => toggle(g.id)} />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{g.name}</span>
+                    {g.description && <span className="block truncate text-ink-faint">{g.description}</span>}
+                  </span>
+                  <span className="mono text-ink-faint">{g.device_count}</span>
+                </label>
+              </li>
+            ))}
+        </ul>
+      )}
+      <div className="mt-4 flex justify-end gap-2">
+        <Button onClick={onClose}>Cancel</Button>
+        <Button variant="primary" icon={<Save size={14} />} disabled={selected === null} loading={save.isPending} onClick={() => save.mutate()}>
+          Save
+        </Button>
+      </div>
+    </Dialog>
+  )
+}
+
+function MetaForm({ device, editable, onSaved }: { device: Detail; editable: boolean; onSaved: () => void }) {
   const [name, setName] = useState(device.name)
   const [tags, setTags] = useState(device.tags.join(', '))
   const [notes, setNotes] = useState(device.notes)
@@ -238,7 +333,10 @@ function MetaForm({ device, onSaved }: { device: Detail; onSaved: () => void }) 
 
   return (
     <section className="panel">
-      <div className="border-b border-line px-4 py-2.5 font-medium">Details</div>
+      <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
+        <span className="font-medium">Details</span>
+        {!editable && <span className="text-[11.5px] text-ink-faint">Connect permission needed to edit</span>}
+      </div>
       <form
         className="grid gap-3 px-4 py-3 sm:grid-cols-2"
         onSubmit={(e) => {
@@ -246,20 +344,24 @@ function MetaForm({ device, onSaved }: { device: Detail; onSaved: () => void }) 
           save.mutate()
         }}
       >
-        <Field label="Name">
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Tags" hint="Comma separated.">
-          <Input value={tags} onChange={(e) => setTags(e.target.value)} />
-        </Field>
-        <Field label="Notes" className="sm:col-span-2">
-          <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Location, owner, quirks…" />
-        </Field>
-        <div className="flex justify-end sm:col-span-2">
-          <Button type="submit" variant="primary" icon={<Save size={14} />} disabled={!dirty} loading={save.isPending}>
-            Save
-          </Button>
-        </div>
+        <fieldset disabled={!editable} className="contents">
+          <Field label="Name">
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Tags" hint="Comma separated.">
+            <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+          </Field>
+          <Field label="Notes" className="sm:col-span-2">
+            <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Location, owner, quirks…" />
+          </Field>
+        </fieldset>
+        {editable && (
+          <div className="flex justify-end sm:col-span-2">
+            <Button type="submit" variant="primary" icon={<Save size={14} />} disabled={!dirty} loading={save.isPending}>
+              Save
+            </Button>
+          </div>
+        )}
       </form>
     </section>
   )

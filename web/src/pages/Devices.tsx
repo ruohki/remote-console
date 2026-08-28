@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
-import { MonitorPlay, Plus, Search } from 'lucide-react'
+import { Eye, FolderKanban, MonitorPlay, Plus, Search } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { DeviceSummary } from '@/protocol'
 import { useLive } from '@/store/live'
 import { Button, EmptyState, Input, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
-import { ModeBadge, OsIcon, StatusLed, Tags } from '@/components/badges'
+import { GroupChips, ModeBadge, OsIcon, StatusLed, Tags } from '@/components/badges'
+import { useAuth } from '@/store/auth'
+import { canConnect } from '@/lib/access'
 import { AddDeviceDialog } from '@/components/AddDeviceDialog'
 import { relativeTime, OS_LABEL } from '@/lib/format'
 
@@ -22,8 +24,11 @@ export function Devices() {
   const [q, setQ] = useState('')
   const [filter, setFilter] = useState<Filter>('all')
   const [tag, setTag] = useState<string | null>(null)
+  const [group, setGroup] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const navigate = useNavigate()
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
 
   // REST fallback until the socket delivers its snapshot.
   const fallback = useQuery({
@@ -36,19 +41,25 @@ export function Devices() {
   }, [fallback.data, seed])
 
   const allTags = useMemo(() => Array.from(new Set(devices.flatMap((d) => d.tags))).sort(), [devices])
+  const allGroups = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const d of devices) for (const g of d.groups) m.set(g.id, g.name)
+    return [...m.entries()].map(([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name))
+  }, [devices])
 
   const list = useMemo(() => {
     const needle = q.trim().toLowerCase()
     return devices
       .filter((d) => (filter === 'all' ? true : filter === 'online' ? d.online : !d.online))
       .filter((d) => (tag ? d.tags.includes(tag) : true))
+      .filter((d) => (group ? d.groups.some((g) => g.id === group) : true))
       .filter((d) =>
         needle
           ? [d.name, d.hostname, d.logged_in_user ?? '', d.last_ip ?? '', ...d.tags].some((s) => s.toLowerCase().includes(needle))
           : true,
       )
       .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name))
-  }, [devices, q, filter, tag])
+  }, [devices, q, filter, tag, group])
 
   const loading = !hydrated && fallback.isPending && devices.length === 0
   const onlineCount = devices.filter((d) => d.online).length
@@ -67,9 +78,11 @@ export function Devices() {
           )
         }
         actions={
-          <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
-            Add device
-          </Button>
+          isAdmin && (
+            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
+              Add device
+            </Button>
+          )
         }
       />
 
@@ -89,6 +102,23 @@ export function Devices() {
             </button>
           ))}
         </div>
+        {allGroups.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1" aria-label="Filter by group">
+            {allGroups.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => setGroup(group === g.id ? null : g.id)}
+                className={cx(
+                  'rounded-sm border px-1.5 py-px text-[11.5px]',
+                  group === g.id ? 'border-accent bg-accent-soft text-accent' : 'border-line text-ink-muted hover:text-ink',
+                )}
+              >
+                <FolderKanban size={10} className="mr-1 inline-block align-[-1px]" />
+                {g.name}
+              </button>
+            ))}
+          </div>
+        )}
         {allTags.length > 0 && (
           <div className="flex flex-wrap items-center gap-1">
             {allTags.map((t) => (
@@ -119,15 +149,19 @@ export function Devices() {
         </div>
       ) : devices.length === 0 ? (
         <div className="panel">
-          <EmptyState
-            title="No devices yet"
-            detail="Create an enrollment token and run the one-line installer on a Windows or macOS machine."
-            action={
-              <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
-                Add device
-              </Button>
-            }
-          />
+          {isAdmin ? (
+            <EmptyState
+              title="No devices yet"
+              detail="Create an enrollment token and run the one-line installer on a Windows or macOS machine."
+              action={
+                <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
+                  Add device
+                </Button>
+              }
+            />
+          ) : (
+            <EmptyState title="No devices available to you" detail="An admin has to grant you access to a device group before devices show up here." />
+          )}
         </div>
       ) : list.length === 0 ? (
         <div className="panel">
@@ -140,7 +174,7 @@ export function Devices() {
               <Th className="w-6" />
               <Th>Device</Th>
               <Th className="hidden md:table-cell">User</Th>
-              <Th className="hidden lg:table-cell">Tags</Th>
+              <Th className="hidden lg:table-cell">Groups &amp; tags</Th>
               <Th>Mode</Th>
               <Th className="hidden sm:table-cell">Last seen</Th>
               <Th className="w-28 text-right" />
@@ -173,18 +207,27 @@ export function Devices() {
                   <span className={d.logged_in_user ? '' : 'text-ink-faint'}>{d.logged_in_user ?? '—'}</span>
                 </Td>
                 <Td className="hidden lg:table-cell">
-                  <Tags tags={d.tags} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <GroupChips groups={d.groups} />
+                    <Tags tags={d.tags} />
+                  </div>
                 </Td>
                 <Td>
                   <ModeBadge mode={d.mode} />
                 </Td>
                 <Td className="hidden sm:table-cell text-ink-muted">{d.online ? 'now' : relativeTime(d.last_seen_at)}</Td>
                 <Td className="text-right">
-                  <Link to={`/viewer/${d.id}`} onClick={(e) => e.stopPropagation()}>
-                    <Button size="sm" variant={d.online ? 'primary' : 'secondary'} disabled={!d.online} icon={<MonitorPlay size={13} />}>
-                      {d.active_session_id ? 'Join' : 'Connect'}
-                    </Button>
-                  </Link>
+                  {canConnect(d, user) ? (
+                    <Link to={`/viewer/${d.id}`} onClick={(e) => e.stopPropagation()}>
+                      <Button size="sm" variant={d.online ? 'primary' : 'secondary'} disabled={!d.online} icon={<MonitorPlay size={13} />}>
+                        {d.active_session_id ? 'Join' : 'Connect'}
+                      </Button>
+                    </Link>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 text-[11.5px] text-ink-faint" title="You can see this device but not connect to it">
+                      <Eye size={12} /> View only
+                    </span>
+                  )}
                 </Td>
               </tr>
             ))}

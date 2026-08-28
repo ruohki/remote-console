@@ -14,6 +14,8 @@ import { Sessions } from '@/pages/Sessions'
 import { UsersPage } from '@/pages/Users'
 import { Audit } from '@/pages/Audit'
 import { Settings } from '@/pages/Settings'
+import { GroupsPage } from '@/pages/Groups'
+import { GroupDetail } from '@/pages/GroupDetail'
 import { NotFound } from '@/pages/NotFound'
 import { Skeleton } from '@/components/ui'
 
@@ -64,6 +66,8 @@ export default function App() {
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/settings/tokens" element={<Settings tab="tokens" />} />
                   <Route element={<RequireAuth admin />}>
+                    <Route path="/groups" element={<GroupsPage />} />
+                    <Route path="/groups/:id" element={<GroupDetail />} />
                     <Route path="/users" element={<UsersPage />} />
                     <Route path="/audit" element={<Audit />} />
                   </Route>

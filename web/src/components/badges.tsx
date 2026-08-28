@@ -1,5 +1,6 @@
 import { Apple, Monitor, Terminal } from 'lucide-react'
-import type { DeviceMode, DeviceSummary, Os, SessionState, VideoCodec } from '@/protocol'
+import type { DeviceMode, DeviceSummary, GroupRef, Os, SessionState, VideoCodec } from '@/protocol'
+import { FolderKanban } from 'lucide-react'
 import { Badge, cx } from './ui'
 import { CODEC_LABEL, MODE_LABEL, SESSION_STATE_LABEL } from '@/lib/format'
 
@@ -33,6 +34,25 @@ export function SessionStateBadge({ state }: { state: SessionState }) {
 export function CodecBadge({ codec }: { codec?: VideoCodec | null }) {
   if (!codec) return <span className="text-ink-faint">—</span>
   return <span className="mono text-ink-muted">{CODEC_LABEL[codec]}</span>
+}
+
+export function GroupChips({ groups, linked }: { groups: GroupRef[]; linked?: boolean }) {
+  if (groups.length === 0) return null
+  return (
+    <span className="inline-flex flex-wrap gap-1">
+      {groups.map((g) =>
+        linked ? (
+          <a key={g.id} href={`/groups/${g.id}`} className="inline-flex items-center gap-1 rounded-sm border border-line px-1.5 py-px text-[11px] text-ink-muted hover:text-ink">
+            <FolderKanban size={10} /> {g.name}
+          </a>
+        ) : (
+          <span key={g.id} className="inline-flex items-center gap-1 rounded-sm border border-line px-1.5 py-px text-[11px] text-ink-muted">
+            <FolderKanban size={10} /> {g.name}
+          </span>
+        ),
+      )}
+    </span>
+  )
 }
 
 export function Tags({ tags }: { tags: string[] }) {

@@ -1,8 +1,8 @@
 import { type FormEvent, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
-import type { EnrollTokenCreated, EnrollTokenInput } from '@/lib/types'
+import type { EnrollTokenCreated, EnrollTokenInput, Group } from '@/lib/types'
 import type { DeviceMode } from '@/protocol'
 import { Button, CopyButton, Dialog, Field, Input, Select } from './ui'
 
@@ -17,6 +17,8 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
   const [maxUses, setMaxUses] = useState('1')
   const [mode, setMode] = useState<DeviceMode>('unattended')
   const [tags, setTags] = useState('')
+  const [groupId, setGroupId] = useState('')
+  const groups = useQuery({ queryKey: ['groups'], queryFn: () => api.get<Group[]>('/api/groups'), enabled: open })
   const [created, setCreated] = useState<EnrollTokenCreated | null>(null)
 
   const create = useMutation({
@@ -38,6 +40,7 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
         .split(',')
         .map((t) => t.trim())
         .filter(Boolean),
+      default_group_id: groupId || undefined,
     })
   }
 
@@ -86,6 +89,19 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
             </Field>
             <Field label="Default tags" hint="Comma separated.">
               <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="office, windows" />
+            </Field>
+            <Field label="Default group" hint="Operators only see devices in groups they are granted." className="col-span-2">
+              <Select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
+                <option value="">No group (admins only)</option>
+                {(groups.data ?? [])
+                  .slice()
+                  .sort((a, b) => a.name.localeCompare(b.name))
+                  .map((g) => (
+                    <option key={g.id} value={g.id}>
+                      {g.name}
+                    </option>
+                  ))}
+              </Select>
             </Field>
           </div>
           {create.isError && (
