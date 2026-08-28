@@ -1,0 +1,188 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
+  Console palette — graphite ground, ice-blue brand accent, LED semantics.
+  Light tokens on :root, dark overrides under .dark (toggled on <html> by theme.ts,
+  defaulting to the OS preference).
+*/
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+
+  --color-ground: var(--ground);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-live: #34d399;
+  --color-live-soft: var(--live-soft);
+  --color-warn: #f5b942;
+  --color-warn-soft: var(--warn-soft);
+  --color-danger: #f87171;
+  --color-danger-soft: var(--danger-soft);
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --shadow-pop: 0 12px 40px -12px rgb(0 0 0 / 0.45), 0 0 0 1px var(--line);
+}
+
+:root {
+  --ground: #f3f4f7;
+  --surface: #ffffff;
+  --raised: #f8f9fb;
+  --line: #e2e5ea;
+  --line-strong: #c9ced6;
+  --ink: #171a20;
+  --ink-muted: #5b6270;
+  --ink-faint: #8a919e;
+  --accent: #2f7fe0;
+  --accent-ink: #ffffff;
+  --accent-soft: #e6f0fc;
+  --live-soft: #dcf5ea;
+  --warn-soft: #fdf1d6;
+  --danger-soft: #fde3e3;
+  color-scheme: light;
+}
+
+.dark {
+  --ground: #0e1116;
+  --surface: #161a21;
+  --raised: #1c212a;
+  --line: #262c36;
+  --line-strong: #343b47;
+  --ink: #e6e9ef;
+  --ink-muted: #9aa3b2;
+  --ink-faint: #6b7381;
+  --accent: #6cb6ff;
+  --accent-ink: #0b1220;
+  --accent-soft: #17283d;
+  --live-soft: #123326;
+  --warn-soft: #3a2c10;
+  --danger-soft: #3b1a1a;
+  color-scheme: dark;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-ground text-ink font-sans antialiased text-[13.5px] leading-snug;
+    font-feature-settings: 'tnum' 1, 'cv11' 1;
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 35%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+  input,
+  select,
+  textarea {
+    @apply bg-surface;
+  }
+  /* thin, quiet scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--line-strong) transparent;
+  }
+}
+
+@layer components {
+  .mono {
+    @apply font-mono text-[12px] tracking-tight;
+  }
+  .eyebrow {
+    @apply text-[11px] uppercase tracking-[0.12em] text-ink-faint font-medium;
+  }
+  .led {
+    @apply inline-block size-2 rounded-full shrink-0;
+    box-shadow: 0 0 0 2px color-mix(in oklab, currentColor 18%, transparent);
+  }
+  .led-live {
+    color: var(--color-live);
+    background: currentColor;
+    animation: led-breathe 2.4s ease-in-out infinite;
+  }
+  .led-off {
+    color: var(--ink-faint);
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px currentColor;
+  }
+  .led-warn {
+    color: var(--color-warn);
+    background: currentColor;
+    animation: led-blink 1s steps(2, start) infinite;
+  }
+  .led-busy {
+    color: var(--accent);
+    background: currentColor;
+  }
+  .panel {
+    @apply bg-surface border border-line rounded-lg;
+  }
+  .row-hover {
+    @apply hover:bg-raised transition-colors;
+  }
+  .kbd {
+    @apply inline-flex items-center rounded-sm border border-line-strong bg-raised px-1.5 py-px font-mono text-[11px] tracking-tight text-ink-muted;
+  }
+}
+
+@keyframes led-breathe {
+  0%,
+  100% {
+    box-shadow: 0 0 0 2px color-mix(in oklab, currentColor 18%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in oklab, currentColor 10%, transparent);
+  }
+}
+@keyframes led-blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.animate-fade-up {
+  animation: fade-up 160ms ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

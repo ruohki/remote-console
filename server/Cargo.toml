@@ -9,9 +9,15 @@ description = "Management console for remote-agent: device registry, enrollment,
 name = "remote-console"
 path = "src/main.rs"
 
+[lib]
+name = "remote_console"
+path = "src/lib.rs"
+
 [dependencies]
 # Shared wire protocol. Local dev: sibling checkout. CI clones remote-agent next to this repo.
 protocol = { path = "../../remote-agent/crates/protocol" }
+
+
 
 axum = { version = "0.8", features = ["ws", "macros"] }
 axum-extra = { version = "0.10", features = ["cookie", "typed-header"] }
@@ -33,6 +39,8 @@ argon2 = "0.6"
 rand = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
+sha1 = "0.10"
+time = "0.3"
 hex = "0.4"
 base64 = "0.22"
 subtle = "2.6"
@@ -56,3 +64,5 @@ async-trait = "0.1"
 tempfile = "3.24"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "cookies"] }
+tokio-tungstenite = "0.30"

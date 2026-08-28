@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  server:
+    name: server (rust)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout remote-console
+        uses: actions/checkout@v4
+        with:
+          path: remote-console
+      - name: Checkout remote-agent (protocol crate)
+        uses: actions/checkout@v4
+        with:
+          repository: ruohki/remote-agent
+          path: remote-agent
+          # A PAT with read access is required while remote-agent is private.
+          token: ${{ secrets.AGENT_REPO_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: remote-console
+      - name: fmt
+        working-directory: remote-console
+        run: cargo fmt -p remote-console -- --check
+      - name: clippy
+        working-directory: remote-console
+        run: cargo clippy --all-targets -- -D warnings
+      - name: test
+        working-directory: remote-console
+        run: cargo test --all-targets
+
+  web:
+    name: web (vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Detect web project
+        id: detect
+        run: echo "present=$([ -f web/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-node@v4
+        if: steps.detect.outputs.present == 'true'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm ci
+      - name: Build
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm run build

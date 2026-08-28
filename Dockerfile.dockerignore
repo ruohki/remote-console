@@ -1,0 +1,8 @@
+# BuildKit reads <Dockerfile>.dockerignore; paths are relative to the build context (parent of both repos)
+**/target
+**/node_modules
+**/dist
+**/.git
+**/data
+**/*.db*
+**/.env

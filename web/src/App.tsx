@@ -1,0 +1,80 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router'
+import { AuthProvider, useAuth } from '@/store/auth'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
+import { Layout } from '@/components/Layout'
+import { Toaster } from '@/lib/toast'
+import { ApiError } from '@/lib/api'
+import { Login } from '@/pages/Login'
+import { Setup } from '@/pages/Setup'
+import { Devices } from '@/pages/Devices'
+import { DeviceDetail } from '@/pages/DeviceDetail'
+import { Viewer } from '@/pages/Viewer'
+import { Sessions } from '@/pages/Sessions'
+import { UsersPage } from '@/pages/Users'
+import { Audit } from '@/pages/Audit'
+import { Settings } from '@/pages/Settings'
+import { NotFound } from '@/pages/NotFound'
+import { Skeleton } from '@/components/ui'
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      retry: (count, err) => !(err instanceof ApiError && err.status < 500) && count < 2,
+      staleTime: 10_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+})
+
+function RequireAuth({ admin }: { admin?: boolean }) {
+  const { user, needsSetup } = useAuth()
+  const location = useLocation()
+  if (user === undefined || needsSetup === undefined) {
+    return (
+      <div className="p-6">
+        <Skeleton className="mb-3 h-6 w-48" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    )
+  }
+  if (needsSetup) return <Navigate to="/setup" replace />
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
+  if (admin && user.role !== 'admin') return <NotFound />
+  return <Outlet />
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <AuthProvider>
+            <Routes>
+              <Route path="/login" element={<Login />} />
+              <Route path="/setup" element={<Setup />} />
+              <Route element={<RequireAuth />}>
+                {/* the viewer takes the whole viewport, no chrome */}
+                <Route path="/viewer/:deviceId" element={<Viewer />} />
+                <Route element={<Layout />}>
+                  <Route index element={<Navigate to="/devices" replace />} />
+                  <Route path="/devices" element={<Devices />} />
+                  <Route path="/devices/:id" element={<DeviceDetail />} />
+                  <Route path="/sessions" element={<Sessions />} />
+                  <Route path="/settings" element={<Settings />} />
+                  <Route path="/settings/tokens" element={<Settings tab="tokens" />} />
+                  <Route element={<RequireAuth admin />}>
+                    <Route path="/users" element={<UsersPage />} />
+                    <Route path="/audit" element={<Audit />} />
+                  </Route>
+                  <Route path="*" element={<NotFound />} />
+                </Route>
+              </Route>
+            </Routes>
+            <Toaster />
+          </AuthProvider>
+        </BrowserRouter>
+      </QueryClientProvider>
+    </ErrorBoundary>
+  )
+}
