@@ -476,6 +476,7 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
             <Toggle checked={cfg.allow_clipboard} onChange={(v) => set('allow_clipboard', v)} label="Allow clipboard sync" />
             <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer and remote file browsing" />
             <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow streaming the device's audio" />
+            <Toggle checked={cfg.allow_annotations ?? true} onChange={(v) => set('allow_annotations', v)} label="Allow on-screen annotations (guidance drawings, independent of input control)" />
           </div>
           {cfg.allow_file_transfer && (
             <Field label="Upload folder on the device" hint="Leave empty for Downloads/RemoteAgent in the user's home.">

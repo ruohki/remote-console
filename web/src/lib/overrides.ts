@@ -9,6 +9,7 @@ export function overrideLabels(o: LocalOverrides | undefined | null): string[] {
   if (o.allow_audio === false) out.push('Audio streaming blocked')
   if (o.allow_clipboard === false) out.push('Clipboard sync blocked')
   if (o.allow_file_transfer === false) out.push('File transfer blocked')
+  if (o.allow_annotations === false) out.push('On-screen annotations blocked')
   return out
 }
 

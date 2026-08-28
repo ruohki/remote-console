@@ -20,6 +20,7 @@ import {
   MessageSquare,
   Minimize2,
   MonitorSmartphone,
+  PenLine,
   RefreshCw,
   Square,
   Volume2,
@@ -45,6 +46,10 @@ import { ChatDrawer } from '@/features/chat/ChatDrawer'
 import { activeTransferCount, transferManager, useFiles } from '@/features/files/store'
 import { classifyPasteItems, clipboardImageName, toPngBlob, writeImageToClipboard } from '@/features/files/clipboard'
 import { BlobSink, FileSystemSink, directoryPickerAvailable, guessMime, pickDirectory } from '@/features/files/sinks'
+import { AnnotateCanvas } from '@/features/annotate/AnnotateCanvas'
+import { AnnotateToolbar } from '@/features/annotate/AnnotateToolbar'
+import { colorValue, useAnnotate } from '@/features/annotate/store'
+import { PointerThrottle, StrokeBatcher, strokeWidthPx } from '@/features/annotate/model'
 
 const FPS_PRESETS = [15, 30, 60]
 const BITRATE_PRESETS = [2000, 4000, 8000, 15000, 30000]
@@ -61,6 +66,7 @@ export function Viewer() {
   const allowFiles = cfg?.allow_file_transfer ?? true
   const allowAudio = cfg?.allow_audio ?? true
   const allowClipboard = cfg?.allow_clipboard ?? true
+  const allowAnnotations = (cfg?.allow_annotations ?? true)
 
   const deviceName = device?.name ?? 'Device'
   const knownDisplays = useMemo(() => device?.displays ?? [], [device?.displays])
@@ -68,7 +74,7 @@ export function Viewer() {
 
   const [chatPulse, setChatPulse] = useState(0)
   const [chatSound, setChatSound] = useState(chatSoundEnabled)
-  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl } = useViewerSession(deviceId, {
+  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl, debugFakeStream } = useViewerSession(deviceId, {
     knownDisplays,
     wantAudio: allowAudio,
     onChatNotify: (line: ChatLine, drawerOpen: boolean) => {
@@ -118,7 +124,59 @@ export function Viewer() {
 
   const connected = state.phase === 'connected'
   const control = effectiveControl({ connected, inputEnabled, controlPaused: state.controlPaused })
-  const controlling = control.controlling
+  const annotating = useAnnotate((s) => s.enabled)
+  const annotateDisabledByDevice = useAnnotate((s) => s.disabledByDevice)
+  const setAnnotating = useAnnotate((s) => s.setEnabled)
+  // While annotating, pointer events draw instead of controlling; the keyboard is not forwarded either.
+  const controlling = control.controlling && !annotating
+  const annotateAvailable = connected && allowAnnotations && !annotateDisabledByDevice
+
+  /* ───── annotations: agent refusal, session lifecycle, keyboard ───── */
+  useEffect(() => {
+    if (!state.annotationsDisabled) return
+    useAnnotate.getState().setDisabledByDevice(true)
+    toast.error('Annotations are not allowed on this device', 'Blocked by the console policy or a device-side setting.')
+  }, [state.annotationsDisabled])
+  useEffect(() => {
+    // New session (or session end): forget the drawings; a fresh session starts clean on the device too.
+    useAnnotate.getState().reset()
+  }, [state.sessionId])
+  useEffect(() => {
+    if (!connected) useAnnotate.getState().setEnabled(false)
+  }, [connected])
+  const toggleAnnotate = useCallback(() => {
+    if (!annotateAvailable) return
+    if (annotating) {
+      setAnnotating(false)
+      return
+    }
+    sendInput({ t: 'rel' })
+    setAnnotating(true)
+  }, [annotateAvailable, annotating, setAnnotating, sendInput])
+  const annotateUndo = useCallback(() => {
+    for (const m of useAnnotate.getState().undo()) sendControl(m)
+  }, [sendControl])
+  const annotateClear = useCallback(() => {
+    useAnnotate.getState().clear()
+    sendControl({ t: 'annotate_clear' })
+  }, [sendControl])
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      if (e.key === 'Escape' && annotating) {
+        e.preventDefault()
+        setAnnotating(false)
+        return
+      }
+      if (e.key.toLowerCase() !== 'a' || e.metaKey || e.ctrlKey || e.altKey) return
+      if (controlling && document.activeElement === surfaceRef.current) return
+      e.preventDefault()
+      toggleAnnotate()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [annotating, controlling, toggleAnnotate, setAnnotating])
 
   // Tell the operator when the person at the device pauses / resumes remote control.
   const prevPausedRef = useRef(false)
@@ -166,12 +224,12 @@ export function Viewer() {
   useEffect(() => {
     const enabled = import.meta.env.DEV || new URLSearchParams(window.location.search).get('debug') === '1'
     if (!enabled) return
-    const w = window as unknown as { __viewerDebug?: { pushChat: (text: string) => void; pushControl: (msg: ControlMessage) => void } }
-    w.__viewerDebug = { pushChat: debugPushDeviceChat, pushControl: debugPushControl }
+    const w = window as unknown as { __viewerDebug?: { pushChat: (text: string) => void; pushControl: (msg: ControlMessage) => void; fakeStream: (display?: number, width?: number, height?: number) => void } }
+    w.__viewerDebug = { pushChat: debugPushDeviceChat, pushControl: debugPushControl, fakeStream: (d = 0, w2 = 1920, h = 1080) => debugFakeStream(d, w2, h) }
     return () => {
       delete w.__viewerDebug
     }
-  }, [debugPushDeviceChat, debugPushControl])
+  }, [debugPushDeviceChat, debugPushControl, debugFakeStream])
 
   // The remembered destination applies to drops and pastes even before the Files drawer was opened
   // (the drawer itself keeps the manager in sync while it is open).
@@ -470,6 +528,24 @@ export function Viewer() {
         </div>
         <div className="ml-auto flex items-center gap-0.5">
           <HudButton
+            active={annotating}
+            disabled={!annotateAvailable}
+            onClick={toggleAnnotate}
+            title={
+              !connected
+                ? 'Annotate (available while connected)'
+                : !allowAnnotations
+                  ? 'Annotations are disabled for this device'
+                  : annotateDisabledByDevice
+                    ? 'Annotations are not allowed on this device (policy or device setting)'
+                    : annotating
+                      ? 'Leave annotate mode (Esc)'
+                      : 'Annotate: draw on the remote screen to guide the person at the device (A)'
+            }
+          >
+            <PenLine size={14} />
+          </HudButton>
+          <HudButton
             active={inputEnabled && !control.toggleLocked}
             disabled={control.toggleLocked}
             onClick={() => {
@@ -589,6 +665,8 @@ export function Viewer() {
                 display={displays.find((d) => d.index === index) ?? { index, name: `Display ${index + 1}`, x: 0, y: 0, width: 0, height: 0, scale: 1, primary: index === 0 }}
                 stream={state.streams[index] ?? null}
                 controlling={controlling && !dragging}
+                annotating={annotating && !dragging}
+                sendControl={sendControl}
                 isCurrent={state.currentDisplay === index}
                 multi={visible.length > 1}
                 showStats={showStats}
@@ -603,6 +681,12 @@ export function Viewer() {
               />
             ))}
           </div>
+
+          {annotating && (
+            <div className={cx('pointer-events-none absolute inset-x-0 z-20 flex justify-center', state.controlPaused ? 'top-12' : 'top-2')}>
+              <AnnotateToolbar onUndo={annotateUndo} onClear={annotateClear} onExit={() => setAnnotating(false)} />
+            </div>
+          )}
 
           {dragging && (
             <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[#0e1116]/75 p-6 backdrop-blur-[2px]">
@@ -694,6 +778,8 @@ function DisplayTile({
   display,
   stream,
   controlling,
+  annotating,
+  sendControl,
   isCurrent,
   multi,
   showStats,
@@ -707,6 +793,8 @@ function DisplayTile({
   display: DisplayInfo
   stream: MediaStream | null
   controlling: boolean
+  annotating: boolean
+  sendControl: (m: ControlMessage) => boolean
   isCurrent: boolean
   multi: boolean
   showStats: boolean
@@ -749,6 +837,13 @@ function DisplayTile({
     return toRemotePixels({ x: e.clientX - r.left, y: e.clientY - r.top }, { width: r.width, height: r.height }, { width: v.videoWidth, height: v.videoHeight })
   }, [])
 
+  const tileGeometry = useCallback(() => {
+    const v = videoRef.current
+    if (!v || !v.videoWidth) return null
+    const r = v.getBoundingClientRect()
+    return { box: { width: r.width, height: r.height }, video: { width: v.videoWidth, height: v.videoHeight } }
+  }, [])
+
   const flushMove = useCallback(() => {
     moveRaf.current = null
     const p = pendingMove.current
@@ -756,7 +851,63 @@ function DisplayTile({
     if (p) sendInput({ t: 'mm', x: p.x, y: p.y })
   }, [sendInput])
 
+  /* ───── annotations (pen / laser) ─────
+     In annotate mode the pointer draws: strokes are batched per animation frame and streamed to
+     the device; the local canvas mirrors them from the same messages. */
+  const strokeRef = useRef<StrokeBatcher | null>(null)
+  const strokeRaf = useRef<number | null>(null)
+  const laserThrottle = useRef(new PointerThrottle(30))
+  const emitLocal = useCallback(
+    (m: ControlMessage) => {
+      useAnnotate.getState().applyLocal(m)
+      sendControl(m)
+    },
+    [sendControl],
+  )
+  const flushStroke = useCallback(() => {
+    strokeRaf.current = null
+    const m = strokeRef.current?.flush()
+    if (m) emitLocal(m)
+  }, [emitLocal])
+  const endStroke = useCallback(() => {
+    const s = strokeRef.current
+    strokeRef.current = null
+    if (strokeRaf.current !== null) {
+      cancelAnimationFrame(strokeRaf.current)
+      strokeRaf.current = null
+    }
+    if (!s) return
+    for (const m of s.end()) emitLocal(m)
+  }, [emitLocal])
+  const laserAt = useCallback(
+    (p: { x: number; y: number } | null, force = false) => {
+      const now = Date.now()
+      if (!force && !laserThrottle.current.allow(now)) return
+      const { color } = useAnnotate.getState()
+      emitLocal({ t: 'annotate_pointer', display: display.index, point: p ? [p.x, p.y] : undefined, color: colorValue(color) })
+    },
+    [display.index, emitLocal],
+  )
+  useEffect(() => {
+    if (!annotating) {
+      endStroke()
+      laserAt(null, true)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [annotating])
+
   const onPointerMove = (e: React.PointerEvent) => {
+    if (annotating) {
+      const p = remotePoint(e)
+      const { tool } = useAnnotate.getState()
+      if (tool === 'laser') {
+        laserAt(p)
+        return
+      }
+      if (!p || !strokeRef.current) return
+      if (strokeRef.current.push([p.x, p.y]) && strokeRaf.current === null) strokeRaf.current = requestAnimationFrame(flushStroke)
+      return
+    }
     if (!controlling) return
     const p = remotePoint(e)
     if (!p) return
@@ -765,6 +916,20 @@ function DisplayTile({
   }
   const onPointerDown = (e: React.PointerEvent) => {
     onPointerDownFocus()
+    if (annotating) {
+      const { tool, color, width } = useAnnotate.getState()
+      if (tool !== 'pen' || e.button !== 0) return
+      const p = remotePoint(e)
+      if (!p) return
+      e.preventDefault()
+      ;(e.currentTarget as HTMLElement).setPointerCapture(e.pointerId)
+      endStroke()
+      const s = new StrokeBatcher(display.index, colorValue(color), strokeWidthPx(width, display.scale))
+      s.push([p.x, p.y])
+      strokeRef.current = s
+      flushStroke()
+      return
+    }
     if (!controlling) return
     const b = mouseButton(e.button)
     const p = remotePoint(e)
@@ -775,6 +940,10 @@ function DisplayTile({
     sendInput({ t: 'md', button: b })
   }
   const onPointerUp = (e: React.PointerEvent) => {
+    if (annotating) {
+      if (e.button === 0) endStroke()
+      return
+    }
     if (!controlling) return
     const b = mouseButton(e.button)
     if (!b) return
@@ -798,13 +967,17 @@ function DisplayTile({
   return (
     <div
       ref={tileRef}
-      className={cx('group relative min-h-0 min-w-0 overflow-hidden', controlling ? 'cursor-none' : 'cursor-default', multi && isCurrent && 'ring-1 ring-[#6cb6ff]/60 ring-inset')}
+      className={cx('group relative min-h-0 min-w-0 overflow-hidden', annotating ? 'cursor-crosshair' : controlling ? 'cursor-none' : 'cursor-default', multi && isCurrent && 'ring-1 ring-[#6cb6ff]/60 ring-inset')}
       onPointerEnter={onEnter}
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
+      onPointerLeave={() => {
+        if (annotating) laserAt(null, true)
+      }}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+      <AnnotateCanvas display={display.index} getGeometry={tileGeometry} />
       {!stream && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12.5px] text-[#6b7381]">
           Waiting for {display.name}…

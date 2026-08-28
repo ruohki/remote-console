@@ -65,6 +65,8 @@ export interface ViewerState {
   observers: string[]
   /** the person at the device paused remote control (only they can resume) */
   controlPaused: boolean
+  /** the agent refused annotations (policy or device-side setting) */
+  annotationsDisabled: boolean
 }
 
 const initial: ViewerState = {
@@ -91,6 +93,7 @@ const initial: ViewerState = {
   filesOpen: false,
   observers: [],
   controlPaused: false,
+  annotationsDisabled: false,
 }
 
 const CREATE_TIMEOUT_MS = 10_000
@@ -283,6 +286,9 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
           teardown()
           patch({ phase: 'ended', endReason: 'device_user_closed' })
           break
+        case 'annotations_disabled':
+          patch({ annotationsDisabled: true })
+          break
         case 'control_paused': {
           const next = reduceControlPaused({ controlPaused: controlPausedRef.current }, msg.paused)
           if (next.notice === null) break
@@ -305,6 +311,35 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
 
   // Dev/test hook: inject a control-channel message as if the agent had sent it.
   const debugPushControl = useCallback((msg: ControlMessage) => handleControl(msg), [handleControl])
+
+  // Dev/test hook: show a synthetic picture for `display` (a canvas capture stream) so the
+  // viewer can be exercised without a device — e.g. to draw annotations in a UI test.
+  const debugFakeStream = useCallback(
+    (display: number, width = 1920, height = 1080) => {
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')
+      if (ctx) {
+        const g = ctx.createLinearGradient(0, 0, width, height)
+        g.addColorStop(0, '#1e293b')
+        g.addColorStop(1, '#0f172a')
+        ctx.fillStyle = g
+        ctx.fillRect(0, 0, width, height)
+        ctx.fillStyle = '#334155'
+        for (let x = 0; x < width; x += 160) ctx.fillRect(x, 0, 1, height)
+        for (let y = 0; y < height; y += 160) ctx.fillRect(0, y, width, 1)
+      }
+      const stream = (canvas as HTMLCanvasElement & { captureStream: (fps?: number) => MediaStream }).captureStream(5)
+      patch((s) => ({
+        phase: 'connected',
+        streams: { ...s.streams, [display]: stream },
+        displays: s.displays.length ? s.displays : [{ index: display, name: 'Fake display', x: 0, y: 0, width, height, scale: 1, primary: true }],
+        activeDisplays: s.activeDisplays.includes(display) ? s.activeDisplays : [...s.activeDisplays, display],
+      }))
+    },
+    [patch],
+  )
 
   const start = useCallback(async () => {
     teardown()
@@ -573,7 +608,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
 
   const clearRichClipboard = useCallback(() => patch({ remoteClipboardRich: null }), [patch])
 
-  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl }
+  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat, debugPushControl, debugFakeStream }
 }
 
 class SessionError extends Error {
