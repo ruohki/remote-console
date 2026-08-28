@@ -298,7 +298,7 @@ export function DangerConfirmDialog({
 export function Table({ children, className, fixed }: { children: ReactNode; className?: string; fixed?: boolean }) {
   return (
     <div className={cx('panel', fixed ? 'overflow-hidden' : 'overflow-x-auto', className)}>
-      <table className={cx('w-full border-collapse text-left', fixed && 'table-fixed')}>{children}</table>
+      <table className={cx('w-full border-collapse text-left [&_tbody_tr:last-child>td]:border-b-0', fixed && 'table-fixed')}>{children}</table>
     </div>
   )
 }
@@ -309,7 +309,7 @@ export function Th({ children, className }: { children?: ReactNode; className?: 
 
 export function Td({ children, className, colSpan, onClick, title }: { children?: ReactNode; className?: string; colSpan?: number; onClick?: React.MouseEventHandler<HTMLTableCellElement>; title?: string }) {
   return (
-    <td colSpan={colSpan} onClick={onClick} title={title} className={cx('border-b border-line px-3 py-2 align-middle last:border-b-0', className)}>
+    <td colSpan={colSpan} onClick={onClick} title={title} className={cx('border-b border-line px-3 py-2 align-middle', className)}>
       {children}
     </td>
   )
