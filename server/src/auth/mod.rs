@@ -1,6 +1,13 @@
-//! Passwords, cookie sessions, role extractors, rate limiting and the CSRF guard.
+//! Passwords, cookie sessions, role extractors, second factor policy, rate limiting and the
+//! CSRF guard.
 
 pub mod access;
+pub mod ldap;
+pub mod oidc;
+pub mod passkeys;
+pub mod saml;
+pub mod sso;
+pub mod totp;
 
 use crate::app::AppState;
 use crate::db::models::UserRow;
@@ -18,7 +25,58 @@ use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
 
 pub const SESSION_COOKIE: &str = "console_session";
+/// Pre-authentication cookie set between a successful password check and the second factor
+/// (also carries WebAuthn / SSO ceremony ids). Five minutes.
+pub const PREAUTH_COOKIE: &str = "console_preauth";
+pub const PREAUTH_TTL_MINUTES: i64 = 5;
 pub const MIN_PASSWORD_LEN: usize = 10;
+
+/// Routes a user in the `two_factor_required` state may still call (enrolment + sign-out).
+const TWO_FACTOR_ALLOWLIST: &[&str] = &[
+    "/api/auth/me",
+    "/api/auth/logout",
+    "/api/auth/2fa/setup",
+    "/api/auth/2fa/enable",
+    "/api/auth/passkeys/register/start",
+    "/api/auth/passkeys/register/finish",
+    "/api/auth/passkeys",
+    "/api/auth/providers",
+    "/api/branding",
+    "/api/info",
+];
+
+/// Whether the second-factor policy blocks this user from `path` right now.
+pub fn two_factor_blocks(config: &crate::config::Config, user: &UserRow, path: &str) -> bool {
+    config.require_2fa.applies_to(user.is_admin())
+        && !user.two_factor_enabled()
+        && !TWO_FACTOR_ALLOWLIST.contains(&path)
+}
+
+pub fn two_factor_required_error() -> ApiError {
+    ApiError::new(
+        StatusCode::FORBIDDEN,
+        "two_factor_required",
+        "a second factor must be set up before using the console",
+    )
+}
+
+// ── shared auth context ───────────────────────────────────────────────────────
+
+/// Long-lived authentication helpers created at startup.
+pub struct AuthContext {
+    pub webauthn: webauthn_rs::Webauthn,
+    pub oidc: oidc::OidcCache,
+}
+
+impl AuthContext {
+    pub async fn new(config: &crate::config::Config, db: &crate::db::Db) -> anyhow::Result<Self> {
+        let branding = crate::db::settings::branding(db).await?;
+        Ok(Self {
+            webauthn: passkeys::build(config, &branding.product_name)?,
+            oidc: oidc::OidcCache::default(),
+        })
+    }
+}
 
 // ── passwords ─────────────────────────────────────────────────────────────────
 
@@ -82,6 +140,26 @@ pub fn session_cookie(secure: bool, session_id: String, ttl_hours: i64) -> Cooki
         .build()
 }
 
+pub fn preauth_cookie(secure: bool, state_id: String) -> Cookie<'static> {
+    Cookie::build((PREAUTH_COOKIE, state_id))
+        .path("/api/auth")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(secure)
+        .max_age(time::Duration::minutes(PREAUTH_TTL_MINUTES))
+        .build()
+}
+
+pub fn clear_preauth_cookie(secure: bool) -> Cookie<'static> {
+    Cookie::build((PREAUTH_COOKIE, ""))
+        .path("/api/auth")
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .secure(secure)
+        .max_age(time::Duration::ZERO)
+        .build()
+}
+
 pub fn clear_session_cookie(secure: bool) -> Cookie<'static> {
     Cookie::build((SESSION_COOKIE, ""))
         .path("/")
@@ -128,9 +206,30 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        let user = user_from_headers(state, &parts.headers)
+            .await
+            .ok_or_else(ApiError::unauthorized)?;
+        if two_factor_blocks(&state.config, &user, parts.uri.path()) {
+            return Err(two_factor_required_error());
+        }
+        Ok(AuthUser(user))
+    }
+}
+
+/// A logged-in user that may still be in the `two_factor_required` state (enrolment routes).
+#[derive(Debug, Clone)]
+pub struct AnyAuthUser(pub UserRow);
+
+impl FromRequestParts<AppState> for AnyAuthUser {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
         user_from_headers(state, &parts.headers)
             .await
-            .map(AuthUser)
+            .map(AnyAuthUser)
             .ok_or_else(ApiError::unauthorized)
     }
 }
@@ -238,14 +337,21 @@ impl RateLimiter {
 
     /// Whether `key` has exhausted its budget (does not count).
     pub fn is_blocked(&self, key: &str) -> bool {
+        self.blocked_for(key).is_some()
+    }
+
+    /// Remaining time of the current window when `key` is blocked.
+    pub fn blocked_for(&self, key: &str) -> Option<Duration> {
         let mut map = self.entries.lock();
         match map.get(key) {
-            Some((count, since)) if since.elapsed() < self.window => *count >= self.max,
+            Some((count, since)) if since.elapsed() < self.window => {
+                (*count >= self.max).then(|| self.window.saturating_sub(since.elapsed()))
+            }
             Some(_) => {
                 map.remove(key);
-                false
+                None
             }
-            None => false,
+            None => None,
         }
     }
 
@@ -289,6 +395,9 @@ impl LoginLimiter {
     }
     pub fn is_blocked(&self, ip: &str) -> bool {
         self.0.is_blocked(ip)
+    }
+    pub fn blocked_for(&self, ip: &str) -> Option<Duration> {
+        self.0.blocked_for(ip)
     }
     pub fn record_failure(&self, ip: &str) {
         self.0.record_failure(ip)
@@ -409,7 +518,10 @@ pub async fn csrf_guard(State(state): State<AppState>, req: Request, next: Next)
         *req.method(),
         Method::POST | Method::PUT | Method::PATCH | Method::DELETE
     );
-    let api_mutation = mutating && path.starts_with("/api/");
+    // The SAML assertion consumer service receives a cross-site HTML form POST from the
+    // identity provider by design; it is protected by the assertion signature instead.
+    let saml_acs = path == "/api/auth/saml/acs";
+    let api_mutation = mutating && path.starts_with("/api/") && !saml_acs;
     let ui_ws = path == protocol::UI_WS_PATH;
 
     if api_mutation {

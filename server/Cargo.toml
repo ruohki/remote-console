@@ -33,7 +33,7 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.26", features = ["v4", "serde"] }
+uuid = { version = "1.26", features = ["v4", "v5", "serde"] }
 
 argon2 = "0.6"
 rand = "0.10"
@@ -64,11 +64,27 @@ parking_lot = "0.12"
 url = "2.5"
 ipnet = "2.11"
 async-trait = "0.1"
-reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream", "json", "form"] }
 zip = { version = "4", default-features = false, features = ["deflate"] }
 icns = "0.4"
 png = "0.18"
 tempfile = "3.24"
+
+# authentication: TOTP, passkeys / security keys, OIDC, SAML, LDAP
+totp-rs = { version = "6", features = ["otpauth"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+webauthn-rs = { version = "0.5", features = ["danger-allow-state-serialisation", "conditional-ui"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto", "use_pem"] }
+xml-sec = { version = "0.1", default-features = false, features = ["xmldsig", "c14n", "xml-backend-roxmltree"] }
+roxmltree = "0.21"
+rsa = { version = "0.9", features = ["sha2", "pem"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+flate2 = "1"
+glob-match = "0.2"
+ldap3 = { version = "0.12", default-features = false, features = ["tls-rustls-ring"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
 
 [dev-dependencies]
 tempfile = "3.24"
@@ -76,3 +92,5 @@ tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "cookies"] }
 tokio-tungstenite = "0.30"
+webauthn-authenticator-rs = { version = "0.5", default-features = false, features = ["softpasskey"] }
+urlencoding = "2"

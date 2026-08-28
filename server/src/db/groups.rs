@@ -221,20 +221,30 @@ pub async fn grants(db: &Db, group_id: &str) -> Result<Vec<GroupGrantRow>> {
     .await
 }
 
-/// Replace all grants of a group.
+/// Replace all grants of a group. New grants are `manual`; a grant that already exists keeps
+/// its `source` (an SSO-managed grant stays under SSO control when an admin re-saves the list).
 pub async fn set_grants(
     db: &Db,
     group_id: &str,
     grants: &[(String, GroupPermission)],
 ) -> Result<()> {
     let mut tx = db.begin().await?;
-    sqlx::query("DELETE FROM group_grants WHERE group_id = ?")
-        .bind(group_id)
-        .execute(&mut *tx)
-        .await?;
+    let keep: Vec<&str> = grants.iter().map(|(u, _)| u.as_str()).collect();
+    let placeholders = vec!["?"; keep.len().max(1)].join(",");
+    let sql =
+        format!("DELETE FROM group_grants WHERE group_id = ? AND user_id NOT IN ({placeholders})");
+    let mut del = sqlx::query(&sql).bind(group_id);
+    if keep.is_empty() {
+        del = del.bind("");
+    }
+    for u in &keep {
+        del = del.bind(*u);
+    }
+    del.execute(&mut *tx).await?;
     for (user_id, permission) in grants {
         sqlx::query(
-            "INSERT OR REPLACE INTO group_grants (group_id, user_id, permission) VALUES (?, ?, ?)",
+            "INSERT INTO group_grants (group_id, user_id, permission, source) VALUES (?, ?, ?, 'manual')
+             ON CONFLICT(group_id, user_id) DO UPDATE SET permission = excluded.permission",
         )
         .bind(group_id)
         .bind(user_id)

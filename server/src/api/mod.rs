@@ -9,11 +9,12 @@ pub mod enroll;
 pub mod groups;
 pub mod info;
 pub mod sessions;
+pub mod sso;
 pub mod tokens;
 pub mod users;
 
 use crate::app::AppState;
-use axum::routing::{get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::Router;
 
 pub fn router() -> Router<AppState> {
@@ -22,6 +23,80 @@ pub fn router() -> Router<AppState> {
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
+        .route("/auth/providers", get(auth::providers))
+        // second factor
+        .route("/auth/2fa/verify", post(auth::two_factor_verify))
+        .route("/auth/2fa/setup", post(auth::two_factor_setup))
+        .route("/auth/2fa/enable", post(auth::two_factor_enable))
+        .route(
+            "/auth/2fa/recovery-codes",
+            post(auth::two_factor_recovery_codes),
+        )
+        .route("/auth/2fa/disable", post(auth::two_factor_disable))
+        .route(
+            "/auth/2fa/passkey/start",
+            post(auth::two_factor_passkey_start),
+        )
+        .route(
+            "/auth/2fa/passkey/finish",
+            post(auth::two_factor_passkey_finish),
+        )
+        // passkeys
+        .route(
+            "/auth/passkeys/register/start",
+            post(auth::passkey_register_start),
+        )
+        .route(
+            "/auth/passkeys/register/finish",
+            post(auth::passkey_register_finish),
+        )
+        .route(
+            "/auth/passkeys/login/start",
+            post(auth::passkey_login_start),
+        )
+        .route(
+            "/auth/passkeys/login/finish",
+            post(auth::passkey_login_finish),
+        )
+        .route("/auth/passkeys", get(auth::passkeys_list))
+        .route(
+            "/auth/passkeys/{id}",
+            patch(auth::passkey_rename).delete(auth::passkey_delete),
+        )
+        // OIDC
+        .route("/auth/oidc/start", get(sso::oidc_start))
+        .route("/auth/oidc/callback", get(sso::oidc_callback))
+        .route(
+            "/auth/oidc/config",
+            get(sso::oidc_config_get).put(sso::oidc_config_put),
+        )
+        .route("/auth/oidc/test", post(sso::oidc_test))
+        .route("/auth/oidc/test-mapping", post(sso::oidc_test_mapping))
+        // SAML
+        .route("/auth/saml/metadata", get(sso::saml_metadata))
+        .route("/auth/saml/start", get(sso::saml_start))
+        .route("/auth/saml/acs", post(sso::saml_acs))
+        .route(
+            "/auth/saml/config",
+            get(sso::saml_config_get).put(sso::saml_config_put),
+        )
+        .route("/auth/saml/test", post(sso::saml_test))
+        .route("/auth/saml/test-mapping", post(sso::saml_test_mapping))
+        // LDAP
+        .route("/auth/ldap/login", post(sso::ldap_login))
+        .route(
+            "/auth/ldap/config",
+            get(sso::ldap_config_get).put(sso::ldap_config_put),
+        )
+        .route("/auth/ldap/test", post(sso::ldap_test))
+        .route("/auth/ldap/test-mapping", post(sso::ldap_test_mapping))
+        // user security admin
+        .route("/users/{id}/2fa/reset", post(users::reset_two_factor))
+        .route("/users/{id}/passkeys", get(users::passkeys))
+        .route(
+            "/users/{id}/passkeys/{pid}",
+            patch(users::rename_passkey).delete(users::delete_passkey),
+        )
         .route("/info", get(info::info))
         .route("/branding", get(branding::get).put(branding::put))
         .route("/agent/downloads", get(agent::downloads))
@@ -46,7 +121,7 @@ pub fn router() -> Router<AppState> {
             get(groups::grants).put(groups::set_grants),
         )
         .route("/enroll-tokens", get(tokens::list).post(tokens::create))
-        .route("/enroll-tokens/{id}", axum::routing::delete(tokens::revoke))
+        .route("/enroll-tokens/{id}", delete(tokens::revoke))
         .route("/enroll", post(enroll::enroll))
         .route("/devices", get(devices::list))
         .route(

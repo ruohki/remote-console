@@ -33,6 +33,46 @@ pub struct Config {
     pub master_key: Option<[u8; 32]>,
     /// SHA-256 of the console's TLS certificate SubjectPublicKeyInfo, base64 (SPKI pin).
     pub tls_spki_sha256: Option<String>,
+    /// `REQUIRE_2FA=admins|all|off` (default `admins`).
+    pub require_2fa: TwoFactorPolicy,
+    /// `LOCAL_LOGIN=1|0`: password login for non-break-glass accounts.
+    pub local_login: bool,
+}
+
+/// Who must have a second factor enrolled before using the console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TwoFactorPolicy {
+    Admins,
+    All,
+    Off,
+}
+
+impl TwoFactorPolicy {
+    pub fn parse(s: &str) -> Result<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "" | "admins" | "admin" => Ok(Self::Admins),
+            "all" | "everyone" => Ok(Self::All),
+            "off" | "none" | "0" | "false" => Ok(Self::Off),
+            other => bail!("REQUIRE_2FA must be admins, all or off (got {other:?})"),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Admins => "admins",
+            Self::All => "all",
+            Self::Off => "off",
+        }
+    }
+
+    /// Whether the policy applies to a user with this role.
+    pub fn applies_to(self, is_admin: bool) -> bool {
+        match self {
+            Self::Admins => is_admin,
+            Self::All => true,
+            Self::Off => false,
+        }
+    }
 }
 
 pub const DEFAULT_PUBLIC_URL: &str = "http://localhost:8080";
@@ -104,6 +144,10 @@ impl Config {
             trust_proxy: env_flag("TRUST_PROXY"),
             master_key,
             tls_spki_sha256,
+            require_2fa: TwoFactorPolicy::parse(&env_or("REQUIRE_2FA", "admins"))?,
+            local_login: std::env::var("LOCAL_LOGIN")
+                .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
+                .unwrap_or(true),
         })
     }
 
@@ -123,6 +167,8 @@ impl Config {
             trust_proxy: false,
             master_key: None,
             tls_spki_sha256: None,
+            require_2fa: TwoFactorPolicy::Off,
+            local_login: true,
         }
     }
 

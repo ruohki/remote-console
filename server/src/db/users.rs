@@ -1,6 +1,6 @@
 //! Users and login sessions.
 
-use super::models::{Role, UserRow};
+use super::models::{AuthMethod, Role, UserRow, USER_SELECT};
 use super::{format_ts, now, Db};
 use chrono::{Duration, Utc};
 use sqlx::Result;
@@ -41,21 +41,21 @@ pub async fn create(
 }
 
 pub async fn by_id(db: &Db, id: &str) -> Result<Option<UserRow>> {
-    sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE id = ?")
+    sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE u.id = ?"))
         .bind(id)
         .fetch_optional(db)
         .await
 }
 
 pub async fn by_email(db: &Db, email: &str) -> Result<Option<UserRow>> {
-    sqlx::query_as::<_, UserRow>("SELECT * FROM users WHERE email = ? COLLATE NOCASE")
+    sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} WHERE u.email = ? COLLATE NOCASE"))
         .bind(email.trim().to_lowercase())
         .fetch_optional(db)
         .await
 }
 
 pub async fn list(db: &Db) -> Result<Vec<UserRow>> {
-    sqlx::query_as::<_, UserRow>("SELECT * FROM users ORDER BY created_at ASC")
+    sqlx::query_as::<_, UserRow>(&format!("{USER_SELECT} ORDER BY u.created_at ASC"))
         .fetch_all(db)
         .await
 }
@@ -106,18 +106,91 @@ pub async fn set_last_login(db: &Db, id: &str) -> Result<()> {
 // ── login sessions ────────────────────────────────────────────────────────────
 
 pub async fn create_login_session(db: &Db, user_id: &str, ttl_hours: i64) -> Result<String> {
+    create_login_session_with(db, user_id, ttl_hours, AuthMethod::Password).await
+}
+
+pub async fn create_login_session_with(
+    db: &Db,
+    user_id: &str,
+    ttl_hours: i64,
+    method: AuthMethod,
+) -> Result<String> {
     let id = crate::ids::login_session_id();
     let expires = Utc::now() + Duration::hours(ttl_hours);
     sqlx::query(
-        "INSERT INTO user_sessions (id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO user_sessions (id, user_id, created_at, expires_at, auth_method)
+         VALUES (?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(user_id)
     .bind(now())
     .bind(format_ts(expires))
+    .bind(method.as_str())
     .execute(db)
     .await?;
+    sqlx::query("UPDATE users SET last_login_method = ? WHERE id = ?")
+        .bind(method.as_str())
+        .bind(user_id)
+        .execute(db)
+        .await?;
     Ok(id)
+}
+
+/// The auth method recorded for a login session cookie.
+pub async fn session_auth_method(db: &Db, session_id: &str) -> Result<Option<AuthMethod>> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT auth_method FROM user_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.and_then(|(m,)| AuthMethod::parse(&m)))
+}
+
+// ── second factor ─────────────────────────────────────────────────────────────
+
+pub async fn set_totp(db: &Db, id: &str, secret_enc: Option<&str>, enabled: bool) -> Result<()> {
+    sqlx::query("UPDATE users SET totp_secret_enc = ?, totp_enabled = ? WHERE id = ?")
+        .bind(secret_enc)
+        .bind(enabled)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_break_glass(db: &Db, id: &str, break_glass: bool) -> Result<()> {
+    sqlx::query("UPDATE users SET break_glass = ? WHERE id = ?")
+        .bind(break_glass)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_auth_methods(db: &Db, id: &str, methods: &[AuthMethod]) -> Result<()> {
+    sqlx::query("UPDATE users SET auth_methods = ? WHERE id = ?")
+        .bind(serde_json::to_string(methods).unwrap_or_else(|_| "[\"password\"]".into()))
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn set_role(db: &Db, id: &str, role: Role) -> Result<()> {
+    sqlx::query("UPDATE users SET role = ? WHERE id = ?")
+        .bind(role.as_str())
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+pub async fn count_break_glass_admins(db: &Db) -> Result<i64> {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE role = 'admin' AND disabled = 0 AND break_glass = 1",
+    )
+    .fetch_one(db)
+    .await
 }
 
 /// Resolve a cookie value to its (enabled, unexpired, not idle) user and refresh the
@@ -125,12 +198,11 @@ pub async fn create_login_session(db: &Db, user_id: &str, ttl_hours: i64) -> Res
 pub async fn user_by_login_session(db: &Db, session_id: &str) -> Result<Option<UserRow>> {
     let now_ts = Utc::now();
     let idle_cutoff = format_ts(now_ts - Duration::hours(crate::config::SESSION_IDLE_HOURS));
-    let user = sqlx::query_as::<_, UserRow>(
-        "SELECT u.* FROM users u
-         JOIN user_sessions s ON s.user_id = u.id
+    let user = sqlx::query_as::<_, UserRow>(&format!(
+        "{USER_SELECT} JOIN user_sessions s ON s.user_id = u.id
          WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0
-           AND COALESCE(s.last_seen_at, s.created_at) > ?",
-    )
+           AND COALESCE(s.last_seen_at, s.created_at) > ?"
+    ))
     .bind(session_id)
     .bind(format_ts(now_ts))
     .bind(&idle_cutoff)

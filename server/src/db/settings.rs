@@ -20,6 +20,7 @@ const KEY_SIGNING: &str = "bakery_signing_key";
 /// Prefix of encrypted values (`enc:v1:<base64 nonce || ciphertext>`).
 const ENC_PREFIX: &str = "enc:v1:";
 const HKDF_INFO: &[u8] = b"remote-console/bakery-signing-key/v1";
+const HKDF_INFO_SECRETS: &[u8] = b"remote-console/secrets/v1";
 
 pub async fn get(db: &Db, key: &str) -> Result<Option<String>> {
     let row: Option<(String,)> = sqlx::query_as("SELECT value FROM settings WHERE key = ?")
@@ -110,6 +111,67 @@ pub async fn signing_key(db: &Db, config: &Config) -> Result<SigningKey> {
     put(db, KEY_SIGNING, &value).await?;
     tracing::info!("generated a new bakery signing key");
     Ok(key)
+}
+
+/// Encrypt an arbitrary secret string for storage. Without a master key the value is stored
+/// as-is (the caller decides whether that is acceptable; the console warns at startup).
+pub fn seal(config: &Config, plaintext: &str) -> String {
+    match config.master_key.as_ref() {
+        Some(master) => {
+            use base64::Engine;
+            let key = derive_key_with(master, HKDF_INFO_SECRETS);
+            let cipher = XChaCha20Poly1305::new((&*key).into());
+            let mut nonce = [0u8; 24];
+            rand::fill(&mut nonce);
+            let ct = cipher
+                .encrypt(XNonce::from_slice(&nonce), plaintext.as_bytes())
+                .expect("XChaCha20-Poly1305 encryption cannot fail");
+            let mut out = nonce.to_vec();
+            out.extend_from_slice(&ct);
+            format!(
+                "{ENC_PREFIX}{}",
+                base64::engine::general_purpose::STANDARD.encode(out)
+            )
+        }
+        None => plaintext.to_string(),
+    }
+}
+
+/// Inverse of [`seal`]; plaintext values (stored before a master key existed) pass through.
+pub fn open(config: &Config, stored: &str) -> Result<String> {
+    use base64::Engine;
+    let Some(payload) = stored.strip_prefix(ENC_PREFIX) else {
+        return Ok(stored.to_string());
+    };
+    let Some(master) = config.master_key.as_ref() else {
+        bail!("a stored secret is encrypted but CONSOLE_MASTER_KEY is not set");
+    };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(payload)
+        .context("encrypted value is not base64")?;
+    if bytes.len() < 24 + 16 {
+        bail!("encrypted value is truncated");
+    }
+    let (nonce, ct) = bytes.split_at(24);
+    let key = derive_key_with(master, HKDF_INFO_SECRETS);
+    let cipher = XChaCha20Poly1305::new((&*key).into());
+    let plain = cipher
+        .decrypt(XNonce::from_slice(nonce), ct)
+        .map_err(|_| anyhow::anyhow!("secret authentication failed: wrong CONSOLE_MASTER_KEY"))?;
+    String::from_utf8(plain).context("decrypted secret is not UTF-8")
+}
+
+/// Whether a stored value carries the encrypted-value prefix.
+pub fn is_sealed(stored: &str) -> bool {
+    stored.starts_with(ENC_PREFIX)
+}
+
+fn derive_key_with(master: &[u8; 32], info: &[u8]) -> Zeroizing<[u8; 32]> {
+    let hk = hkdf::Hkdf::<sha2::Sha256>::new(None, master);
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hk.expand(info, &mut *okm)
+        .expect("32 bytes is a valid HKDF-SHA256 output length");
+    okm
 }
 
 fn derive_key(master: &[u8; 32]) -> Zeroizing<[u8; 32]> {

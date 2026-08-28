@@ -1,6 +1,7 @@
 //! Database access. SQLite through sqlx; all SQL is kept portable.
 
 pub mod audit;
+pub mod auth;
 pub mod devices;
 pub mod groups;
 pub mod models;

@@ -32,6 +32,8 @@ Configuration is via environment variables (see `.env.example`):
 | `APPLE_API_KEY_JSON` | – | App Store Connect API key file for `rcodesign notary-submit` |
 | `WINDOWS_SIGN_PFX` / `WINDOWS_SIGN_PFX_PASSWORD` | – | reserved for Authenticode signing (not applied yet, see docs) |
 | `SESSION_TTL_HOURS` | `168` | absolute login session lifetime (sessions also expire after 12 h idle) |
+| `REQUIRE_2FA` | `admins` | `admins` / `all` / `off` — who must enrol a second factor (TOTP or passkey) before using the console |
+| `LOCAL_LOGIN` | `1` | set `0` to disable password sign-in except for accounts flagged `break_glass` (requires at least one such admin; SSO/LDAP/passkeys still work) |
 | `ALLOW_INSECURE_PUBLIC_URL` | – | set `1` to allow a plain-http public URL on a public host (never in production) |
 | `TRUST_PROXY` | – | set `1` behind a reverse proxy so `X-Forwarded-For`/`-Proto` are honoured |
 | `CONSOLE_MASTER_KEY` | – | 32 bytes base64; encrypts the bakery signing key at rest (see SECURITY.md) |
@@ -41,6 +43,29 @@ Configuration is via environment variables (see `.env.example`):
 
 Put the console behind a TLS terminating reverse proxy (Caddy/Traefik/nginx) — WebRTC in
 browsers requires HTTPS, and agents connect over `wss://`.
+
+### Sign-in options
+
+Local accounts use a password plus, when enrolled, an authenticator app (TOTP with recovery
+codes) or a passkey / FIDO2 security key (WebAuthn; the RP id is the host of
+`CONSOLE_PUBLIC_URL`, so decide on the public hostname before people enrol keys). Passkeys
+with user verification can also sign in on their own.
+
+Single sign-on is configured by an administrator under *Settings → Authentication*
+(`/api/auth/{oidc,saml,ldap}/config`); secrets are stored encrypted with `CONSOLE_MASTER_KEY`:
+
+| Provider | Notes |
+|----------|-------|
+| OIDC | discovery from the issuer URL, authorization code + PKCE, ID token checked against the JWKS; redirect URI `CONSOLE_PUBLIC_URL/api/auth/oidc/callback`; groups from the `groups` claim or UserInfo |
+| SAML 2.0 | SP metadata at `/api/auth/saml/metadata` (entity id `CONSOLE_PUBLIC_URL/saml`, ACS `/api/auth/saml/acs`); paste or fetch the IdP metadata; assertions must be signed (encrypted assertions are not supported); IdP-initiated login is off unless enabled |
+| LDAP / Active Directory | simple bind through a read-only service account (`ldap://` + StartTLS or `ldaps://`, optional CA certificate); `POST /api/auth/ldap/login { username, password }`; groups from `memberOf` |
+
+Every provider maps IdP groups to console roles and device-group grants (`mappings`, glob
+patterns allowed) with `sync_mode` `additive` or `authoritative`; `POST
+/api/auth/<provider>/test-mapping { groups }` previews the result. With `trust_idp_mfa` an
+assertion that carries an MFA context (`amr` / `AuthnContextClassRef`) satisfies the
+second-factor requirement; otherwise enrolled users are still asked for their TOTP or
+passkey. See `API.md` for the full contract.
 
 ## Development
 

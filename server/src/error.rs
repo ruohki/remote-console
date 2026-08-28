@@ -10,6 +10,8 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    /// Seconds to wait, sent as `Retry-After` (rate limits / lockouts).
+    pub retry_after: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -29,7 +31,15 @@ impl ApiError {
             status,
             code,
             message: message.into(),
+            retry_after: None,
         }
+    }
+
+    /// `429 rate_limited` with a `Retry-After` hint.
+    pub fn rate_limited(message: impl Into<String>, retry_after_secs: u64) -> Self {
+        let mut e = Self::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message);
+        e.retry_after = Some(retry_after_secs.max(1));
+        e
     }
 
     pub fn unauthorized() -> Self {
@@ -82,7 +92,15 @@ impl IntoResponse for ApiError {
                 message: &self.message,
             },
         });
-        (self.status, body).into_response()
+        let mut response = (self.status, body).into_response();
+        if let Some(secs) = self.retry_after {
+            if let Ok(v) = axum::http::HeaderValue::from_str(&secs.to_string()) {
+                response
+                    .headers_mut()
+                    .insert(axum::http::header::RETRY_AFTER, v);
+            }
+        }
+        response
     }
 }
 

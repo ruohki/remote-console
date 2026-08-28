@@ -47,6 +47,15 @@ pub fn secret() -> String {
 }
 
 /// Opaque login session id (URL-safe base64 of 32 random bytes).
+pub fn passkey_id() -> String {
+    format!("pk_{}", base62(22))
+}
+
+/// Ids of pending auth ceremonies (2FA challenges, WebAuthn, OIDC state, SAML requests).
+pub fn auth_state_id() -> String {
+    format!("ast_{}", base62(32))
+}
+
 pub fn login_session_id() -> String {
     use base64::Engine;
     let mut bytes = [0u8; 32];

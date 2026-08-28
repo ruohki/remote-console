@@ -48,6 +48,8 @@ pub struct AppState {
     pub limiter: Arc<LoginLimiter>,
     pub limits: Arc<Limits>,
     pub bakery: Arc<Bakery>,
+    /// WebAuthn context, OIDC discovery/JWKS caches and the SAML SP key.
+    pub auth: Arc<crate::auth::AuthContext>,
 }
 
 impl AppState {
@@ -65,7 +67,19 @@ impl AppState {
         if stale > 0 {
             tracing::info!("ended {stale} stale sessions from a previous run");
         }
+        // LOCAL_LOGIN=0 without a break-glass admin would lock everyone out of a console
+        // that already has users; refuse to start instead of failing silently.
+        if !config.local_login
+            && crate::db::users::count(&db).await? > 0
+            && crate::db::users::count_break_glass_admins(&db).await? == 0
+        {
+            anyhow::bail!(
+                "LOCAL_LOGIN=0 but no enabled administrator has the break_glass flag; set it \
+                 with PATCH /api/users/:id {{ \"break_glass\": true }} before disabling local login"
+            );
+        }
         let config = Arc::new(config);
+        let auth = Arc::new(crate::auth::AuthContext::new(&config, &db).await?);
         let hub = Hub::new(Arc::clone(&config), db.clone());
         hub.spawn_background_tasks();
         Ok(Self {
@@ -75,6 +89,7 @@ impl AppState {
             limiter: Arc::new(LoginLimiter::default()),
             limits: Arc::new(Limits::default()),
             bakery: Bakery::new(),
+            auth,
         })
     }
 
