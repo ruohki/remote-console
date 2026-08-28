@@ -9,9 +9,10 @@
  * snapshots through `subscribe()`.
  */
 
-import type { FileEntry, FileMessage, TransferDirection, TransferKind } from '@/protocol'
-import { ACK_INTERVAL_BYTES, BUFFERED_HIGH_WATER, MAX_CHUNK_BYTES, decodeChunk, encodeChunk, nextOddId } from './chunk'
+import type { ChunkCodec, FileEntry, FileMessage, TransferDirection, TransferKind } from '@/protocol'
+import { ACK_INTERVAL_BYTES, BUFFERED_HIGH_WATER, MAX_CHUNK_BYTES, decodeChunk, encodeChunk, encodeChunkV2, nextOddId, type Chunk } from './chunk'
 import type { FilesChannel } from './channel'
+import { CompressionGate, chunkCodec, likelyIncompressible } from './codec'
 import { Sha256 } from './sha256'
 import { downloadKey, newToken, resumeStore, uploadKey } from './resume'
 import type { Sink } from './sinks'
@@ -43,6 +44,12 @@ export interface Transfer {
   finishedAt?: number
   /** Whether this transfer can be resumed with the current in-memory state. */
   resumable: boolean
+  /** Chunk codec negotiated with the device for this transfer (`null`: raw only — old agent or compression off). */
+  codec: ChunkCodec | null
+  /** Uncompressed bytes moved across the channel by this browser (all sessions of this transfer). */
+  payloadBytes: number
+  /** Bytes that actually went over the wire for those (smaller than `payloadBytes` when compression helped). */
+  wireBytes: number
 }
 
 export interface SinkFactory {
@@ -77,6 +84,9 @@ interface Upload {
   /** Cached once computed: `complete` may have to be re-sent after a rewind. */
   digest?: string
   resolveGroup?: () => void
+  /** The device advertised DEFLATE in `accept` and compression is enabled. */
+  deflate: boolean
+  gate: CompressionGate
 }
 
 interface Download {
@@ -132,9 +142,16 @@ export class TransferManager {
   /** Default destination folder for `file` uploads that don't name one; undefined = the
    *  agent's configured transfer directory. Set by the UI's destination picker. */
   defaultDestDir: string | undefined = undefined
+  /** Offer/accept DEFLATE chunks (applies to files and clipboard content, both directions). */
+  compression = true
 
   setDefaultDestDir(dir: string | undefined) {
     this.defaultDestDir = dir && dir.trim() ? dir : undefined
+  }
+
+  /** Takes effect for transfers negotiated from now on. */
+  setCompression(on: boolean) {
+    this.compression = on
   }
 
   /* ───────────── lifecycle ───────────── */
@@ -212,13 +229,31 @@ export class TransferManager {
   clearFinished() {
     for (const k of [...this.order]) {
       const t = this.uploads.get(k)?.t ?? this.downloads.get(k)?.t
-      if (t && isTerminal(t.status)) {
-        this.uploads.delete(k)
-        this.downloads.delete(k)
-        this.order = this.order.filter((x) => x !== k)
-      }
+      if (t && isTerminal(t.status)) this.remove(k)
     }
     this.emit()
+  }
+
+  /** Drop one finished/failed entry from the list (active ones must be cancelled first). */
+  remove(token: string) {
+    const t = this.uploads.get(token)?.t ?? this.downloads.get(token)?.t
+    if (!t || !isTerminal(t.status)) return
+    this.uploads.delete(token)
+    this.downloads.delete(token)
+    this.speedSamples.delete(token)
+    this.order = this.order.filter((x) => x !== token)
+    this.emit()
+  }
+
+  /** Cancel everything that is still moving or waiting. */
+  cancelAll(reason = 'cancelled by operator') {
+    for (const t of this.snapshot()) if (!isTerminal(t.status)) this.cancel(t.token, reason)
+    for (const p of [...this.pendingRequests]) this.cancel(p.remotePath, reason)
+  }
+
+  /** Re-offer every failed/cancelled transfer that can be resumed. */
+  retryFailed() {
+    for (const t of this.snapshot()) if ((t.status === 'failed' || t.status === 'cancelled') && t.resumable) this.retry(t.token)
   }
 
   /* ───────────── uploads ───────────── */
@@ -257,8 +292,11 @@ export class TransferManager {
       group: opts.group,
       startedAt: Date.now(),
       resumable: true,
+      codec: null,
+      payloadBytes: 0,
+      wireBytes: 0,
     }
-    this.uploads.set(token, { t, file, destDir: opts.destDir, hasher: new Sha256(), hashedUpTo: 0, pos: 0, acked: 0, lastAckAt: Date.now(), pumping: false })
+    this.uploads.set(token, { t, file, destDir: opts.destDir, hasher: new Sha256(), hashedUpTo: 0, pos: 0, acked: 0, lastAckAt: Date.now(), pumping: false, deflate: false, gate: new CompressionGate() })
     if (!this.order.includes(token)) this.order.push(token)
     this.schedule()
     this.emit()
@@ -391,7 +429,7 @@ export class TransferManager {
         void this.onOffer(m)
         break
       case 'accept':
-        void this.onAccept(m.transfer_id, num(m.offset))
+        void this.onAccept(m.transfer_id, num(m.offset), m.codecs ?? [])
         break
       case 'reject':
         this.failWire(m.transfer_id, m.reason)
@@ -471,7 +509,7 @@ export class TransferManager {
     return this.lastId
   }
 
-  private async onAccept(id: number, offset: number) {
+  private async onAccept(id: number, offset: number, codecs: ChunkCodec[]) {
     const ref = this.byWireId.get(id)
     if (!ref || ref.dir !== 'up') return
     const u = this.uploads.get(ref.token)
@@ -486,8 +524,22 @@ export class TransferManager {
     u.pos = offset
     u.acked = offset
     u.lastAckAt = Date.now()
+    u.deflate = this.compression && codecs.includes('deflate')
+    u.t.codec = u.deflate ? 'deflate' : null
+    u.gate = new CompressionGate(likelyIncompressible(u.t.name))
     this.emit()
     void this.pump(u)
+  }
+
+  /** Wire frame for one chunk: compressed v2 when negotiated and worthwhile, else raw. */
+  private async frameFor(u: Upload, offset: number, payload: Uint8Array): Promise<ArrayBuffer> {
+    if (!u.deflate) return encodeChunk(u.t.transferId, offset, payload)
+    let packed: Uint8Array | null = null
+    if (u.gate.shouldTry()) {
+      packed = await chunkCodec().deflate(payload)
+      u.gate.record(packed !== null)
+    }
+    return packed ? encodeChunkV2(u.t.transferId, offset, 'deflate', packed) : encodeChunkV2(u.t.transferId, offset, 'raw', payload)
   }
 
   private async pump(u: Upload) {
@@ -515,20 +567,26 @@ export class TransferManager {
           await ch.waitForDrain()
           continue
         }
-        const end = Math.min(u.t.size, u.pos + MAX_CHUNK_BYTES)
-        const payload = new Uint8Array(await u.file.slice(u.pos, end).arrayBuffer())
-        if (u.t.status !== 'transferring' || this.channel !== ch) break
+        const start = u.pos
+        const end = Math.min(u.t.size, start + MAX_CHUNK_BYTES)
+        const payload = new Uint8Array(await u.file.slice(start, end).arrayBuffer())
+        if (u.t.status !== 'transferring' || this.channel !== ch || u.pos !== start) break
         if (payload.byteLength === 0) {
           this.failUpload(u, 'the file changed on disk while uploading')
           break
         }
-        if (!ch.sendBinary(encodeChunk(u.t.transferId, u.pos, payload))) break
-        if (u.pos === u.hashedUpTo) {
+        const frame = await this.frameFor(u, start, payload)
+        // A rewind or cancel may have happened while compressing.
+        if (u.t.status !== 'transferring' || this.channel !== ch || u.pos !== start) break
+        if (!ch.sendBinary(frame)) break
+        if (start === u.hashedUpTo) {
           u.hasher.update(payload)
           u.hashedUpTo = end
         }
         u.pos = end
         u.t.bytes = u.pos
+        u.t.payloadBytes += payload.byteLength
+        u.t.wireBytes += frame.byteLength
         this.progress(u.t, u.pos)
       }
     } catch (e) {
@@ -657,6 +715,9 @@ export class TransferManager {
       group: m.group,
       startedAt: Date.now(),
       resumable: !!remotePath,
+      codec: this.compression ? 'deflate' : null,
+      payloadBytes: 0,
+      wireBytes: 0,
     }
     const d: Download = { t, remotePath, sinkFactory, sink: null, hasher: new Sha256(), expected: 0, lastAckSent: 0, clipboard, onBlob }
     this.downloads.set(m.token, d)
@@ -683,7 +744,7 @@ export class TransferManager {
       if (resumeKey && remotePath && sink.kind === 'fs') {
         void resumeStore.putDownload({ key: resumeKey, deviceId: this.deviceId, remotePath, name: t.name, size, bytesWritten: offset, handle: (sink as { handle?: FileSystemFileHandle }).handle, updatedAt: Date.now() })
       }
-      this.send({ t: 'accept', transfer_id: m.transfer_id, offset: BigInt(offset) })
+      this.send({ t: 'accept', transfer_id: m.transfer_id, offset: BigInt(offset), ...(this.compression ? { codecs: ['deflate' as const] } : {}) })
       this.emit()
     } catch (e) {
       this.send({ t: 'reject', transfer_id: m.transfer_id, reason: (e as Error).message })
@@ -713,18 +774,33 @@ export class TransferManager {
     const d = this.downloads.get(ref.token)
     if (!d) return
     // Writes are async; keep them strictly ordered.
-    this.chunkQueue = this.chunkQueue.then(() => this.writeChunk(d, c.offset, c.payload)).catch(() => undefined)
+    this.chunkQueue = this.chunkQueue.then(() => this.writeChunk(d, c)).catch(() => undefined)
   }
 
-  private async writeChunk(d: Download, offset: number, payload: Uint8Array) {
+  private async writeChunk(d: Download, c: Chunk) {
     if (d.t.status !== 'transferring' || !d.sink) return
-    if (offset + payload.byteLength <= d.expected) return // duplicate after a resend
+    const offset = c.offset
     if (offset > d.expected) {
       this.send({ t: 'cancel', transfer_id: d.t.transferId, reason: `gap at ${d.expected}` })
       this.failDownload(d, 'the stream had a gap; retry to resume')
       return
     }
+    const wire = c.payload.byteLength
+    let payload = c.payload
+    if (c.codec === 'deflate') {
+      try {
+        payload = await chunkCodec().inflate(c.payload, Math.min(MAX_CHUNK_BYTES, d.t.size - offset))
+      } catch (e) {
+        this.send({ t: 'cancel', transfer_id: d.t.transferId, reason: `undecodable chunk at ${offset}` })
+        this.failDownload(d, `could not decompress a chunk: ${(e as Error).message}`)
+        return
+      }
+      if (d.t.status !== 'transferring' || !d.sink) return
+    }
+    if (offset + payload.byteLength <= d.expected) return // duplicate after a resend
+    d.t.wireBytes += wire
     const fresh = offset < d.expected ? payload.subarray(d.expected - offset) : payload
+    d.t.payloadBytes += fresh.byteLength
     if (d.expected + fresh.byteLength > d.t.size) {
       this.failDownload(d, 'received more bytes than announced')
       return

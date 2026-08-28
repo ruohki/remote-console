@@ -145,6 +145,54 @@ describe('TransferManager uploads', () => {
     expect(t.bytes).toBe(150_000)
   })
 
+  it('sends v2 deflate frames when the device advertises the codec, raw frames otherwise', async () => {
+    const { text, noise } = await import('./testdata')
+    const { inflateChunk } = await import('./codec')
+    const data = text(200_000)
+    const token = await mgr.upload(new File([data], 'notes.txt'))
+    await settle()
+    const offer = ch.lastText('offer')!
+    ch.recv({ t: 'accept', transfer_id: offer.transfer_id, offset: 0n, codecs: ['deflate'] })
+    await settle(80)
+    expect(ch.lastText('complete')!.sha256).toBe(hex(data))
+    const out = new Uint8Array(data.byteLength)
+    let packed = 0
+    let wire = 0
+    for (const b of ch.binaries) {
+      expect(new Uint8Array(b)[0]).toBe(2)
+      wire += b.byteLength
+      const c = decodeChunk(b)!
+      const payload = c.codec === 'deflate' ? (packed++, inflateChunk(c.payload, 65_536)) : c.payload
+      out.set(payload, c.offset)
+    }
+    expect(packed).toBeGreaterThan(0)
+    expect(Array.from(out)).toEqual(Array.from(data))
+    expect(wire * 4).toBeLessThan(data.byteLength)
+    const t = mgr.snapshot().find((x) => x.token === token)!
+    expect(t.codec).toBe('deflate')
+    expect(t.payloadBytes).toBe(data.byteLength)
+    expect(t.wireBytes).toBe(wire)
+
+    // Noise with the codec negotiated: v2 frames, but every payload stays raw.
+    ch.binaries = []
+    const n = noise(150_000)
+    await mgr.upload(new File([n], 'blob'))
+    await settle()
+    ch.recv({ t: 'accept', transfer_id: ch.lastText('offer')!.transfer_id, offset: 0n, codecs: ['deflate'] })
+    await settle(60)
+    expect(ch.binaries.length).toBeGreaterThan(0)
+    expect(ch.binaries.every((b) => decodeChunk(b)!.codec === 'raw')).toBe(true)
+
+    // An old agent (no codecs) gets version-1 frames.
+    ch.binaries = []
+    await mgr.upload(new File([data], 'legacy.txt'))
+    await settle()
+    ch.recv({ t: 'accept', transfer_id: ch.lastText('offer')!.transfer_id, offset: 0n })
+    await settle(60)
+    expect(ch.binaries.length).toBeGreaterThan(0)
+    expect(ch.binaries.every((b) => new Uint8Array(b)[0] === 1)).toBe(true)
+  })
+
   it('marks rejected and cancelled uploads as failed', async () => {
     await mgr.upload(new File([makeData(10)], 'r.bin'))
     await settle()
@@ -320,6 +368,56 @@ describe('TransferManager downloads', () => {
     await settle(10)
     expect(got).toHaveLength(1)
     expect(got[0]!.size).toBe(1234)
+  })
+
+  it('advertises deflate in accept and inflates compressed chunks; a bomb chunk cancels', async () => {
+    const { encodeChunkV2 } = await import('./chunk')
+    const { deflateChunk } = await import('./codec')
+    const { text } = await import('./testdata')
+    const data = text(200_000)
+    const sink = new MemSink()
+    await mgr.download('/x/t.txt', 't.txt', data.byteLength, async () => sink)
+    await settle()
+    ch.recv({ t: 'offer', transfer_id: 10, token: 't10', name: 't.txt', size: BigInt(data.byteLength), kind: 'file', direction: 'to_operator' })
+    await settle()
+    expect(ch.lastText('accept')!.codecs).toEqual(['deflate'])
+    for (let pos = 0; pos < data.byteLength; pos += 65_000) {
+      const raw = data.subarray(pos, Math.min(data.byteLength, pos + 65_000))
+      const packed = deflateChunk(raw)!
+      ch.recv(encodeChunkV2(10, pos, 'deflate', packed))
+    }
+    await settle(20)
+    ch.recv({ t: 'complete', transfer_id: 10, sha256: hex(data) })
+    await settle(10)
+    expect(ch.lastText('done')).toMatchObject({ transfer_id: 10, ok: true })
+    const t = mgr.snapshot().find((x) => x.token === 't10')!
+    expect(t.status, t.error).toBe('done')
+    expect(t.codec).toBe('deflate')
+    expect(t.payloadBytes).toBe(data.byteLength)
+    expect(t.wireBytes * 4).toBeLessThan(t.payloadBytes)
+    expect(Array.from(sink.bytes())).toEqual(Array.from(data))
+
+    // A chunk that inflates past what the transfer still needs is refused.
+    const sink2 = new MemSink()
+    await mgr.download('/x/small.bin', 'small.bin', 1000, async () => sink2)
+    await settle()
+    ch.recv({ t: 'offer', transfer_id: 12, token: 't12', name: 'small.bin', size: 1000n, kind: 'file', direction: 'to_operator' })
+    await settle()
+    ch.recv(encodeChunkV2(12, 0, 'deflate', deflateChunk(new Uint8Array(60_000))!))
+    await settle(10)
+    expect(ch.lastText('cancel')?.transfer_id).toBe(12)
+    expect(mgr.snapshot().find((x) => x.token === 't12')!.status).toBe('failed')
+  })
+
+  it('does not advertise codecs when compression is off', async () => {
+    mgr.setCompression(false)
+    const sink = new MemSink()
+    await mgr.download('/x/o.bin', 'o.bin', 10, async () => sink)
+    await settle()
+    ch.recv({ t: 'offer', transfer_id: 14, token: 't14', name: 'o.bin', size: 10n, kind: 'file', direction: 'to_operator' })
+    await settle()
+    expect(ch.lastText('accept')!.codecs).toBeUndefined()
+    expect(mgr.snapshot().find((x) => x.token === 't14')!.codec).toBeNull()
   })
 
   it('forwards listings and op results', () => {
