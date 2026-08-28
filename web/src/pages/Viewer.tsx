@@ -27,6 +27,8 @@ export function Viewer() {
   const [showStats, setShowStats] = useState(false)
   const [fullscreen, setFullscreen] = useState(false)
   const [toolbar, setToolbar] = useState(true)
+  // Set when the browser's autoplay policy rejected play(); the user must click once.
+  const [needsGesture, setNeedsGesture] = useState(false)
   const startedRef = useRef(false)
 
   // Kick off once the live socket is up (the device state is needed for a good error).
@@ -41,8 +43,20 @@ export function Viewer() {
     const v = videoRef.current
     if (!v) return
     if (v.srcObject !== state.stream) v.srcObject = state.stream
-    if (state.stream) v.play().catch(() => undefined)
+    if (state.stream) {
+      v.play()
+        .then(() => setNeedsGesture(false))
+        .catch(() => setNeedsGesture(true))
+    }
   }, [state.stream])
+
+  const playAfterGesture = () => {
+    const v = videoRef.current
+    if (!v) return
+    v.play()
+      .then(() => setNeedsGesture(false))
+      .catch(() => setNeedsGesture(true))
+  }
 
   useEffect(() => {
     const onFs = () => setFullscreen(!!document.fullscreenElement)
@@ -254,6 +268,16 @@ export function Viewer() {
         onDragStart={(e) => e.preventDefault()}
       >
         <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
+        {needsGesture && connected && (
+          <button
+            type="button"
+            onClick={playAfterGesture}
+            className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/70 text-white"
+          >
+            <span className="text-lg font-semibold">Click to start the video</span>
+            <span className="text-sm opacity-80">Your browser blocked autoplay for this site (check the autoplay / Shields settings to avoid this).</span>
+          </button>
+        )}
         {showStats && connected && <StatsOverlay state={state} />}
         <StateOverlay state={state} deviceName={deviceName} onRetry={() => void start()} onLeave={leave} onCancel={() => end()} deviceId={deviceId} />
       </div>

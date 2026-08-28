@@ -63,6 +63,8 @@ const ERROR_TEXT: Record<string, string> = {
   approval_timeout: 'Nobody answered at the device.',
   agent_error: 'The agent reported an error.',
   connection_failed: 'The connection could not be established. A TURN relay may be required.',
+  no_ice_candidates:
+    'Your browser gathered no network candidates, so WebRTC cannot connect: a VPN or privacy extension (e.g. Proton VPN, uBlock Origin) has set the WebRTC IP handling policy to "Disable non-proxied UDP". Allow WebRTC for this site, or configure a TURN relay on the console.',
   timeout: 'The console did not respond in time.',
   ws_closed: 'Lost the connection to the console.',
 }
@@ -233,6 +235,14 @@ export function useViewerSession(deviceId: string) {
     pc.oniceconnectionstatechange = () => {
       patch({ iceState: pc.iceConnectionState })
     }
+    // A browser whose WebRTC UDP is disabled (VPN / privacy extension policy) finishes
+    // gathering without a single candidate; it would otherwise spin until the ICE timeout.
+    let localCandidates = 0
+    pc.onicegatheringstatechange = () => {
+      if (pc.iceGatheringState === 'complete' && localCandidates === 0 && pc.connectionState !== 'connected') {
+        fail('no_ice_candidates')
+      }
+    }
     pc.onconnectionstatechange = () => {
       if (pc.connectionState === 'connected') {
         patch({ phase: 'connected' })
@@ -256,6 +266,7 @@ export function useViewerSession(deviceId: string) {
     // ICE candidates go out as soon as we have a session id (gathering only starts after
     // setLocalDescription, which happens once `session_created` arrived).
     pc.onicecandidate = (ev) => {
+      if (ev.candidate) localCandidates += 1
       if (!ev.candidate || !sessionIdRef.current) return
       uiSocket.send({ type: 'ice_candidate', session_id: sessionIdRef.current, candidate: fromRtcCandidate(ev.candidate) })
     }
