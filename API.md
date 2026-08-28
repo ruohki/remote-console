@@ -34,6 +34,63 @@ interface User { id: string; email: string; name: string; role: Role; disabled: 
 
 Password rules: ≥ 10 chars. Hash: argon2id.
 
+## Authentication: 2FA, passkeys, OIDC, SAML
+
+Policy env: `REQUIRE_2FA=admins|all|off` (default `admins`) — affected users must complete 2FA
+enrollment before any other API call succeeds (`403 { code: "two_factor_required" }`; the SPA
+routes them to `/security/setup`). `LOCAL_LOGIN=1|0` (default 1) — when 0, password login is
+disabled except for users flagged `break_glass`. Passkeys with user verification satisfy the
+2FA requirement on their own; an IdP login satisfies it when the provider config has
+`trust_idp_mfa` and the assertion carries an MFA `amr`/`AuthnContext`, else TOTP is still asked.
+
+```ts
+type AuthMethod = "password" | "passkey" | "oidc" | "saml";
+interface User { …; two_factor_enabled: boolean; passkeys: number; auth_methods: AuthMethod[]; break_glass: boolean; last_login_method?: AuthMethod }
+```
+
+### Login flow (password)
+| Method | Path | Body → Response |
+|--------|------|-----------------|
+| POST | `/api/auth/login` | `{ email, password }` → `200 { user }` (no 2FA) **or** `202 { pending: "two_factor", methods: ["totp","passkey"], challenge_id }` — a 5-minute pre-auth cookie `console_preauth` is set, no session yet |
+| POST | `/api/auth/2fa/verify` | `{ challenge_id, code }` (6-digit TOTP **or** a recovery code) → `{ user }` + session cookie; 5 attempts then the challenge is voided (`429`) |
+| POST | `/api/auth/2fa/setup` | (logged in, or in `two_factor_required` state) → `{ secret, otpauth_url, qr_svg }` |
+| POST | `/api/auth/2fa/enable` | `{ code }` → `{ recovery_codes: string[] }` (shown once; 10 codes, hashed at rest) |
+| POST | `/api/auth/2fa/recovery-codes` | `{ code }` → regenerates |
+| POST | `/api/auth/2fa/disable` | `{ code }` → 204 · `409 policy_requires_2fa` when the policy applies to this user |
+| POST | `/api/users/:id/2fa/reset` | admin → 204 (user must re-enroll at next login; audited `user.2fa_reset`) |
+
+### Passkeys (WebAuthn)
+| Method | Path | Body → Response |
+|--------|------|-----------------|
+| POST | `/api/auth/passkeys/register/start` | (logged in) `{ name }` → `PublicKeyCredentialCreationOptions` (JSON, base64url) |
+| POST | `/api/auth/passkeys/register/finish` | credential → `Passkey { id, name, created_at, last_used_at, backup_eligible }` |
+| GET | `/api/auth/passkeys` | → `Passkey[]` (own); admins: `/api/users/:id/passkeys` |
+| DELETE | `/api/auth/passkeys/:id` | → 204 (cannot remove the last one while it is the only 2FA method under policy → 409) |
+| POST | `/api/auth/passkeys/login/start` | `{}` → `PublicKeyCredentialRequestOptions` (discoverable; UV required) |
+| POST | `/api/auth/passkeys/login/finish` | assertion → `{ user }` + session (satisfies 2FA) |
+| POST | `/api/auth/2fa/passkey/start|finish` | second-factor variant during a pending challenge |
+RP id = host of `CONSOLE_PUBLIC_URL`; origins = the public URL; counters/backup flags checked; audited `passkey.register|remove`, `login` with `method`.
+
+### OIDC
+Config in `settings` (admin UI) — `{ enabled, display_name, issuer, client_id, client_secret (encrypted), scopes (default "openid email profile"), auto_provision: bool, default_role, admin_claim?: { name, value }, groups_claim?, trust_idp_mfa: bool, allowed_domains?: string[] }`.
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/auth/providers` | public → `{ local_login: bool, oidc?: { display_name }, saml?: { display_name }, passkeys: true }` |
+| GET | `/api/auth/oidc/start?return=/devices` | redirect to the IdP (PKCE + state + nonce in a short-lived cookie) |
+| GET | `/api/auth/oidc/callback` | validates ID token (issuer, aud, nonce, exp, signature via JWKS), links by verified email or provisions; sets session; redirects to `return` |
+| GET/PUT | `/api/auth/oidc/config` | admin; `POST /api/auth/oidc/test` performs discovery and reports the endpoints |
+
+### SAML 2.0
+Config: `{ enabled, display_name, idp_metadata_xml | idp_metadata_url, sp_entity_id (default CONSOLE_PUBLIC_URL + "/saml"), attribute_map: { email, name, groups }, auto_provision, default_role, admin_group?, trust_idp_mfa, sign_requests: bool }`; SP key/cert generated at first enable (stored encrypted).
+| Method | Path | Notes |
+|--------|------|-------|
+| GET | `/api/auth/saml/metadata` | SP metadata XML (public) |
+| GET | `/api/auth/saml/start?return=` | SP-initiated AuthnRequest (redirect binding) |
+| POST | `/api/auth/saml/acs` | Assertion Consumer Service (POST binding); validates signature, audience, conditions, InResponseTo (IdP-initiated allowed when enabled) |
+| GET/PUT | `/api/auth/saml/config` · `POST /api/auth/saml/test` | admin |
+
+Sessions record `auth_method`; `GET /api/auth/me` returns it plus `two_factor_enabled` and `two_factor_required` (true while enrollment is pending). Audit: `login` (method), `login_failed`, `2fa.enable|disable|reset|recovery`, `passkey.register|remove`, `sso.link|provision`, `auth.config`.
+
 ## Users (admin)
 
 | Method | Path | Body → Response |
