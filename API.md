@@ -95,6 +95,45 @@ interface DeviceDetail extends protocol.DeviceSummary {
 
 `DeviceSummary.mode` always mirrors `config.mode`.
 
+## Device groups & access control (RBAC)
+
+Roles stay `admin` / `operator`. **Admins** see and manage everything. **Operators** only see
+devices that belong to a group they have a *grant* on; the grant's permission decides what they
+may do. Devices in no group are visible to admins only.
+
+```ts
+type GroupPermission = "view" | "connect";
+interface Group { id: string; name: string; description: string; device_count: number; created_at: string }
+interface GroupGrant { user_id: string; user_name: string; user_email: string; permission: GroupPermission }
+```
+
+| Method | Path | Body → Response | Role |
+|--------|------|-----------------|------|
+| GET | `/api/groups` | → `Group[]` (operators: only groups they are granted) | operator |
+| POST | `/api/groups` | `{ name, description? }` → `Group` (409 on duplicate name) | admin |
+| PATCH | `/api/groups/:id` | `{ name?, description? }` → `Group` | admin |
+| DELETE | `/api/groups/:id` | → 204 (devices stay, just ungrouped) | admin |
+| GET | `/api/groups/:id/devices` | → `protocol.DeviceSummary[]` | operator (granted) |
+| PUT | `/api/groups/:id/devices` | `{ device_ids: string[] }` → 204 — replaces membership | admin |
+| GET | `/api/groups/:id/grants` | → `GroupGrant[]` | admin |
+| PUT | `/api/groups/:id/grants` | `{ grants: { user_id, permission }[] }` → `GroupGrant[]` — replaces grants | admin |
+| PUT | `/api/devices/:id/groups` | `{ group_ids: string[] }` → `DeviceDetail` | admin |
+| GET | `/api/users/:id/grants` | → `{ group_id, group_name, permission }[]` | admin |
+
+Enrollment tokens get an optional `default_group_id` (`POST /api/enroll-tokens`), and the token
+row exposes `default_group?: { id, name }`; enrolled devices join that group.
+
+**Effective permission** (`protocol.DeviceSummary.permission`, computed per requesting user):
+admin → `manage`; operator → highest of their grants over the device's groups (`connect` >
+`view`); no grant → the device is not returned at all (404 on direct access).
+
+**Enforcement** (server side, always): `GET /api/devices`, `/api/sessions`,
+`/api/devices/:id/sessions`, `/api/sessions/:id/events` and the `/ws/ui` `snapshot` /
+`device_update` / `session_update` / `session_event` pushes are filtered to devices the user may
+see. `session_offer` needs `connect` (error code `forbidden`). `PATCH /api/devices/:id`
+(name/tags/notes) needs `connect`. Config, groups, delete need `manage` (admin).
+Audit actions: `group.create|update|delete|members|grants`, `device.groups`.
+
 ## Sessions (operator+)
 
 | Method | Path | Body → Response |
