@@ -14,14 +14,15 @@ pub struct NewToken<'a> {
     pub max_uses: Option<i64>,
     pub default_mode: DeviceMode,
     pub default_tags: &'a [String],
+    pub default_group_id: Option<&'a str>,
 }
 
 pub async fn create(db: &Db, t: NewToken<'_>) -> Result<EnrollTokenRow> {
     let id = crate::ids::enroll_token_id();
     sqlx::query(
         "INSERT INTO enroll_tokens
-            (id, label, token_hash, token_prefix, created_by, created_at, expires_at, max_uses, uses, revoked, default_mode, default_tags)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+            (id, label, token_hash, token_prefix, created_by, created_at, expires_at, max_uses, uses, revoked, default_mode, default_tags, default_group_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?)",
     )
     .bind(&id)
     .bind(t.label.trim())
@@ -33,6 +34,7 @@ pub async fn create(db: &Db, t: NewToken<'_>) -> Result<EnrollTokenRow> {
     .bind(t.max_uses)
     .bind(enum_str(&t.default_mode))
     .bind(serde_json::to_string(t.default_tags).unwrap_or_else(|_| "[]".into()))
+    .bind(t.default_group_id)
     .execute(db)
     .await?;
     by_id(db, &id).await?.ok_or(sqlx::Error::RowNotFound)

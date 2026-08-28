@@ -45,10 +45,15 @@ pub async fn by_id(db: &Db, id: &str) -> Result<Option<SessionRow>> {
 pub struct Filter<'a> {
     pub active_only: bool,
     pub device_id: Option<&'a str>,
+    /// Restrict to these devices (RBAC); `Some(&[])` yields nothing, `None` = no restriction.
+    pub device_ids: Option<&'a [String]>,
     pub limit: i64,
 }
 
 pub async fn list(db: &Db, f: Filter<'_>) -> Result<Vec<SessionRow>> {
+    if f.device_ids.is_some_and(|ids| ids.is_empty()) {
+        return Ok(Vec::new());
+    }
     let mut sql = format!("{SELECT} WHERE 1 = 1");
     if f.active_only {
         sql.push_str(" AND s.state <> 'ended'");
@@ -56,10 +61,19 @@ pub async fn list(db: &Db, f: Filter<'_>) -> Result<Vec<SessionRow>> {
     if f.device_id.is_some() {
         sql.push_str(" AND s.device_id = ?");
     }
+    if let Some(ids) = f.device_ids {
+        let placeholders = vec!["?"; ids.len()].join(",");
+        sql.push_str(&format!(" AND s.device_id IN ({placeholders})"));
+    }
     sql.push_str(" ORDER BY s.started_at DESC LIMIT ?");
     let mut q = sqlx::query_as::<_, SessionRow>(&sql);
     if let Some(d) = f.device_id {
         q = q.bind(d);
+    }
+    if let Some(ids) = f.device_ids {
+        for id in ids {
+            q = q.bind(id);
+        }
     }
     q.bind(f.limit.clamp(1, 500)).fetch_all(db).await
 }

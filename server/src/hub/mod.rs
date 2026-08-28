@@ -8,12 +8,15 @@ pub mod agent_ws;
 pub mod events;
 pub mod ui_ws;
 
+use crate::auth::access::AccessMap;
 use crate::config::Config;
 use crate::db::{self, audit::Actor, Db};
 use events::EventLimiter;
 use parking_lot::Mutex;
 use protocol::agent::{ConsoleToAgent, SessionEvent};
-use protocol::common::{EndReason, IceServer, OperatorInfo, SessionDescription, SessionState};
+use protocol::common::{
+    EndReason, IceServer, OperatorInfo, SessionDescription, SessionRole, SessionState,
+};
 use protocol::config::AgentConfig;
 use protocol::ui::{ConsoleToUi, DeviceSummary, SessionSummary};
 use serde_json::json;
@@ -48,6 +51,8 @@ pub struct AgentConn {
 pub struct UiConn {
     pub tx: mpsc::UnboundedSender<ConsoleToUi>,
     pub user_id: String,
+    /// What this user may see / do; refreshed by [`Hub::refresh_access`].
+    pub access: AccessMap,
 }
 
 #[derive(Clone)]
@@ -77,6 +82,8 @@ pub struct Hub {
 /// Outcome of [`Hub::start_session`].
 pub enum StartError {
     NotFound,
+    /// The user may see the device but holds no `connect` grant.
+    Forbidden,
     DeviceOffline,
     DeviceBusy,
     Internal(String),
@@ -86,6 +93,7 @@ impl StartError {
     pub fn code(&self) -> &'static str {
         match self {
             StartError::NotFound => "not_found",
+            StartError::Forbidden => "forbidden",
             StartError::DeviceOffline => "device_offline",
             StartError::DeviceBusy => "device_busy",
             StartError::Internal(_) => "internal",
@@ -95,6 +103,7 @@ impl StartError {
     pub fn message(&self) -> String {
         match self {
             StartError::NotFound => "device not found".into(),
+            StartError::Forbidden => "you are not allowed to connect to this device".into(),
             StartError::DeviceOffline => "device is offline".into(),
             StartError::DeviceBusy => "device already has an active session".into(),
             StartError::Internal(m) => m.clone(),
@@ -249,12 +258,23 @@ impl Hub {
         }
     }
 
-    pub fn broadcast_ui(&self, msg: ConsoleToUi) {
+    /// Current access map of a UI connection (kept fresh by [`Self::refresh_access`]).
+    pub fn ui_access(&self, conn_id: u64) -> Option<AccessMap> {
+        self.state
+            .lock()
+            .uis
+            .get(&conn_id)
+            .map(|c| c.access.clone())
+    }
+
+    /// Send `msg` to every UI connection allowed to see `device_id`.
+    pub fn send_to_uis_seeing(&self, device_id: &str, msg: ConsoleToUi) {
         let senders: Vec<_> = self
             .state
             .lock()
             .uis
             .values()
+            .filter(|c| c.access.can_see(device_id))
             .map(|c| c.tx.clone())
             .collect();
         for tx in senders {
@@ -262,9 +282,20 @@ impl Hub {
         }
     }
 
-    pub async fn device_summary(&self, device_id: &str) -> Option<DeviceSummary> {
+    /// Summary of a device as seen by `access` (`None` when it must stay invisible).
+    pub async fn device_summary_for(
+        &self,
+        device_id: &str,
+        access: &AccessMap,
+    ) -> Option<DeviceSummary> {
+        let permission = access.permission(device_id)?;
         match db::devices::by_id(&self.db, device_id).await {
-            Ok(Some(row)) => Some(row.summary(self.active_session_id(device_id))),
+            Ok(Some(row)) => {
+                let groups = db::groups::groups_for_device(&self.db, device_id)
+                    .await
+                    .unwrap_or_default();
+                Some(row.summary(self.active_session_id(device_id), groups, permission))
+            }
             Ok(None) => None,
             Err(err) => {
                 tracing::error!("loading device {device_id}: {err}");
@@ -273,16 +304,132 @@ impl Hub {
         }
     }
 
+    /// Push a `device_update` to every UI that may see the device, each with its own
+    /// `permission`.
     pub async fn broadcast_device(&self, device_id: &str) {
-        if let Some(device) = self.device_summary(device_id).await {
-            self.broadcast_ui(ConsoleToUi::DeviceUpdate { device });
+        let row = match db::devices::by_id(&self.db, device_id).await {
+            Ok(Some(row)) => row,
+            Ok(None) => return,
+            Err(err) => {
+                tracing::error!("loading device {device_id}: {err}");
+                return;
+            }
+        };
+        let groups = db::groups::groups_for_device(&self.db, device_id)
+            .await
+            .unwrap_or_default();
+        let active = self.active_session_id(device_id);
+        let recipients: Vec<(
+            mpsc::UnboundedSender<ConsoleToUi>,
+            protocol::ui::DevicePermission,
+        )> = self
+            .state
+            .lock()
+            .uis
+            .values()
+            .filter_map(|c| c.access.permission(device_id).map(|p| (c.tx.clone(), p)))
+            .collect();
+        for (tx, permission) in recipients {
+            let _ = tx.send(ConsoleToUi::DeviceUpdate {
+                device: row.summary(active.clone(), groups.clone(), permission),
+            });
         }
     }
 
     pub fn broadcast_device_removed(&self, device_id: &str) {
-        self.broadcast_ui(ConsoleToUi::DeviceRemoved {
-            device_id: device_id.to_string(),
-        });
+        self.send_to_uis_seeing(
+            device_id,
+            ConsoleToUi::DeviceRemoved {
+                device_id: device_id.to_string(),
+            },
+        );
+    }
+
+    /// Recompute every UI connection's access map (after grant / membership / role changes)
+    /// and push the resulting differences: newly visible devices arrive as `device_update`,
+    /// lost ones as `device_removed`.
+    pub async fn refresh_access(&self) {
+        let conns: Vec<(u64, String, AccessMap)> = self
+            .state
+            .lock()
+            .uis
+            .iter()
+            .map(|(id, c)| (*id, c.user_id.clone(), c.access.clone()))
+            .collect();
+        if conns.is_empty() {
+            return;
+        }
+        let devices = match db::devices::list(&self.db).await {
+            Ok(rows) => rows,
+            Err(err) => {
+                tracing::error!("refreshing access: listing devices: {err}");
+                return;
+            }
+        };
+        let groups = db::groups::groups_for_all_devices(&self.db)
+            .await
+            .unwrap_or_default();
+        let active = self.active_sessions_by_device();
+        for (conn_id, user_id, old) in conns {
+            let user = match db::users::by_id(&self.db, &user_id).await {
+                Ok(Some(u)) if !u.disabled => u,
+                Ok(_) => {
+                    // Deleted / disabled: drop everything they could see.
+                    let tx = self.state.lock().uis.get(&conn_id).map(|c| c.tx.clone());
+                    if let Some(tx) = tx {
+                        for d in &devices {
+                            if old.can_see(&d.id) {
+                                let _ = tx.send(ConsoleToUi::DeviceRemoved {
+                                    device_id: d.id.clone(),
+                                });
+                            }
+                        }
+                    }
+                    if let Some(c) = self.state.lock().uis.get_mut(&conn_id) {
+                        c.access = AccessMap::from_grants(false, Vec::new());
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    tracing::error!("refreshing access for {user_id}: {err}");
+                    continue;
+                }
+            };
+            let new = match AccessMap::load(&self.db, &user).await {
+                Ok(a) => a,
+                Err(err) => {
+                    tracing::error!("refreshing access for {user_id}: {err}");
+                    continue;
+                }
+            };
+            let tx = {
+                let mut st = self.state.lock();
+                let Some(c) = st.uis.get_mut(&conn_id) else {
+                    continue;
+                };
+                c.access = new.clone();
+                c.tx.clone()
+            };
+            for d in &devices {
+                match (old.permission(&d.id), new.permission(&d.id)) {
+                    (Some(_), None) => {
+                        let _ = tx.send(ConsoleToUi::DeviceRemoved {
+                            device_id: d.id.clone(),
+                        });
+                    }
+                    (before, Some(permission)) if before != Some(permission) => {
+                        let _ = tx.send(ConsoleToUi::DeviceUpdate {
+                            device: d.summary(
+                                active.get(&d.id).cloned(),
+                                groups.get(&d.id).cloned().unwrap_or_default(),
+                                permission,
+                            ),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     pub async fn session_summary(&self, session_id: &str) -> Option<SessionSummary> {
@@ -298,7 +445,8 @@ impl Hub {
 
     pub async fn broadcast_session(&self, session_id: &str) {
         if let Some(session) = self.session_summary(session_id).await {
-            self.broadcast_ui(ConsoleToUi::SessionUpdate { session });
+            let device_id = session.device_id.clone();
+            self.send_to_uis_seeing(&device_id, ConsoleToUi::SessionUpdate { session });
         }
     }
 
@@ -357,6 +505,12 @@ impl Hub {
             Ok(None) => return Err(StartError::NotFound),
             Err(err) => return Err(StartError::Internal(format!("database: {err}"))),
         };
+        // RBAC: the connection's current access map must grant `connect`.
+        match self.ui_access(ui_conn_id) {
+            Some(access) if access.can_connect(device_id) => {}
+            Some(access) if access.can_see(device_id) => return Err(StartError::Forbidden),
+            _ => return Err(StartError::NotFound),
+        }
         let config = device.config();
         let help_me = config.mode == protocol::common::DeviceMode::HelpMe;
         let initial = if help_me {
@@ -423,6 +577,9 @@ impl Hub {
                 operator,
                 offer,
                 ice_servers,
+                role: SessionRole::Operator,
+                shadow_of: None,
+                notify_operator: true,
             },
         );
         if !delivered {
@@ -644,11 +801,14 @@ impl Hub {
             _ => {}
         }
 
-        self.broadcast_ui(ConsoleToUi::SessionEvent {
-            session_id: session_id.to_string(),
-            event,
-            ts,
-        });
+        self.send_to_uis_seeing(
+            device_id,
+            ConsoleToUi::SessionEvent {
+                session_id: session_id.to_string(),
+                event,
+                ts,
+            },
+        );
         Ok(Some(id))
     }
 

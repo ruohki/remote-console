@@ -9,15 +9,32 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
 use protocol::common::DeviceMode;
+use protocol::ui::GroupRef;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 
 pub async fn list(
     State(state): State<AppState>,
     _admin: AdminUser,
 ) -> ApiResult<Json<Vec<EnrollTokenPublic>>> {
     let rows = db::tokens::list(&state.db).await?;
-    Ok(Json(rows.iter().map(|t| t.public()).collect()))
+    let groups: HashMap<String, GroupRef> = db::groups::list(&state.db)
+        .await?
+        .into_iter()
+        .map(|g| (g.id.clone(), g.group_ref()))
+        .collect();
+    Ok(Json(
+        rows.iter()
+            .map(|t| {
+                t.public(
+                    t.default_group_id
+                        .as_deref()
+                        .and_then(|id| groups.get(id).cloned()),
+                )
+            })
+            .collect(),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -31,6 +48,9 @@ pub struct CreateBody {
     pub default_mode: DeviceMode,
     #[serde(default)]
     pub default_tags: Vec<String>,
+    /// Devices enrolled with this token join this group.
+    #[serde(default)]
+    pub default_group_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -69,6 +89,15 @@ pub async fn create(
         .filter(|t| !t.is_empty())
         .collect();
 
+    let default_group = match body.default_group_id.as_deref().map(str::trim) {
+        Some(id) if !id.is_empty() => Some(
+            db::groups::by_id(&state.db, id)
+                .await?
+                .ok_or_else(|| ApiError::validation("default_group_id does not exist"))?,
+        ),
+        _ => None,
+    };
+
     let token = ids::secret();
     let token_hash = ids::sha256_hex(&token);
     let expires_at = body
@@ -86,6 +115,7 @@ pub async fn create(
             max_uses: body.max_uses,
             default_mode: body.default_mode,
             default_tags: &tags,
+            default_group_id: default_group.as_ref().map(|g| g.id.as_str()),
         },
     )
     .await?;
@@ -94,7 +124,7 @@ pub async fn create(
         Some(admin.actor()),
         "token.create",
         Some(&row.id),
-        json!({ "label": row.label, "max_uses": row.max_uses, "expires_at": row.expires_at }),
+        json!({ "label": row.label, "max_uses": row.max_uses, "expires_at": row.expires_at, "default_group_id": row.default_group_id }),
     )
     .await?;
 
@@ -102,7 +132,7 @@ pub async fn create(
     Ok((
         StatusCode::CREATED,
         Json(CreatedToken {
-            token_info: row.public(),
+            token_info: row.public(default_group.map(|g| g.group_ref())),
             token,
             install: InstallCommands { macos, windows },
         }),

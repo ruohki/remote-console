@@ -620,6 +620,7 @@ async fn full_session_flow() {
                 kind: "offer".into(),
                 sdp: "v=0 offer".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -649,6 +650,7 @@ async fn full_session_flow() {
             operator,
             offer,
             ice_servers,
+            ..
         } => {
             assert_eq!(sid, session_id);
             assert_eq!(operator.name, "Admin");
@@ -667,6 +669,7 @@ async fn full_session_flow() {
                 kind: "offer".into(),
                 sdp: "x".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -889,6 +892,7 @@ async fn help_me_denied_and_offline_errors() {
                 kind: "offer".into(),
                 sdp: "x".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -904,6 +908,7 @@ async fn help_me_denied_and_offline_errors() {
                 kind: "offer".into(),
                 sdp: "x".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -921,6 +926,7 @@ async fn help_me_denied_and_offline_errors() {
                 kind: "offer".into(),
                 sdp: "x".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -980,6 +986,7 @@ async fn help_me_denied_and_offline_errors() {
                 kind: "offer".into(),
                 sdp: "x".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -1118,6 +1125,7 @@ async fn session_events_are_stored_pushed_and_audited() {
                 kind: "offer".into(),
                 sdp: "v=0 offer".into(),
             },
+            shadow_of: None,
         },
     )
     .await;
@@ -1371,4 +1379,501 @@ async fn device_config_patch_roundtrips_new_fields() {
     assert!(detail["config"].get("transfer_dir").is_none());
     assert_eq!(detail["config"]["allow_file_transfer"], false);
     assert_eq!(detail["config"]["max_fps"], 30);
+}
+
+// ── groups & RBAC ─────────────────────────────────────────────────────────────
+
+async fn login(app: &TestApp, email: &str, password: &str) -> (reqwest::Client, String) {
+    let c = client();
+    let r = c
+        .post(format!("{}/api/auth/login", app.base))
+        .json(&json!({ "email": email, "password": password }))
+        .send()
+        .await
+        .expect("login");
+    assert_eq!(r.status(), 200);
+    let cookie = r
+        .headers()
+        .get("set-cookie")
+        .expect("set-cookie")
+        .to_str()
+        .expect("str")
+        .split(';')
+        .next()
+        .expect("pair")
+        .to_string();
+    (c, cookie)
+}
+
+async fn create_group(app: &TestApp, c: &reqwest::Client, name: &str) -> String {
+    let r = c
+        .post(format!("{}/api/groups", app.base))
+        .json(&json!({ "name": name, "description": format!("{name} devices") }))
+        .send()
+        .await
+        .expect("group");
+    assert_eq!(r.status(), 201, "{}", r.text().await.unwrap_or_default());
+    let v: Value = r.json().await.expect("json");
+    v["id"].as_str().expect("id").to_string()
+}
+
+async fn put_json(c: &reqwest::Client, url: &str, body: Value) -> reqwest::Response {
+    c.put(url).json(&body).send().await.expect("put")
+}
+
+#[tokio::test]
+async fn groups_and_rbac_enforcement() {
+    let app = spawn_app().await;
+    let admin = client();
+    let admin_cookie = setup_admin(&app, &admin).await;
+
+    // operator account
+    let r = admin
+        .post(format!("{}/api/users", app.base))
+        .json(&json!({ "email": "op@example.com", "name": "Olive", "password": "operator-pass-123", "role": "operator" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let op_id = r.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (op, op_cookie) = login(&app, "op@example.com", "operator-pass-123").await;
+
+    // groups (+ duplicate name conflict)
+    let ga = create_group(&app, &admin, "Alpha").await;
+    let gb = create_group(&app, &admin, "Beta").await;
+    let gc = create_group(&app, &admin, "Gamma").await;
+    let dup = admin
+        .post(format!("{}/api/groups", app.base))
+        .json(&json!({ "name": "alpha" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dup.status(), 409);
+    // operators cannot create groups
+    let r = op
+        .post(format!("{}/api/groups", app.base))
+        .json(&json!({ "name": "Nope" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    // three devices, one per group
+    let tok = create_token(&app, &admin, "unattended").await;
+    let da = enroll(&app, tok["token"].as_str().unwrap()).await;
+    let db_ = enroll(&app, tok["token"].as_str().unwrap()).await;
+    let dc = enroll(&app, tok["token"].as_str().unwrap()).await;
+    for (g, d) in [(&ga, &da), (&gb, &db_), (&gc, &dc)] {
+        let r = put_json(
+            &admin,
+            &format!("{}/api/groups/{g}/devices", app.base),
+            json!({ "device_ids": [d.device_id] }),
+        )
+        .await;
+        assert_eq!(r.status(), 204, "{}", r.text().await.unwrap_or_default());
+    }
+    let bad = put_json(
+        &admin,
+        &format!("{}/api/groups/{ga}/devices", app.base),
+        json!({ "device_ids": ["dev_doesnotexist"] }),
+    )
+    .await;
+    assert_eq!(bad.status(), 422);
+
+    // operator sees nothing yet
+    let none: Vec<Value> = op
+        .get(format!("{}/api/devices", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(none.is_empty());
+
+    // operator UI socket connected *before* grants exist → must receive live updates later
+    let mut op_ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&op_cookie)).await;
+    send(&mut op_ui, &UiToConsole::Subscribe).await;
+    let snap: ConsoleToUi = recv(&mut op_ui).await;
+    assert!(matches!(snap, ConsoleToUi::Snapshot { ref devices, .. } if devices.is_empty()));
+
+    // grants: view on Alpha, connect on Beta (+ unknown user rejected)
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{ga}/grants", app.base),
+        json!({ "grants": [{ "user_id": op_id, "permission": "view" }] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let bad = put_json(
+        &admin,
+        &format!("{}/api/groups/{gb}/grants", app.base),
+        json!({ "grants": [{ "user_id": "nobody", "permission": "connect" }] }),
+    )
+    .await;
+    assert_eq!(bad.status(), 422);
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{gb}/grants", app.base),
+        json!({ "grants": [{ "user_id": op_id, "permission": "connect" }] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let grants: Vec<Value> = r.json().await.unwrap();
+    assert_eq!(grants[0]["user_name"], "Olive");
+    assert_eq!(grants[0]["permission"], "connect");
+
+    // the live socket learned about both devices with the right permissions
+    let upd_a: ConsoleToUi = recv_until(
+        &mut op_ui,
+        |m| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.id == da.device_id),
+    )
+    .await;
+    assert!(
+        matches!(upd_a, ConsoleToUi::DeviceUpdate { device } if device.permission == protocol::ui::DevicePermission::View)
+    );
+    let upd_b: ConsoleToUi = recv_until(
+        &mut op_ui,
+        |m| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.id == db_.device_id),
+    )
+    .await;
+    assert!(
+        matches!(upd_b, ConsoleToUi::DeviceUpdate { device } if device.permission == protocol::ui::DevicePermission::Connect)
+    );
+
+    // REST listing filtered + permissions + groups
+    let mut list: Vec<Value> = op
+        .get(format!("{}/api/devices", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    list.sort_by_key(|d| d["id"].as_str().unwrap().to_string());
+    assert_eq!(list.len(), 2);
+    for d in &list {
+        if d["id"] == da.device_id {
+            assert_eq!(d["permission"], "view");
+            assert_eq!(d["groups"][0]["name"], "Alpha");
+        } else {
+            assert_eq!(d["id"], db_.device_id);
+            assert_eq!(d["permission"], "connect");
+        }
+    }
+    // admin sees everything as manage
+    let all: Vec<Value> = admin
+        .get(format!("{}/api/devices", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().all(|d| d["permission"] == "manage"));
+
+    // direct access: C invisible (404), A view-only (PATCH 403), B connect (PATCH 200)
+    let r = op
+        .get(format!("{}/api/devices/{}", app.base, dc.device_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let r = op
+        .get(format!(
+            "{}/api/devices/{}/sessions",
+            app.base, dc.device_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let r = op
+        .patch(format!("{}/api/devices/{}", app.base, da.device_id))
+        .json(&json!({ "name": "renamed" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = op
+        .patch(format!("{}/api/devices/{}", app.base, db_.device_id))
+        .json(&json!({ "name": "Beta box" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.json::<Value>().await.unwrap()["permission"], "connect");
+    // config stays admin-only even with connect
+    let r = op
+        .patch(format!("{}/api/devices/{}/config", app.base, db_.device_id))
+        .json(&json!({ "max_fps": 30 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    // groups visible to the operator: Alpha + Beta; Gamma's devices → 404
+    let groups: Vec<Value> = op
+        .get(format!("{}/api/groups", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let names: Vec<&str> = groups.iter().map(|g| g["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["Alpha", "Beta"]);
+    assert_eq!(groups[0]["device_count"], 1);
+    let r = op
+        .get(format!("{}/api/groups/{gc}/devices", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+    let in_b: Vec<Value> = op
+        .get(format!("{}/api/groups/{gb}/devices", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(in_b.len(), 1);
+    assert_eq!(in_b[0]["name"], "Beta box");
+
+    // user grants overview (admin)
+    let ug: Vec<Value> = admin
+        .get(format!("{}/api/users/{op_id}/grants", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(ug.len(), 2);
+    assert_eq!(ug[0]["group_name"], "Alpha");
+    assert_eq!(ug[0]["permission"], "view");
+
+    // sessions: connect A → forbidden, connect B → created
+    let mut agent_a = agent_hello(&app, &da, &da.device_secret).await;
+    let _: ConsoleToAgent = recv(&mut agent_a).await;
+    let mut agent_b = agent_hello(&app, &db_, &db_.device_secret).await;
+    let _: ConsoleToAgent = recv(&mut agent_b).await;
+    let offer = SessionDescription {
+        kind: "offer".into(),
+        sdp: "v=0 offer".into(),
+    };
+    send(
+        &mut op_ui,
+        &UiToConsole::SessionOffer {
+            device_id: da.device_id.clone(),
+            offer: offer.clone(),
+            shadow_of: None,
+        },
+    )
+    .await;
+    let err: ConsoleToUi = recv_until(&mut op_ui, |m| matches!(m, ConsoleToUi::Error { .. })).await;
+    assert!(matches!(err, ConsoleToUi::Error { code, .. } if code == "forbidden"));
+    // shadowing is not implemented yet
+    send(
+        &mut op_ui,
+        &UiToConsole::SessionOffer {
+            device_id: db_.device_id.clone(),
+            offer: offer.clone(),
+            shadow_of: Some("ses_x".into()),
+        },
+    )
+    .await;
+    let err: ConsoleToUi = recv_until(&mut op_ui, |m| matches!(m, ConsoleToUi::Error { .. })).await;
+    assert!(matches!(err, ConsoleToUi::Error { code, .. } if code == "not_implemented"));
+    send(
+        &mut op_ui,
+        &UiToConsole::SessionOffer {
+            device_id: db_.device_id.clone(),
+            offer,
+            shadow_of: None,
+        },
+    )
+    .await;
+    let created: ConsoleToUi = recv_until(&mut op_ui, |m| {
+        matches!(m, ConsoleToUi::SessionCreated { .. })
+    })
+    .await;
+    let session_id = match created {
+        ConsoleToUi::SessionCreated { session_id, .. } => session_id,
+        _ => unreachable!(),
+    };
+    let req: ConsoleToAgent = recv_until(&mut agent_b, |m| {
+        matches!(m, ConsoleToAgent::SessionRequest { .. })
+    })
+    .await;
+    assert!(matches!(
+        req,
+        ConsoleToAgent::SessionRequest {
+            role: SessionRole::Operator,
+            shadow_of: None,
+            ..
+        }
+    ));
+
+    // session listing is filtered: operator sees the B session; an admin-only device's
+    // sessions are hidden. Events of a session on an invisible device → 404.
+    let sessions: Vec<Value> = op
+        .get(format!("{}/api/sessions", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0]["id"], session_id);
+    let r = op
+        .get(format!(
+            "{}/api/sessions?device_id={}",
+            app.base, dc.device_id
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+
+    // grant on Gamma appears live, revoking it removes the device live
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{gc}/grants", app.base),
+        json!({ "grants": [{ "user_id": op_id, "permission": "connect" }] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let upd_c: ConsoleToUi = recv_until(
+        &mut op_ui,
+        |m| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.id == dc.device_id),
+    )
+    .await;
+    assert!(
+        matches!(upd_c, ConsoleToUi::DeviceUpdate { device } if device.permission == protocol::ui::DevicePermission::Connect)
+    );
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{gc}/grants", app.base),
+        json!({ "grants": [] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let removed: ConsoleToUi = recv_until(
+        &mut op_ui,
+        |m| matches!(m, ConsoleToUi::DeviceRemoved { device_id } if *device_id == dc.device_id),
+    )
+    .await;
+    assert!(matches!(removed, ConsoleToUi::DeviceRemoved { .. }));
+
+    // token with a default group enrolls straight into Alpha (visible to the operator)
+    let r = admin
+        .post(format!("{}/api/enroll-tokens", app.base))
+        .json(&json!({ "label": "alpha-token", "default_mode": "unattended", "default_tags": [], "default_group_id": ga }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let tok2: Value = r.json().await.unwrap();
+    assert_eq!(tok2["default_group"]["name"], "Alpha");
+    let bad = admin
+        .post(format!("{}/api/enroll-tokens", app.base))
+        .json(&json!({ "label": "x", "default_group_id": "grp_missing" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bad.status(), 422);
+    let dd = enroll(&app, tok2["token"].as_str().unwrap()).await;
+    let detail: Value = admin
+        .get(format!("{}/api/devices/{}", app.base, dd.device_id))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(detail["groups"][0]["id"], ga);
+    let upd_d: ConsoleToUi = recv_until(
+        &mut op_ui,
+        |m| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.id == dd.device_id),
+    )
+    .await;
+    assert!(
+        matches!(upd_d, ConsoleToUi::DeviceUpdate { device } if device.permission == protocol::ui::DevicePermission::View)
+    );
+    let listed: Vec<Value> = admin
+        .get(format!("{}/api/enroll-tokens", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(listed
+        .iter()
+        .any(|t| t["label"] == "alpha-token" && t["default_group"]["id"] == ga));
+
+    // PUT /api/devices/:id/groups replaces membership; group delete leaves devices intact
+    let r = put_json(
+        &admin,
+        &format!("{}/api/devices/{}/groups", app.base, dc.device_id),
+        json!({ "group_ids": [ga, gc] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let det: Value = r.json().await.unwrap();
+    assert_eq!(det["groups"].as_array().unwrap().len(), 2);
+    let r = admin
+        .delete(format!("{}/api/groups/{gc}", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let det: Value = admin
+        .get(format!("{}/api/devices/{}", app.base, dc.device_id))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(det["groups"].as_array().unwrap().len(), 1);
+    assert_eq!(det["groups"][0]["id"], ga);
+    // now in Alpha → the operator sees it (view)
+    let r = op
+        .get(format!("{}/api/devices/{}", app.base, dc.device_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.json::<Value>().await.unwrap()["permission"], "view");
+
+    // audit trail
+    let audit: Vec<Value> = admin
+        .get(format!("{}/api/audit?limit=200", app.base))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for action in [
+        "group.create",
+        "group.members",
+        "group.grants",
+        "group.delete",
+        "device.groups",
+    ] {
+        assert!(
+            audit.iter().any(|a| a["action"] == action),
+            "missing audit action {action}"
+        );
+    }
+    drop(admin_cookie);
 }

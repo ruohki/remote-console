@@ -1,5 +1,7 @@
 //! Passwords, cookie sessions, role extractors, login rate limiting and the JSON guard.
 
+pub mod access;
+
 use crate::app::AppState;
 use crate::db::models::UserRow;
 use crate::error::ApiError;

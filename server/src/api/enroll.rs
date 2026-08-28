@@ -89,15 +89,23 @@ pub async fn enroll(
     )
     .await?;
 
+    if let Some(group_id) = token.default_group_id.as_deref() {
+        // The group may have been deleted meanwhile (column is SET NULL, but race-safe).
+        if db::groups::by_id(&state.db, group_id).await?.is_some() {
+            db::groups::add_member(&state.db, group_id, &device.id).await?;
+        }
+    }
+
     let ip = auth::client_ip(&headers, Some(&ConnectInfo(peer)));
     db::audit::record(
         &state.db,
         None,
         "enroll",
         Some(&device.id),
-        json!({ "hostname": hostname, "os": req.os, "arch": req.arch, "token": token.label, "ip": ip }),
+        json!({ "hostname": hostname, "os": req.os, "arch": req.arch, "token": token.label, "ip": ip, "group_id": token.default_group_id }),
     )
     .await?;
+    state.hub.refresh_access().await;
     state.hub.broadcast_device(&device.id).await;
 
     Ok((

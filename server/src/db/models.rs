@@ -3,7 +3,7 @@
 use crate::db::{enum_parse, enum_str};
 use protocol::common::{Arch, DeviceMode, DisplayInfo, EndReason, Os, SessionState, VideoCodec};
 use protocol::config::AgentConfig;
-use protocol::ui::{DeviceSummary, SessionSummary};
+use protocol::ui::{DevicePermission, DeviceSummary, GroupRef, SessionSummary};
 use serde::{Deserialize, Serialize};
 
 // ── users ──────────────────────────────────────────────────────────────────────
@@ -95,6 +95,7 @@ pub struct EnrollTokenRow {
     pub revoked: bool,
     pub default_mode: String,
     pub default_tags: String,
+    pub default_group_id: Option<String>,
 }
 
 impl EnrollTokenRow {
@@ -106,7 +107,8 @@ impl EnrollTokenRow {
         serde_json::from_str(&self.default_tags).unwrap_or_default()
     }
 
-    pub fn public(&self) -> EnrollTokenPublic {
+    /// Public view; `default_group` is resolved by the caller (needs the group name).
+    pub fn public(&self, default_group: Option<GroupRef>) -> EnrollTokenPublic {
         EnrollTokenPublic {
             id: self.id.clone(),
             label: self.label.clone(),
@@ -119,6 +121,7 @@ impl EnrollTokenRow {
             revoked: self.revoked,
             default_mode: self.default_mode(),
             default_tags: self.default_tags(),
+            default_group,
         }
     }
 }
@@ -139,6 +142,8 @@ pub struct EnrollTokenPublic {
     pub revoked: bool,
     pub default_mode: DeviceMode,
     pub default_tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_group: Option<GroupRef>,
 }
 
 // ── devices ───────────────────────────────────────────────────────────────────
@@ -190,7 +195,13 @@ impl DeviceRow {
         enum_parse(&self.arch).unwrap_or(Arch::X86_64)
     }
 
-    pub fn summary(&self, active_session_id: Option<String>) -> DeviceSummary {
+    /// Summary for one requesting user: `permission` is per user, `groups` per device.
+    pub fn summary(
+        &self,
+        active_session_id: Option<String>,
+        groups: Vec<GroupRef>,
+        permission: DevicePermission,
+    ) -> DeviceSummary {
         let config = self.config();
         DeviceSummary {
             id: self.id.clone(),
@@ -208,6 +219,8 @@ impl DeviceRow {
             codecs: self.codecs(),
             displays: self.displays(),
             active_session_id,
+            groups,
+            permission,
         }
     }
 
@@ -215,9 +228,11 @@ impl DeviceRow {
         &self,
         active_session_id: Option<String>,
         enrolled_with: Option<String>,
+        groups: Vec<GroupRef>,
+        permission: DevicePermission,
     ) -> DeviceDetail {
         DeviceDetail {
-            summary: self.summary(active_session_id),
+            summary: self.summary(active_session_id, groups, permission),
             notes: self.notes.clone(),
             created_at: self.created_at.clone(),
             enrolled_with,
@@ -236,6 +251,135 @@ pub struct DeviceDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enrolled_with: Option<String>,
     pub config: AgentConfig,
+}
+
+// ── device groups ─────────────────────────────────────────────────────────────
+
+/// Permission an operator holds on a group (`API.md` `GroupPermission`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupPermission {
+    View,
+    Connect,
+}
+
+impl GroupPermission {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GroupPermission::View => "view",
+            GroupPermission::Connect => "connect",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "view" => Some(GroupPermission::View),
+            "connect" => Some(GroupPermission::Connect),
+            _ => None,
+        }
+    }
+
+    pub fn as_device_permission(self) -> DevicePermission {
+        match self {
+            GroupPermission::View => DevicePermission::View,
+            GroupPermission::Connect => DevicePermission::Connect,
+        }
+    }
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct GroupRow {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub created_at: String,
+    pub device_count: i64,
+}
+
+impl GroupRow {
+    pub fn public(&self) -> GroupPublic {
+        GroupPublic {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            description: self.description.clone(),
+            device_count: self.device_count,
+            created_at: self.created_at.clone(),
+        }
+    }
+
+    pub fn group_ref(&self) -> GroupRef {
+        GroupRef {
+            id: self.id.clone(),
+            name: self.name.clone(),
+        }
+    }
+}
+
+/// `Group` as defined in API.md.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupPublic {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub device_count: i64,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct GroupGrantRow {
+    pub user_id: String,
+    pub user_name: String,
+    pub user_email: String,
+    pub permission: String,
+}
+
+impl GroupGrantRow {
+    pub fn permission(&self) -> GroupPermission {
+        GroupPermission::parse(&self.permission).unwrap_or(GroupPermission::View)
+    }
+
+    pub fn public(&self) -> GroupGrant {
+        GroupGrant {
+            user_id: self.user_id.clone(),
+            user_name: self.user_name.clone(),
+            user_email: self.user_email.clone(),
+            permission: self.permission(),
+        }
+    }
+}
+
+/// `GroupGrant` as defined in API.md.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupGrant {
+    pub user_id: String,
+    pub user_name: String,
+    pub user_email: String,
+    pub permission: GroupPermission,
+}
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UserGrantRow {
+    pub group_id: String,
+    pub group_name: String,
+    pub permission: String,
+}
+
+impl UserGrantRow {
+    pub fn public(&self) -> UserGrant {
+        UserGrant {
+            group_id: self.group_id.clone(),
+            group_name: self.group_name.clone(),
+            permission: GroupPermission::parse(&self.permission).unwrap_or(GroupPermission::View),
+        }
+    }
+}
+
+/// One row of `GET /api/users/:id/grants`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserGrant {
+    pub group_id: String,
+    pub group_name: String,
+    pub permission: GroupPermission,
 }
 
 // ── remote sessions ───────────────────────────────────────────────────────────
@@ -277,6 +421,9 @@ impl SessionRow {
             ended_at: self.ended_at.clone(),
             end_reason: self.end_reason.as_deref().and_then(enum_parse::<EndReason>),
             codec: self.codec.as_deref().and_then(enum_parse::<VideoCodec>),
+            role: protocol::common::SessionRole::Operator,
+            shadow_of: None,
+            observers: Vec::new(),
         }
     }
 }

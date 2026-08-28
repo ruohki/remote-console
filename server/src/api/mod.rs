@@ -4,6 +4,7 @@ pub mod audit;
 pub mod auth;
 pub mod devices;
 pub mod enroll;
+pub mod groups;
 pub mod info;
 pub mod sessions;
 pub mod tokens;
@@ -25,6 +26,20 @@ pub fn router() -> Router<AppState> {
             "/users/{id}",
             axum::routing::patch(users::update).delete(users::delete),
         )
+        .route("/users/{id}/grants", get(groups::user_grants))
+        .route("/groups", get(groups::list).post(groups::create))
+        .route(
+            "/groups/{id}",
+            axum::routing::patch(groups::update).delete(groups::delete),
+        )
+        .route(
+            "/groups/{id}/devices",
+            get(groups::devices).put(groups::set_members),
+        )
+        .route(
+            "/groups/{id}/grants",
+            get(groups::grants).put(groups::set_grants),
+        )
         .route("/enroll-tokens", get(tokens::list).post(tokens::create))
         .route("/enroll-tokens/{id}", axum::routing::delete(tokens::revoke))
         .route("/enroll", post(enroll::enroll))
@@ -38,6 +53,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/devices/{id}/config",
             axum::routing::patch(devices::update_config),
+        )
+        .route(
+            "/devices/{id}/groups",
+            axum::routing::put(groups::set_device_groups),
         )
         .route("/devices/{id}/sessions", get(devices::sessions))
         .route("/sessions", get(sessions::list))

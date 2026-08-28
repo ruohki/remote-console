@@ -1,8 +1,9 @@
 //! Devices (operator+; config and deletion admin only).
 
 use crate::app::AppState;
+use crate::auth::access::{self, AccessMap};
 use crate::auth::{AdminUser, AuthUser};
-use crate::db::{self, models::DeviceDetail, sessions::Filter};
+use crate::db::{self, models::DeviceDetail, models::DeviceRow, sessions::Filter};
 use crate::error::{ApiError, ApiResult};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
@@ -13,20 +14,44 @@ use protocol::ui::{DeviceSummary, SessionSummary};
 use serde::Deserialize;
 use serde_json::json;
 
-pub async fn list(
-    State(state): State<AppState>,
-    _user: AuthUser,
-) -> ApiResult<Json<Vec<DeviceSummary>>> {
-    let rows = db::devices::list(&state.db).await?;
+/// Summaries of `rows` as seen by the caller: invisible devices are dropped, groups are
+/// resolved with one query, `permission` is per caller.
+pub async fn summaries_for(
+    state: &AppState,
+    access: &AccessMap,
+    rows: &[DeviceRow],
+) -> ApiResult<Vec<DeviceSummary>> {
     let active = state.hub.active_sessions_by_device();
-    Ok(Json(
-        rows.iter()
-            .map(|d| d.summary(active.get(&d.id).cloned()))
-            .collect(),
-    ))
+    let mut groups = db::groups::groups_for_all_devices(&state.db).await?;
+    Ok(rows
+        .iter()
+        .filter_map(|d| {
+            let permission = access.permission(&d.id)?;
+            Some(d.summary(
+                active.get(&d.id).cloned(),
+                groups.remove(&d.id).unwrap_or_default(),
+                permission,
+            ))
+        })
+        .collect())
 }
 
-async fn load_detail(state: &AppState, id: &str) -> ApiResult<DeviceDetail> {
+pub async fn list(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> ApiResult<Json<Vec<DeviceSummary>>> {
+    let access = access::for_user(&state, &user.0).await?;
+    let rows = db::devices::list(&state.db).await?;
+    Ok(Json(summaries_for(&state, &access, &rows).await?))
+}
+
+/// Detail for one device; 404 unless the caller may see it.
+pub async fn load_detail(
+    state: &AppState,
+    id: &str,
+    access: &AccessMap,
+) -> ApiResult<DeviceDetail> {
+    let permission = access::require_visible(access, id)?;
     let row = db::devices::by_id(&state.db, id)
         .await?
         .ok_or_else(|| ApiError::not_found("device"))?;
@@ -34,15 +59,17 @@ async fn load_detail(state: &AppState, id: &str) -> ApiResult<DeviceDetail> {
         Some(t) => db::tokens::label(&state.db, t).await?,
         None => None,
     };
-    Ok(row.detail(state.hub.active_session_id(id), label))
+    let groups = db::groups::groups_for_device(&state.db, id).await?;
+    Ok(row.detail(state.hub.active_session_id(id), label, groups, permission))
 }
 
 pub async fn get_one(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(id): Path<String>,
 ) -> ApiResult<Json<DeviceDetail>> {
-    Ok(Json(load_detail(&state, &id).await?))
+    let access = access::for_user(&state, &user.0).await?;
+    Ok(Json(load_detail(&state, &id, &access).await?))
 }
 
 #[derive(Deserialize, Default)]
@@ -58,6 +85,8 @@ pub async fn update(
     Path(id): Path<String>,
     Json(body): Json<UpdateBody>,
 ) -> ApiResult<Json<DeviceDetail>> {
+    let access = access::for_user(&state, &user.0).await?;
+    access::require_connect(&access, &id)?;
     if body.name.as_deref().is_some_and(|n| n.trim().is_empty()) {
         return Err(ApiError::validation("name must not be empty"));
     }
@@ -85,7 +114,7 @@ pub async fn update(
     )
     .await?;
     state.hub.broadcast_device(&id).await;
-    Ok(Json(load_detail(&state, &id).await?))
+    Ok(Json(load_detail(&state, &id, &access).await?))
 }
 
 /// `Partial<AgentConfig>`: every field optional, merged onto the stored config.
@@ -210,7 +239,7 @@ pub async fn update_config(
     .await?;
     state.hub.push_config(&id, &new_config).await;
     state.hub.broadcast_device(&id).await;
-    Ok(Json(load_detail(&state, &id).await?))
+    Ok(Json(load_detail(&state, &id, &AccessMap::admin()).await?))
 }
 
 pub async fn delete(
@@ -253,10 +282,12 @@ fn default_limit() -> i64 {
 
 pub async fn sessions(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
     Path(id): Path<String>,
     Query(q): Query<SessionsQuery>,
 ) -> ApiResult<Json<Vec<SessionSummary>>> {
+    let access = access::for_user(&state, &user.0).await?;
+    access::require_visible(&access, &id)?;
     if db::devices::by_id(&state.db, &id).await?.is_none() {
         return Err(ApiError::not_found("device"));
     }
@@ -265,6 +296,7 @@ pub async fn sessions(
         Filter {
             active_only: false,
             device_id: Some(&id),
+            device_ids: None,
             limit: q.limit,
         },
     )

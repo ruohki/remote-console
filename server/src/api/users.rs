@@ -113,6 +113,9 @@ pub async fn update(
     if body.disabled == Some(true) || password_hash.is_some() {
         db::users::delete_login_sessions_for_user(&state.db, &id).await?;
     }
+    if body.role.is_some() || body.disabled.is_some() {
+        state.hub.refresh_access().await;
+    }
     db::audit::record(
         &state.db,
         Some(admin.actor()),
@@ -151,6 +154,7 @@ pub async fn delete(
         ));
     }
     db::users::delete(&state.db, &id).await?;
+    state.hub.refresh_access().await;
     db::audit::record(
         &state.db,
         Some(admin.actor()),

@@ -33,6 +33,10 @@ pub fn enroll_token_id() -> String {
     format!("enr_{}", base62(22))
 }
 
+pub fn group_id() -> String {
+    format!("grp_{}", base62(22))
+}
+
 pub fn user_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -66,6 +70,7 @@ mod tests {
         assert!(device_id().starts_with("dev_"));
         assert!(session_id().starts_with("ses_"));
         assert!(enroll_token_id().starts_with("enr_"));
+        assert!(group_id().starts_with("grp_"));
         assert_eq!(secret().len(), 43);
         assert!(secret().bytes().all(|b| BASE62.contains(&b)));
         assert_ne!(secret(), secret());

@@ -2,6 +2,7 @@
 
 use super::{Hub, UiConn};
 use crate::app::AppState;
+use crate::auth::access::AccessMap;
 use crate::auth::{self, AuthUser};
 use crate::db::{self, sessions::Filter};
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
@@ -36,11 +37,19 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, user: db::models::UserRow, ip:
     let (mut sink, mut stream) = socket.split();
     let conn_id = hub.next_conn_id();
     let (tx, mut rx) = mpsc::unbounded_channel::<ConsoleToUi>();
+    let access = match AccessMap::load(&hub.db, &user).await {
+        Ok(a) => a,
+        Err(err) => {
+            tracing::error!(user = %user.email, "loading access map: {err}");
+            AccessMap::from_grants(false, Vec::new())
+        }
+    };
     hub.register_ui(
         conn_id,
         UiConn {
             tx: tx.clone(),
             user_id: user.id.clone(),
+            access,
         },
     );
     let operator = OperatorInfo {
@@ -133,11 +142,24 @@ async fn handle_message(
 ) {
     match msg {
         UiToConsole::Subscribe => {
+            let access = hub
+                .ui_access(conn_id)
+                .unwrap_or_else(|| AccessMap::from_grants(false, Vec::new()));
             let devices = match db::devices::list(&hub.db).await {
                 Ok(rows) => {
                     let active = hub.active_sessions_by_device();
+                    let mut groups = db::groups::groups_for_all_devices(&hub.db)
+                        .await
+                        .unwrap_or_default();
                     rows.iter()
-                        .map(|d| d.summary(active.get(&d.id).cloned()))
+                        .filter_map(|d| {
+                            let permission = access.permission(&d.id)?;
+                            Some(d.summary(
+                                active.get(&d.id).cloned(),
+                                groups.remove(&d.id).unwrap_or_default(),
+                                permission,
+                            ))
+                        })
                         .collect()
                 }
                 Err(err) => {
@@ -145,11 +167,15 @@ async fn handle_message(
                     Vec::new()
                 }
             };
+            let visible: Option<Vec<String>> = access
+                .visible_device_ids()
+                .map(|set| set.into_iter().collect());
             let sessions = match db::sessions::list(
                 &hub.db,
                 Filter {
                     active_only: true,
                     device_id: None,
+                    device_ids: visible.as_deref(),
                     limit: 500,
                 },
             )
@@ -166,7 +192,19 @@ async fn handle_message(
         UiToConsole::Ping { nonce } => {
             let _ = tx.send(ConsoleToUi::Pong { nonce });
         }
-        UiToConsole::SessionOffer { device_id, offer } => {
+        UiToConsole::SessionOffer {
+            device_id,
+            offer,
+            shadow_of,
+        } => {
+            if shadow_of.is_some() {
+                let _ = tx.send(ConsoleToUi::Error {
+                    session_id: None,
+                    code: "not_implemented".into(),
+                    message: "session shadowing is not available yet".into(),
+                });
+                return;
+            }
             if offer.kind != "offer" {
                 let _ = tx.send(ConsoleToUi::Error {
                     session_id: None,
