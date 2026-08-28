@@ -17,6 +17,9 @@ import { Settings } from '@/pages/Settings'
 import { GroupsPage } from '@/pages/Groups'
 import { GroupDetail } from '@/pages/GroupDetail'
 import { NotFound } from '@/pages/NotFound'
+import { SecurityPage } from '@/pages/Security'
+import { SecuritySetup } from '@/pages/SecuritySetup'
+import { allowedWhileEnrollmentPending } from '@/lib/authFlow'
 import { Skeleton } from '@/components/ui'
 import { useApplyBranding } from '@/lib/branding'
 
@@ -49,6 +52,8 @@ function RequireAuth({ admin }: { admin?: boolean }) {
   }
   if (needsSetup) return <Navigate to="/setup" replace />
   if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />
+  // 2FA policy: nothing else works until the second factor is enrolled.
+  if (user.two_factor_required && !allowedWhileEnrollmentPending(location.pathname)) return <Navigate to="/security/setup" replace />
   if (admin && user.role !== 'admin') return <NotFound />
   return <Outlet />
 }
@@ -64,6 +69,8 @@ export default function App() {
               <Route path="/login" element={<Login />} />
               <Route path="/setup" element={<Setup />} />
               <Route element={<RequireAuth />}>
+                {/* forced second-factor enrollment (no chrome, cannot be left) */}
+                <Route path="/security/setup" element={<SecuritySetup />} />
                 {/* the viewer takes the whole viewport, no chrome */}
                 <Route path="/viewer/:deviceId" element={<Viewer />} />
                 <Route element={<Layout />}>
@@ -75,6 +82,8 @@ export default function App() {
                   <Route path="/settings/tokens" element={<Settings tab="tokens" />} />
                   <Route path="/settings/branding" element={<Settings tab="branding" />} />
                   <Route path="/settings/agent" element={<Settings tab="agent" />} />
+                  <Route path="/settings/auth" element={<Settings tab="auth" />} />
+                  <Route path="/security" element={<SecurityPage />} />
                   <Route element={<RequireAuth admin />}>
                     <Route path="/groups" element={<GroupsPage />} />
                     <Route path="/groups/:id" element={<GroupDetail />} />

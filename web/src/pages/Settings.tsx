@@ -12,16 +12,17 @@ import { dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useNow } from '@/hooks/useNow'
 import { BrandingTab } from './settings/BrandingTab'
+import { AuthTab } from './settings/AuthTab'
 import { AgentDownloadMenu, AgentDownloadsPanel } from '@/components/AgentDownloads'
 
-type SettingsTab = 'info' | 'tokens' | 'branding' | 'agent'
+type SettingsTab = 'info' | 'tokens' | 'branding' | 'agent' | 'auth'
 
 export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   const isAdmin = useIsAdmin()
   const current: SettingsTab = isAdmin || tab === 'info' ? tab : 'info'
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHeader title="Settings" subtitle="Console information, enrollment tokens, branding and agent downloads." />
+      <PageHeader title="Settings" subtitle="Console information, enrollment tokens, branding, agent downloads and authentication." />
       <div className="mb-4 flex flex-wrap gap-1 border-b border-line">
         <TabLink to="/settings" active={current === 'info'}>
           Console
@@ -37,10 +38,13 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
             <TabLink to="/settings/agent" active={current === 'agent'}>
               Agent downloads
             </TabLink>
+            <TabLink to="/settings/auth" active={current === 'auth'}>
+              Authentication
+            </TabLink>
           </>
         )}
       </div>
-      {current === 'tokens' ? <TokensTab /> : current === 'branding' ? <BrandingTab /> : current === 'agent' ? <AgentDownloadsPanel /> : <InfoTab />}
+      {current === 'tokens' ? <TokensTab /> : current === 'branding' ? <BrandingTab /> : current === 'agent' ? <AgentDownloadsPanel /> : current === 'auth' ? <AuthTab /> : <InfoTab />}
     </div>
   )
 }

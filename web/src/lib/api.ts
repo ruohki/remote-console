@@ -30,7 +30,18 @@ function withQuery(path: string, query?: Query) {
   return qs ? `${path}?${qs}` : path
 }
 
+/** Result of a request when the caller needs the status code (e.g. 200 vs 202 on login). */
+export interface StatusResponse<T> {
+  status: number
+  data: T
+}
+
 async function request<T>(method: string, path: string, body?: unknown, query?: Query): Promise<T> {
+  const { data } = await requestWithStatus<T>(method, path, body, query)
+  return data
+}
+
+async function requestWithStatus<T>(method: string, path: string, body?: unknown, query?: Query): Promise<StatusResponse<T>> {
   const headers: Record<string, string> = { Accept: 'application/json' }
   // Every mutating request is JSON — this is part of the CSRF guard (server answers 415 otherwise).
   if (method !== 'GET') headers['Content-Type'] = 'application/json'
@@ -47,7 +58,7 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
     throw new ApiError(0, 'network', 'The console could not be reached. Check your connection and try again.')
   }
 
-  if (res.status === 204) return undefined as T
+  if (res.status === 204) return { status: 204, data: undefined as T }
 
   const text = await res.text()
   let json: unknown = undefined
@@ -61,9 +72,14 @@ async function request<T>(method: string, path: string, body?: unknown, query?: 
 
   if (!res.ok) {
     const err = (json as Partial<ApiErrorBody> | undefined)?.error
-    throw new ApiError(res.status, err?.code ?? `http_${res.status}`, err?.message ?? res.statusText ?? 'Request failed')
+    const code = err?.code ?? `http_${res.status}`
+    // The 2FA policy gate: the auth store listens and routes to /security/setup.
+    if (res.status === 403 && code === 'two_factor_required' && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('console:two-factor-required'))
+    }
+    throw new ApiError(res.status, code, err?.message ?? res.statusText ?? 'Request failed')
   }
-  return json as T
+  return { status: res.status, data: json as T }
 }
 
 export const api = {
@@ -72,6 +88,8 @@ export const api = {
   patch: <T>(path: string, body: unknown) => request<T>('PATCH', path, body),
   put: <T = void>(path: string, body: unknown) => request<T>('PUT', path, body),
   delete: <T = void>(path: string) => request<T>('DELETE', path, {}),
+  /** POST that also reports the HTTP status (login returns 200 or 202). */
+  postWithStatus: <T>(path: string, body?: unknown) => requestWithStatus<T>('POST', path, body ?? {}),
 }
 
 export function errorMessage(err: unknown): string {

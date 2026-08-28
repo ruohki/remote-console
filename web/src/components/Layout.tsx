@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import { NavLink, Outlet, useNavigate } from 'react-router'
-import { Activity, ClipboardList, Download, FolderKanban, LogOut, Menu, MonitorSmartphone, Moon, Palette, Settings, Sun, SunMoon, Users, X } from 'lucide-react'
+import { Link, NavLink, Outlet, useNavigate } from 'react-router'
+import { Activity, ClipboardList, Download, FolderKanban, LogOut, Menu, MonitorSmartphone, Moon, Palette, Settings, ShieldCheck, Sun, SunMoon, Users, X } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { useLive } from '@/store/live'
 import { applyTheme, readTheme, type Theme } from '@/lib/theme'
@@ -17,6 +17,7 @@ const NAV = [
   { to: '/settings', label: 'Settings', icon: Settings, end: true },
   { to: '/settings/branding', label: 'Branding', icon: Palette, admin: true, sub: true },
   { to: '/settings/agent', label: 'Agent downloads', icon: Download, admin: true, sub: true },
+  { to: '/settings/auth', label: 'Authentication', icon: ShieldCheck, admin: true, sub: true },
 ]
 
 export function Layout() {
@@ -195,6 +196,9 @@ function UserMenu({ name, role, onLogout }: { name: string; role: string; onLogo
       </button>
       {open && (
         <div className="panel animate-fade-up absolute right-0 mt-1 w-44 p-1 shadow-pop">
+          <Link to="/security" onClick={() => setOpen(false)} className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] hover:bg-raised">
+            <ShieldCheck size={14} /> Account security
+          </Link>
           <button onClick={onLogout} className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-[13px] hover:bg-raised">
             <LogOut size={14} /> Sign out
           </button>

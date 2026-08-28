@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FolderKanban, KeyRound, Plus, Trash2, UserX, UserCheck } from 'lucide-react'
+import { FolderKanban, KeyRound, Plus, ShieldAlert, ShieldCheck, ShieldOff, Trash2, UserX, UserCheck } from 'lucide-react'
 import { Link } from 'react-router'
 import { api, errorMessage } from '@/lib/api'
 import type { Role, User, UserGrant } from '@/lib/types'
@@ -18,14 +18,24 @@ export function UsersPage() {
   const [resetFor, setResetFor] = useState<User | null>(null)
   const [deleting, setDeleting] = useState<User | null>(null)
   const [accessFor, setAccessFor] = useState<User | null>(null)
+  const [reset2fa, setReset2fa] = useState<User | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['users'] })
 
   const patch = useMutation({
-    mutationFn: ({ id, body }: { id: string; body: Partial<Pick<User, 'name' | 'role' | 'disabled'>> & { password?: string } }) =>
+    mutationFn: ({ id, body }: { id: string; body: Partial<Pick<User, 'name' | 'role' | 'disabled' | 'break_glass'>> & { password?: string } }) =>
       api.patch<User>(`/api/users/${id}`, body),
     onSuccess: () => invalidate(),
     onError: (e) => toast.error('Could not update the user', errorMessage(e)),
+  })
+  const twoFactorReset = useMutation({
+    mutationFn: (id: string) => api.post(`/api/users/${id}/2fa/reset`),
+    onSuccess: () => {
+      toast.success('Two-factor reset', 'The user must enroll again at their next sign-in.')
+      setReset2fa(null)
+      invalidate()
+    },
+    onError: (e) => toast.error('Could not reset two-factor', errorMessage(e)),
   })
   const remove = useMutation({
     mutationFn: (id: string) => api.delete(`/api/users/${id}`),
@@ -61,6 +71,7 @@ export function UsersPage() {
               <Th>Name</Th>
               <Th>Email</Th>
               <Th>Role</Th>
+              <Th className="hidden md:table-cell">2FA</Th>
               <Th className="hidden md:table-cell">Access</Th>
               <Th className="hidden md:table-cell">Last sign-in</Th>
               <Th className="hidden lg:table-cell">Created</Th>
@@ -95,6 +106,9 @@ export function UsersPage() {
                   />
                 </Td>
                 <Td className="hidden md:table-cell">
+                  <TwoFactorCell user={u} />
+                </Td>
+                <Td className="hidden md:table-cell">
                   {u.role === 'admin' ? (
                     <span className="text-ink-faint">All devices</span>
                   ) : (
@@ -108,6 +122,23 @@ export function UsersPage() {
                 <Td>
                   <div className="flex justify-end gap-1">
                     <Button size="sm" variant="ghost" icon={<KeyRound size={13} />} title="Reset password" onClick={() => setResetFor(u)} />
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon={<ShieldOff size={13} />}
+                      title="Reset two-factor (user must enroll again)"
+                      disabled={!u.two_factor_enabled && !u.passkeys}
+                      onClick={() => setReset2fa(u)}
+                    />
+                    {u.role === 'admin' && (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<ShieldAlert size={13} className={u.break_glass ? 'text-warn' : undefined} />}
+                        title={u.break_glass ? 'Break-glass account: password sign-in always allowed (click to remove)' : 'Mark as break-glass account (password sign-in stays possible when local login is disabled)'}
+                        onClick={() => patch.mutate({ id: u.id, body: { break_glass: !u.break_glass } })}
+                      />
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
@@ -128,6 +159,20 @@ export function UsersPage() {
       <CreateUserDialog open={creating} onClose={() => setCreating(false)} onCreated={invalidate} />
       <UserAccessDialog user={accessFor} onClose={() => setAccessFor(null)} />
       <ResetPasswordDialog user={resetFor} onClose={() => setResetFor(null)} onSubmit={(pw) => patch.mutateAsync({ id: resetFor!.id, body: { password: pw } })} />
+      <ConfirmDialog
+        open={!!reset2fa}
+        onClose={() => setReset2fa(null)}
+        onConfirm={() => reset2fa && twoFactorReset.mutate(reset2fa.id)}
+        title="Reset two-factor authentication?"
+        body={
+          <>
+            <b>{reset2fa?.name}</b>’s authenticator app and recovery codes are removed and every passkey is unlinked. They will be asked to enroll again at their next sign-in. Do this only after verifying their identity.
+          </>
+        }
+        confirmLabel="Reset two-factor"
+        danger
+        loading={twoFactorReset.isPending}
+      />
       <ConfirmDialog
         open={!!deleting}
         onClose={() => setDeleting(null)}
@@ -279,5 +324,22 @@ function ResetPasswordDialog({ user, onClose, onSubmit }: { user: User | null; o
         </div>
       </form>
     </Dialog>
+  )
+}
+
+function TwoFactorCell({ user: u }: { user: User }) {
+  if (u.two_factor_enabled === undefined && u.passkeys === undefined) return <span className="text-ink-faint">—</span>
+  const keys = u.passkeys ?? 0
+  const on = !!u.two_factor_enabled || keys > 0
+  return (
+    <span className="flex items-center gap-1.5">
+      {on ? <ShieldCheck size={14} className="text-live" /> : <ShieldOff size={14} className="text-ink-faint" />}
+      <span className="text-[12.5px]">
+        {u.two_factor_enabled ? 'App' : null}
+        {u.two_factor_enabled && keys > 0 ? ' + ' : null}
+        {keys > 0 ? `${keys} passkey${keys === 1 ? '' : 's'}` : null}
+        {!on && (u.two_factor_required ? <Badge tone="warn">Pending</Badge> : <span className="text-ink-faint">off</span>)}
+      </span>
+    </span>
   )
 }
