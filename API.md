@@ -82,6 +82,17 @@ Config in `settings` (admin UI) — `{ enabled, display_name, issuer, client_id,
 | GET | `/api/auth/oidc/callback` | validates ID token (issuer, aud, nonce, exp, signature via JWKS), links by verified email or provisions; sets session; redirects to `return` |
 | GET/PUT | `/api/auth/oidc/config` | admin; `POST /api/auth/oidc/test` performs discovery and reports the endpoints |
 
+### LDAP (simple bind)
+Config `{ enabled, display_name, url (ldap:// or ldaps://), bind_dn, bind_password (encrypted), base_dn, user_filter (default "(|(mail={login})(sAMAccountName={login})(uid={login}))"), attribute_map: { email, name, groups (default memberOf) }, auto_provision, default_role, trust_idp_mfa: false, mappings, sync_mode }`.
+`POST /api/auth/ldap/login { username, password }` → same `200`/`202` flow as password login; `GET/PUT /api/auth/ldap/config`, `POST /api/auth/ldap/test`, `POST /api/auth/ldap/test-mapping`. `AuthMethod` gains `"ldap"`; `/api/auth/providers` gains `ldap?: { display_name }` and `require_2fa`. GSSAPI/Kerberos not supported.
+
+### Implementation notes (server ≥ this pass)
+* SSO logins that still need a second factor redirect the browser to `/login?pending=two_factor&challenge_id=…&methods=totp,passkey&return=/devices`; SSO failures redirect to `/login?error=<code>&provider=<oidc|saml>&message=…`. `POST /api/auth/2fa/verify` returns `{ user, auth_method, return_to }`.
+* Login/setup/`me` envelopes carry `two_factor_required` and `auth_method`; passkey `login/start` adds `challenge_id`; finish endpoints accept the bare credential or `{ challenge_id, credential }`.
+* Passkey second factor uses `userVerification: required` (touch-only U2F keys need the separate security-key ceremony — not yet offered).
+* `429` responses carry `Retry-After`. With `LOCAL_LOGIN=0` the first admin created by `/api/setup` is flagged break-glass automatically.
+* Not supported: SAML encrypted assertions, single logout, RSA-SHA1 signatures; Duo (planned as a `2fa` method `duo`).
+
 ### IdP group / role mapping (OIDC and SAML)
 
 Access can be defined at the IdP and mapped into the console. Provider config gains
