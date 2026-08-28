@@ -289,6 +289,38 @@ pub fn reason_str(r: EndReason) -> String {
     enum_str(&r)
 }
 
+// ── session events ────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct SessionEventRow {
+    pub id: i64,
+    pub session_id: String,
+    pub ts: String,
+    pub event: String,
+}
+
+/// Session event entry as returned by `GET /api/sessions/:id/events`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionEventEntry {
+    pub id: i64,
+    pub session_id: String,
+    pub ts: String,
+    pub event: protocol::agent::SessionEvent,
+}
+
+impl SessionEventRow {
+    /// `None` when the stored JSON no longer matches the protocol (skipped by the API).
+    pub fn public(&self) -> Option<SessionEventEntry> {
+        let event = serde_json::from_str(&self.event).ok()?;
+        Some(SessionEventEntry {
+            id: self.id,
+            session_id: self.session_id.clone(),
+            ts: self.ts.clone(),
+            event,
+        })
+    }
+}
+
 // ── audit ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, sqlx::FromRow)]

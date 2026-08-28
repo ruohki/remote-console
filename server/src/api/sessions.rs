@@ -2,6 +2,7 @@
 
 use crate::app::AppState;
 use crate::auth::AuthUser;
+use crate::db::models::SessionEventEntry;
 use crate::db::{self, sessions::Filter};
 use crate::error::{ApiError, ApiResult};
 use axum::extract::{Path, Query, State};
@@ -44,6 +45,32 @@ pub async fn list(
     )
     .await?;
     Ok(Json(rows.iter().map(|s| s.summary()).collect()))
+}
+
+#[derive(Deserialize)]
+pub struct EventsQuery {
+    #[serde(default = "default_events_limit")]
+    pub limit: i64,
+    #[serde(default)]
+    pub after: Option<i64>,
+}
+
+fn default_events_limit() -> i64 {
+    500
+}
+
+/// `GET /api/sessions/:id/events` — oldest first; `after` continues a previous page.
+pub async fn events(
+    State(state): State<AppState>,
+    _user: AuthUser,
+    Path(id): Path<String>,
+    Query(q): Query<EventsQuery>,
+) -> ApiResult<Json<Vec<SessionEventEntry>>> {
+    db::sessions::by_id(&state.db, &id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("session"))?;
+    let rows = db::session_events::list(&state.db, &id, q.limit, q.after).await?;
+    Ok(Json(rows.iter().filter_map(|r| r.public()).collect()))
 }
 
 pub async fn end(

@@ -3,6 +3,7 @@
 pub mod audit;
 pub mod devices;
 pub mod models;
+pub mod session_events;
 pub mod sessions;
 pub mod tokens;
 pub mod users;

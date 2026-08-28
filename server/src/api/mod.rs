@@ -42,6 +42,7 @@ pub fn router() -> Router<AppState> {
         .route("/devices/{id}/sessions", get(devices::sessions))
         .route("/sessions", get(sessions::list))
         .route("/sessions/{id}/end", post(sessions::end))
+        .route("/sessions/{id}/events", get(sessions::events))
         .route("/audit", get(audit::list))
         .fallback(|| async { crate::error::ApiError::not_found("endpoint") })
 }

@@ -102,6 +102,10 @@ pub struct ConfigPatch {
     pub allow_clipboard: Option<bool>,
     pub approval_timeout_s: Option<u32>,
     pub show_session_indicator: Option<bool>,
+    pub allow_file_transfer: Option<bool>,
+    /// `""` (or whitespace) clears the override back to the agent default.
+    pub transfer_dir: Option<String>,
+    pub allow_audio: Option<bool>,
 }
 
 impl ConfigPatch {
@@ -160,6 +164,20 @@ impl ConfigPatch {
         if let Some(v) = self.show_session_indicator {
             cfg.show_session_indicator = v;
         }
+        if let Some(v) = self.allow_file_transfer {
+            cfg.allow_file_transfer = v;
+        }
+        if let Some(v) = self.transfer_dir {
+            let v = v.trim();
+            cfg.transfer_dir = if v.is_empty() {
+                None
+            } else {
+                Some(v.to_string())
+            };
+        }
+        if let Some(v) = self.allow_audio {
+            cfg.allow_audio = v;
+        }
         Ok(cfg)
     }
 }
@@ -180,7 +198,14 @@ pub async fn update_config(
         Some(admin.actor()),
         "device.config",
         Some(&id),
-        json!({ "mode": new_config.mode, "max_fps": new_config.max_fps, "max_bitrate_kbps": new_config.max_bitrate_kbps }),
+        json!({
+            "mode": new_config.mode,
+            "max_fps": new_config.max_fps,
+            "max_bitrate_kbps": new_config.max_bitrate_kbps,
+            "allow_file_transfer": new_config.allow_file_transfer,
+            "transfer_dir": new_config.transfer_dir,
+            "allow_audio": new_config.allow_audio,
+        }),
     )
     .await?;
     state.hub.push_config(&id, &new_config).await;

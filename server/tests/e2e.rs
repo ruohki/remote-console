@@ -1087,3 +1087,288 @@ async fn ui_socket_requires_login_and_spa_fallback_works() {
         .unwrap();
     assert_eq!(r.status(), 404);
 }
+
+#[tokio::test]
+async fn session_events_are_stored_pushed_and_audited() {
+    use protocol::agent::SessionEvent;
+    use protocol::channel::ChatParty;
+    use protocol::files::{TransferDirection, TransferKind};
+
+    let app = spawn_app().await;
+    let c = client();
+    let cookie = setup_admin(&app, &c).await;
+    let tok = create_token(&app, &c, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+    let other = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    let mut agent = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+    let mut foreign = agent_hello(&app, &other, &other.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut foreign).await;
+
+    let mut ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&cookie)).await;
+    send(&mut ui, &UiToConsole::Subscribe).await;
+    let _snap: ConsoleToUi = recv(&mut ui).await;
+
+    send(
+        &mut ui,
+        &UiToConsole::SessionOffer {
+            device_id: enrolled.device_id.clone(),
+            offer: SessionDescription {
+                kind: "offer".into(),
+                sdp: "v=0 offer".into(),
+            },
+        },
+    )
+    .await;
+    let created: ConsoleToUi =
+        recv_until(&mut ui, |m| matches!(m, ConsoleToUi::SessionCreated { .. })).await;
+    let session_id = match created {
+        ConsoleToUi::SessionCreated { session_id, .. } => session_id,
+        _ => unreachable!(),
+    };
+    let _req: ConsoleToAgent = recv_until(&mut agent, |m| {
+        matches!(m, ConsoleToAgent::SessionRequest { .. })
+    })
+    .await;
+
+    // chat + completed transfer from the owning agent
+    let chat = SessionEvent::Chat {
+        from: ChatParty::Device,
+        text: "hello operator".into(),
+    };
+    send(
+        &mut agent,
+        &AgentToConsole::SessionEvent {
+            session_id: session_id.clone(),
+            event: chat.clone(),
+            ts_ms: 1,
+        },
+    )
+    .await;
+    let pushed: ConsoleToUi =
+        recv_until(&mut ui, |m| matches!(m, ConsoleToUi::SessionEvent { .. })).await;
+    match pushed {
+        ConsoleToUi::SessionEvent {
+            session_id: sid,
+            event,
+            ts,
+        } => {
+            assert_eq!(sid, session_id);
+            assert_eq!(event, chat);
+            assert!(!ts.is_empty());
+        }
+        _ => unreachable!(),
+    }
+    let transfer = SessionEvent::TransferCompleted {
+        token: "tok1".into(),
+        name: "report.pdf".into(),
+        size: 1234,
+        direction: TransferDirection::ToDevice,
+        path: Some("/Users/alice/Downloads/RemoteAgent/report.pdf".into()),
+    };
+    send(
+        &mut agent,
+        &AgentToConsole::SessionEvent {
+            session_id: session_id.clone(),
+            event: transfer.clone(),
+            ts_ms: 2,
+        },
+    )
+    .await;
+    let _pushed: ConsoleToUi =
+        recv_until(&mut ui, |m| matches!(m, ConsoleToUi::SessionEvent { .. })).await;
+
+    // an event for this session from another device is rejected (no push, no row)
+    send(
+        &mut foreign,
+        &AgentToConsole::SessionEvent {
+            session_id: session_id.clone(),
+            event: SessionEvent::TransferStarted {
+                token: "x".into(),
+                name: "evil".into(),
+                size: 1,
+                kind: TransferKind::File,
+                direction: TransferDirection::ToDevice,
+                offset: 0,
+            },
+            ts_ms: 3,
+        },
+    )
+    .await;
+    // …and one for an unknown session is rejected too
+    send(
+        &mut agent,
+        &AgentToConsole::SessionEvent {
+            session_id: "ses_doesnotexist".into(),
+            event: chat.clone(),
+            ts_ms: 4,
+        },
+    )
+    .await;
+    // a ping/pong round trip on the ui socket proves the rejected events produced nothing before it
+    send(&mut ui, &UiToConsole::Ping { nonce: 42 }).await;
+    let next: ConsoleToUi = recv(&mut ui).await;
+    assert!(
+        matches!(next, ConsoleToUi::Pong { nonce: 42 }),
+        "unexpected {next:?}"
+    );
+
+    // endpoint: oldest first, only the two accepted events
+    let r = c
+        .get(format!("{}/api/sessions/{session_id}/events", app.base))
+        .send()
+        .await
+        .expect("events");
+    assert_eq!(r.status(), 200);
+    let events: Vec<Value> = r.json().await.expect("json");
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0]["event"]["type"], "chat");
+    assert_eq!(events[0]["event"]["text"], "hello operator");
+    assert_eq!(events[1]["event"]["type"], "transfer_completed");
+    assert_eq!(events[1]["event"]["name"], "report.pdf");
+    assert!(events[0]["id"].as_i64().unwrap() < events[1]["id"].as_i64().unwrap());
+    assert_eq!(events[0]["session_id"], session_id);
+    // `after` pagination
+    let after = events[0]["id"].as_i64().unwrap();
+    let page: Vec<Value> = c
+        .get(format!(
+            "{}/api/sessions/{session_id}/events?after={after}",
+            app.base
+        ))
+        .send()
+        .await
+        .expect("page")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0]["event"]["type"], "transfer_completed");
+    // unknown session → 404
+    let r = c
+        .get(format!("{}/api/sessions/ses_nope/events", app.base))
+        .send()
+        .await
+        .expect("404");
+    assert_eq!(r.status(), 404);
+
+    // audit row for the transfer
+    let audit: Vec<Value> = c
+        .get(format!("{}/api/audit?limit=50", app.base))
+        .send()
+        .await
+        .expect("audit")
+        .json()
+        .await
+        .expect("json");
+    let transfer_row = audit
+        .iter()
+        .find(|a| a["action"] == "session.transfer")
+        .expect("session.transfer audit entry");
+    assert_eq!(transfer_row["target"], session_id);
+    assert_eq!(transfer_row["details"]["name"], "report.pdf");
+    assert_eq!(transfer_row["details"]["result"], "completed");
+    assert_eq!(transfer_row["user_name"], "Admin");
+
+    // events are still accepted shortly after the session ended (late transfer results)
+    send(
+        &mut ui,
+        &UiToConsole::SessionEnd {
+            session_id: session_id.clone(),
+        },
+    )
+    .await;
+    let _ended: ConsoleToUi = recv_until(&mut ui, |m| {
+        matches!(m, ConsoleToUi::SessionUpdate { session } if session.state == SessionState::Ended)
+    })
+    .await;
+    send(
+        &mut agent,
+        &AgentToConsole::SessionEvent {
+            session_id: session_id.clone(),
+            event: SessionEvent::TransferFailed {
+                token: "tok2".into(),
+                name: "late.bin".into(),
+                reason: "connection lost".into(),
+            },
+            ts_ms: 5,
+        },
+    )
+    .await;
+    let late: ConsoleToUi =
+        recv_until(&mut ui, |m| matches!(m, ConsoleToUi::SessionEvent { .. })).await;
+    assert!(matches!(
+        late,
+        ConsoleToUi::SessionEvent {
+            event: SessionEvent::TransferFailed { .. },
+            ..
+        }
+    ));
+    let events: Vec<Value> = c
+        .get(format!("{}/api/sessions/{session_id}/events", app.base))
+        .send()
+        .await
+        .expect("events")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(events.len(), 3);
+}
+
+#[tokio::test]
+async fn device_config_patch_roundtrips_new_fields() {
+    let app = spawn_app().await;
+    let c = client();
+    let _cookie = setup_admin(&app, &c).await;
+    let tok = create_token(&app, &c, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    // defaults from a fresh enrollment
+    let detail: Value = c
+        .get(format!("{}/api/devices/{}", app.base, enrolled.device_id))
+        .send()
+        .await
+        .expect("detail")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(detail["config"]["allow_file_transfer"], true);
+    assert_eq!(detail["config"]["allow_audio"], true);
+    assert!(detail["config"].get("transfer_dir").is_none());
+
+    let r = c
+        .patch(format!("{}/api/devices/{}/config", app.base, enrolled.device_id))
+        .json(&json!({ "allow_file_transfer": false, "transfer_dir": "/srv/drop", "allow_audio": false, "max_fps": 30 }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap_or_default());
+    let detail: Value = c
+        .get(format!("{}/api/devices/{}", app.base, enrolled.device_id))
+        .send()
+        .await
+        .expect("detail")
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(detail["config"]["allow_file_transfer"], false);
+    assert_eq!(detail["config"]["allow_audio"], false);
+    assert_eq!(detail["config"]["transfer_dir"], "/srv/drop");
+    assert_eq!(detail["config"]["max_fps"], 30);
+
+    // empty string clears the directory override; other fields untouched
+    let r = c
+        .patch(format!(
+            "{}/api/devices/{}/config",
+            app.base, enrolled.device_id
+        ))
+        .json(&json!({ "transfer_dir": "  " }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(r.status(), 200);
+    let detail: Value = r.json().await.expect("json");
+    assert!(detail["config"].get("transfer_dir").is_none());
+    assert_eq!(detail["config"]["allow_file_transfer"], false);
+    assert_eq!(detail["config"]["max_fps"], 30);
+}

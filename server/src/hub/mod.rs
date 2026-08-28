@@ -5,12 +5,14 @@
 //! happens outside the lock.
 
 pub mod agent_ws;
+pub mod events;
 pub mod ui_ws;
 
 use crate::config::Config;
 use crate::db::{self, audit::Actor, Db};
+use events::EventLimiter;
 use parking_lot::Mutex;
-use protocol::agent::ConsoleToAgent;
+use protocol::agent::{ConsoleToAgent, SessionEvent};
 use protocol::common::{EndReason, IceServer, OperatorInfo, SessionDescription, SessionState};
 use protocol::config::AgentConfig;
 use protocol::ui::{ConsoleToUi, DeviceSummary, SessionSummary};
@@ -28,6 +30,12 @@ pub const MISSED_HEARTBEATS: u32 = 3;
 pub const APPROVAL_GRACE: Duration = Duration::from_secs(5);
 /// Interval of the offline reaper.
 const REAPER_INTERVAL: Duration = Duration::from_secs(5);
+/// Agents may still report events this long after a session ended (late transfer results).
+pub const EVENT_GRACE_AFTER_END: Duration = Duration::from_secs(60);
+/// Per-session event rate limit (events per second).
+pub const EVENTS_PER_SECOND: u32 = 50;
+/// Idle event limiters are dropped after this long.
+const EVENT_LIMITER_IDLE: Duration = Duration::from_secs(120);
 
 pub struct AgentConn {
     pub conn_id: u64,
@@ -55,6 +63,8 @@ struct HubState {
     agents: HashMap<String, AgentConn>,
     uis: HashMap<u64, UiConn>,
     sessions: HashMap<String, ActiveSession>,
+    /// Per-session rate limiters for `session_event`s (purged when idle).
+    event_limiters: HashMap<String, EventLimiter>,
 }
 
 pub struct Hub {
@@ -127,6 +137,10 @@ impl Hub {
                     tracing::warn!(device = %device_id, "no heartbeat, dropping agent connection");
                     cancel.cancel();
                 }
+                hub.state
+                    .lock()
+                    .event_limiters
+                    .retain(|_, l| l.idle_for() < EVENT_LIMITER_IDLE);
             }
         });
         let hub = Arc::clone(self);
@@ -513,6 +527,129 @@ impl Hub {
         self.broadcast_session(session_id).await;
         self.broadcast_device(&active.device_id).await;
         true
+    }
+
+    // ── session events ───────────────────────────────────────────────────────
+
+    /// Store an agent-reported event, push it to every UI and audit transfers/clipboard.
+    ///
+    /// Returns `Ok(None)` when the event was dropped (rate limit / cap) and `Err` with a
+    /// short reason when it was rejected (unknown session, wrong device, ended too long ago).
+    pub async fn record_session_event(
+        &self,
+        device_id: &str,
+        session_id: &str,
+        event: SessionEvent,
+    ) -> Result<Option<i64>, &'static str> {
+        // Ownership + liveness: in-memory active session first, then a recently ended one.
+        let operator = match self.active_session(session_id) {
+            Some(s) if s.device_id == device_id => Some(s.operator),
+            Some(_) => return Err("session belongs to another device"),
+            None => {
+                let row = db::sessions::by_id(&self.db, session_id)
+                    .await
+                    .map_err(|_| "database error")?
+                    .ok_or("unknown session")?;
+                if row.device_id != device_id {
+                    return Err("session belongs to another device");
+                }
+                let recently_ended =
+                    row.ended_at
+                        .as_deref()
+                        .and_then(db::parse_ts)
+                        .is_some_and(|t| {
+                            chrono::Utc::now()
+                                .signed_duration_since(t)
+                                .to_std()
+                                .unwrap_or_default()
+                                <= EVENT_GRACE_AFTER_END
+                        });
+                if row.state() == SessionState::Ended && !recently_ended {
+                    return Err("session ended");
+                }
+                row.operator_id.as_ref().map(|id| OperatorInfo {
+                    id: id.clone(),
+                    name: row
+                        .operator_name
+                        .clone()
+                        .unwrap_or_else(|| "deleted user".into()),
+                })
+            }
+        };
+
+        let allowed = self
+            .state
+            .lock()
+            .event_limiters
+            .entry(session_id.to_string())
+            .or_insert_with(|| EventLimiter::new(EVENTS_PER_SECOND))
+            .allow();
+        if !allowed {
+            tracing::warn!(session = %session_id, "session event rate limit exceeded, dropping");
+            return Ok(None);
+        }
+
+        let stored = db::session_events::insert(&self.db, session_id, &event)
+            .await
+            .map_err(|err| {
+                tracing::error!("storing session event: {err}");
+                "database error"
+            })?;
+        let Some((id, ts)) = stored else {
+            tracing::warn!(session = %session_id, "session event cap reached, dropping");
+            return Ok(None);
+        };
+
+        let actor = operator.as_ref().map(|o| Actor {
+            id: &o.id,
+            name: &o.name,
+        });
+        match &event {
+            SessionEvent::TransferCompleted {
+                name,
+                size,
+                direction,
+                path,
+                ..
+            } => {
+                db::audit::record_lossy(
+                    &self.db,
+                    actor,
+                    "session.transfer",
+                    Some(session_id),
+                    json!({ "device_id": device_id, "result": "completed", "name": name, "size": size, "direction": direction, "path": path }),
+                )
+                .await;
+            }
+            SessionEvent::TransferFailed { name, reason, .. } => {
+                db::audit::record_lossy(
+                    &self.db,
+                    actor,
+                    "session.transfer",
+                    Some(session_id),
+                    json!({ "device_id": device_id, "result": "failed", "name": name, "reason": reason }),
+                )
+                .await;
+            }
+            SessionEvent::ClipboardSync { direction, summary } => {
+                db::audit::record_lossy(
+                    &self.db,
+                    actor,
+                    "session.clipboard",
+                    Some(session_id),
+                    json!({ "device_id": device_id, "direction": direction, "summary": summary }),
+                )
+                .await;
+            }
+            _ => {}
+        }
+
+        self.broadcast_ui(ConsoleToUi::SessionEvent {
+            session_id: session_id.to_string(),
+            event,
+            ts,
+        });
+        Ok(Some(id))
     }
 
     /// End every active session of a device (agent went away).

@@ -414,6 +414,16 @@ async fn handle_message(
                 }
             }
         }
+        AgentToConsole::SessionEvent {
+            session_id, event, ..
+        } => {
+            if let Err(reason) = hub
+                .record_session_event(device_id, &session_id, event)
+                .await
+            {
+                tracing::warn!(device = %device_id, session = %session_id, "session event rejected: {reason}");
+            }
+        }
         AgentToConsole::Log { level, message } => {
             let message: String = message.chars().take(500).collect();
             match level.as_str() {
