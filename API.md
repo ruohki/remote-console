@@ -65,6 +65,7 @@ interface User { …; two_factor_enabled: boolean; passkeys: number; auth_method
 | POST | `/api/auth/passkeys/register/start` | (logged in) `{ name }` → `PublicKeyCredentialCreationOptions` (JSON, base64url) |
 | POST | `/api/auth/passkeys/register/finish` | credential → `Passkey { id, name, created_at, last_used_at, backup_eligible }` |
 | GET | `/api/auth/passkeys` | → `Passkey[]` (own); admins: `/api/users/:id/passkeys` |
+| PATCH | `/api/auth/passkeys/:id` | `{ name }` → `Passkey` (rename, own; admins may rename any) |
 | DELETE | `/api/auth/passkeys/:id` | → 204 (cannot remove the last one while it is the only 2FA method under policy → 409) |
 | POST | `/api/auth/passkeys/login/start` | `{}` → `PublicKeyCredentialRequestOptions` (discoverable; UV required) |
 | POST | `/api/auth/passkeys/login/finish` | assertion → `{ user }` + session (satisfies 2FA) |
