@@ -143,6 +143,27 @@ Audit actions: `group.create|update|delete|members|grants`, `device.groups`.
 
 Sessions are *created* over `/ws/ui` (see below), never over REST.
 
+## Branding & agent bakery
+
+Branding (`protocol.Branding`) is shown in the web console (login page, header) and baked into
+agent binaries. The console owns an ed25519 signing key (generated at first start, stored in
+the `settings` table); its public key is exposed as `console_public_key` in `GET /api/info`.
+
+| Method | Path | Body → Response | Role |
+|--------|------|-----------------|------|
+| GET | `/api/branding` | → `protocol.Branding` | public |
+| PUT | `/api/branding` | `protocol.Branding` → `protocol.Branding` (logo ≤ 512 KiB PNG, accent `#rrggbb`) | admin |
+| GET | `/api/agent/downloads` | → `{ platform, available, source: "local" \| "release", size?: number }[]` for `macos-universal`, `windows-x86_64`, `windows-aarch64` | admin |
+| GET | `/api/agent/download/:platform?token=T&quick=0\|1` | baked binary (`application/octet-stream`, `Content-Disposition: attachment; filename="<Product>-<platform>[.exe]"`) | admin cookie **or** a valid enrollment token (`?token=`) |
+
+Baking = `protocol::bakery::append_trailer(base, sign_payload(BakedConfig { server_url: CONSOLE_PUBLIC_URL, enroll_token: token?, quick_support, branding, issued_at }, key))`.
+Base binaries come from `AGENT_BINARY_DIR` (files named like the release assets) when set, else
+are fetched from `AGENT_DOWNLOAD_BASE` and cached under `data/agent-cache/` (`SHA256SUMS` verified).
+Install scripts (`/install.sh`, `/install.ps1`) download the **baked** binary from
+`/api/agent/download/<platform>?token=T` (falling back to the release URL only when no base
+binary is available) and then only run `remote-agent service install`; the agent enrolls itself
+from the trailer token when it is not enrolled yet. Audit: `branding.update`, `agent.bake`.
+
 ## Session shadowing (admin)
 
 An admin can watch a running operator session. The browser sends
