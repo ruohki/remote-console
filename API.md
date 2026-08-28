@@ -70,6 +70,7 @@ interface User { …; two_factor_enabled: boolean; passkeys: number; auth_method
 | POST | `/api/auth/passkeys/login/finish` | assertion → `{ user }` + session (satisfies 2FA) |
 | POST | `/api/auth/2fa/passkey/start|finish` | second-factor variant during a pending challenge |
 RP id = host of `CONSOLE_PUBLIC_URL`; origins = the public URL; counters/backup flags checked; audited `passkey.register|remove`, `login` with `method`.
+**Security keys (FIDO2 / YubiKey etc.)**: registration never restricts `authenticatorAttachment`, so roaming keys work alongside platform passkeys; `residentKey: preferred` — resident credentials give usernameless login, non-resident ones are offered as a second factor (`POST /api/auth/2fa/passkey/start` uses `allowCredentials` with the user's registered keys); `userVerification: required` for passwordless login, `preferred` for the second-factor step (touch-only keys still count as possession factor together with the password).
 
 ### OIDC
 Config in `settings` (admin UI) — `{ enabled, display_name, issuer, client_id, client_secret (encrypted), scopes (default "openid email profile"), auto_provision: bool, default_role, admin_claim?: { name, value }, groups_claim?, trust_idp_mfa: bool, allowed_domains?: string[] }`.
