@@ -307,14 +307,22 @@ impl Bakery {
 
         if want_sign {
             if let Some((bytes, outcome)) = read_cached_bundle(&bundles_dir, &cache_key).await {
-                self.last.lock().insert(platform, outcome);
-                return Ok(Baked {
-                    bytes,
-                    filename,
-                    content_type: "application/zip",
-                    signed: outcome.signed,
-                    notarized: outcome.notarized,
-                });
+                // A bundle cached before notarization was configured must be re-processed;
+                // otherwise the console keeps serving "signed, not notarized" forever.
+                let stale = !outcome.notarized && self.sign.macos_notary_configured();
+                if stale {
+                    tracing::info!(platform = %platform.slug(), "re-baking cached bundle to notarize it");
+                }
+                if !stale {
+                    self.last.lock().insert(platform, outcome);
+                    return Ok(Baked {
+                        bytes,
+                        filename,
+                        content_type: "application/zip",
+                        signed: outcome.signed,
+                        notarized: outcome.notarized,
+                    });
+                }
             }
         }
 
