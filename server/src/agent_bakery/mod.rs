@@ -277,6 +277,7 @@ impl Bakery {
             quick_support,
             branding,
             issued_at,
+            console_tls_spki_sha256: config.tls_spki_sha256.clone(),
         };
         let product = baked_config.branding.product_name.clone();
 
