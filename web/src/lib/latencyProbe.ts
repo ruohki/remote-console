@@ -32,6 +32,7 @@ export class LatencyProbe {
   private canvas: HTMLCanvasElement | null = null
   private samples: LatencySample[] = []
   private decodeFailures = 0
+  private lastStamp: number | null = null
   private frames = 0
   private readonly maxSamples: number
   private readonly video: VideoWithRvfc
@@ -62,6 +63,7 @@ export class LatencyProbe {
   reset() {
     this.samples = []
     this.decodeFailures = 0
+    this.lastStamp = null
     this.frames = 0
   }
 
@@ -97,6 +99,10 @@ export class LatencyProbe {
       this.decodeFailures++
       return
     }
+    // Idle refreshes repeat the previous picture with its old stamp; only a *new* stamp
+    // measures change-to-visible latency, so repeated stamps are skipped (not failures).
+    if (d.ms === this.lastStamp) return
+    this.lastStamp = d.ms
     const latencyMs = stripLatencyMs(d.ms, Date.now())
     // Anything above 3 s is a wrap-around artifact (the strip only carries 12 bits).
     if (latencyMs > 3000) {
