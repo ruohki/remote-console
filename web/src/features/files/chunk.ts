@@ -8,7 +8,8 @@
 export const CHUNK_HEADER_LEN = 13
 export const CHUNK_VERSION = 1
 /** Maximum payload bytes per frame (keeps every SCTP message well below 256 KiB). */
-export const MAX_CHUNK_BYTES = 64 * 1024
+/** Max payload per binary frame: header + payload must stay ≤ 64 KiB (SCTP message limit). */
+export const MAX_CHUNK_BYTES = 64 * 1024 - CHUNK_HEADER_LEN
 /** Receiver acknowledges progress at least every this many bytes. */
 export const ACK_INTERVAL_BYTES = 1024 * 1024
 /** Sender pauses when the channel's buffered amount exceeds this. */
