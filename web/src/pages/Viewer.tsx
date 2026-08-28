@@ -35,7 +35,8 @@ import { CODEC_LABEL, END_REASON_LABEL, bytes, kbps } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import type { ControlMessage, DisplayInfo, InputEvent } from '@/protocol'
 import type { DeviceDetail } from '@/lib/types'
-import { FilesDrawer } from '@/features/files/FilesDrawer'
+import { FilesDrawer, readDestDir } from '@/features/files/FilesDrawer'
+import { describeDrop, flattenDrop, isFileDrag, snapshotDrop } from '@/features/files/dnd'
 import { ChatDrawer } from '@/features/chat/ChatDrawer'
 import { activeTransferCount, transferManager, useFiles } from '@/features/files/store'
 import { classifyPasteItems, clipboardImageName, toPngBlob, writeImageToClipboard } from '@/features/files/clipboard'
@@ -77,6 +78,8 @@ export function Viewer() {
   const [layout, setLayout] = useState<'single' | 'grid'>('single')
   const [volume, setVolume] = useState(1)
   const [dragging, setDragging] = useState(false)
+  const dragDepth = useRef(0)
+  const [destDir, setDestDir] = useState<string | null>(() => readDestDir(deviceId))
   const startedRef = useRef(false)
   const transfers = useFiles((s) => s.transfers)
   const activeTransfers = activeTransferCount(transfers)
@@ -116,6 +119,13 @@ export function Viewer() {
   useEffect(() => {
     setChatOpen(drawer === 'chat')
   }, [drawer, setChatOpen])
+
+  // The remembered destination applies to drops and pastes even before the Files drawer was opened
+  // (the drawer itself keeps the manager in sync while it is open).
+  useEffect(() => {
+    transferManager.setDefaultDestDir(destDir ?? undefined)
+  }, [destDir])
+  const refreshDestDir = () => setDestDir(readDestDir(deviceId))
 
   /* ───── transfer notices ───── */
   useEffect(() => {
@@ -203,6 +213,20 @@ export function Viewer() {
     }
   }, [controlling, sendInput])
 
+  /* ───── S toggles the statistics while the keyboard is not forwarded ───── */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== 's' || e.metaKey || e.ctrlKey || e.altKey) return
+      const t = e.target as HTMLElement | null
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      if (controlling && document.activeElement === surfaceRef.current) return
+      e.preventDefault()
+      setShowStats((v) => !v)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [controlling])
+
   /* ───── paste (images / files / text) ───── */
   useEffect(() => {
     const onPaste = async (e: ClipboardEvent) => {
@@ -239,16 +263,44 @@ export function Viewer() {
     return () => window.removeEventListener('paste', onPaste)
   }, [connected, allowClipboard, allowFiles, sendControl])
 
-  /* ───── drag & drop uploads ───── */
-  const onDrop = (e: React.DragEvent) => {
+  /* ───── drag & drop uploads ─────
+     dragenter/dragover must call preventDefault (with dropEffect=copy) or the browser refuses the
+     drop; a depth counter keeps the overlay stable while the pointer crosses child elements. */
+  const canDrop = connected && allowFiles
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return
     e.preventDefault()
+    if (dragDepth.current === 0) refreshDestDir()
+    dragDepth.current += 1
+    setDragging(true)
+  }
+  const onDragOver = (e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = canDrop ? 'copy' : 'none'
+  }
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragging(false)
+  }
+  const onDrop = (e: React.DragEvent) => {
+    if (!isFileDrag(e.dataTransfer)) return
+    e.preventDefault()
+    dragDepth.current = 0
     setDragging(false)
-    if (!connected || !allowFiles) return
-    const files = Array.from(e.dataTransfer.files)
-    if (!files.length) return
-    for (const f of files) void transferManager.upload(f)
-    setDrawer('files')
-    toast.info(`Sending ${files.length} file${files.length === 1 ? '' : 's'} to ${deviceName}`)
+    if (!canDrop) {
+      toast.error(connected ? 'File transfer is disabled for this device' : 'Connect to the device first')
+      return
+    }
+    // Snapshot synchronously: the item list is only readable during the event.
+    const snap = snapshotDrop(e.dataTransfer)
+    void flattenDrop(snap).then((files) => {
+      if (!files.length) return
+      for (const f of files) void transferManager.upload(f.file, { destDir: destDir ?? undefined })
+      setDrawer('files')
+      toast.info(`Sending ${describeDrop(files)} to ${deviceName}`, destDir ?? 'Device default folder')
+    })
   }
 
   /* ───── rich clipboard from the device ───── */
@@ -407,7 +459,15 @@ export function Viewer() {
               <ClipboardCopy size={14} />
             </HudButton>
           )}
-          <HudButton active={drawer === 'files'} onClick={() => setDrawer((d) => (d === 'files' ? null : 'files'))} title="Files: send, fetch and browse" badge={activeTransfers || undefined}>
+          <HudButton
+            active={drawer === 'files'}
+            onClick={() => {
+              refreshDestDir()
+              setDrawer((d) => (d === 'files' ? null : 'files'))
+            }}
+            title="Files: send, fetch and browse"
+            badge={activeTransfers || undefined}
+          >
             <FolderOpen size={14} />
           </HudButton>
           <HudButton active={drawer === 'chat'} onClick={() => setDrawer((d) => (d === 'chat' ? null : 'chat'))} title="Chat with the person at the device" badge={state.unreadChat || undefined}>
@@ -416,7 +476,7 @@ export function Viewer() {
           <HudButton onClick={() => sendControl({ t: 'request_keyframe' })} disabled={!connected} title="Refresh the picture">
             <RefreshCw size={14} />
           </HudButton>
-          <HudButton active={showStats} onClick={() => setShowStats((v) => !v)} title="Statistics">
+          <HudButton active={showStats} onClick={() => setShowStats((v) => !v)} title="Statistics (S while not controlling)">
             <Activity size={14} />
           </HudButton>
           <HudButton onClick={toggleFullscreen} title={fullscreen ? 'Exit full screen' : 'Full screen'}>
@@ -443,12 +503,9 @@ export function Viewer() {
           ref={surfaceRef}
           tabIndex={0}
           className={cx('relative min-h-0 min-w-0 flex-1 outline-none', dragging && 'ring-2 ring-[#6cb6ff] ring-inset')}
-          onDragOver={(e) => {
-            if (!allowFiles) return
-            e.preventDefault()
-            setDragging(true)
-          }}
-          onDragLeave={() => setDragging(false)}
+          onDragEnter={onDragEnter}
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
           onDrop={onDrop}
           onContextMenu={(e) => e.preventDefault()}
           onDragStart={(e) => e.preventDefault()}
@@ -462,11 +519,12 @@ export function Viewer() {
                 key={index}
                 display={displays.find((d) => d.index === index) ?? { index, name: `Display ${index + 1}`, x: 0, y: 0, width: 0, height: 0, scale: 1, primary: index === 0 }}
                 stream={state.streams[index] ?? null}
-                controlling={controlling}
+                controlling={controlling && !dragging}
                 isCurrent={state.currentDisplay === index}
                 multi={visible.length > 1}
-                stats={showStats ? (state.agentStats[index] ?? null) : null}
-                rtc={showStats && index === state.currentDisplay ? state : null}
+                showStats={showStats}
+                stats={state.agentStats[index] ?? null}
+                rtc={index === state.currentDisplay ? state : null}
                 onEnter={() => {
                   if (state.currentDisplay !== index) selectDisplay(index)
                 }}
@@ -477,8 +535,18 @@ export function Viewer() {
             ))}
           </div>
 
-          {dragging && connected && allowFiles && (
-            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[#0e1116]/70 text-lg font-semibold text-white">Drop to send to {deviceName}</div>
+          {dragging && (
+            <div className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[#0e1116]/75 p-6 backdrop-blur-[2px]">
+              <div className={cx('flex flex-col items-center gap-2 rounded-lg border-2 border-dashed px-10 py-8 text-center', canDrop ? 'border-[#6cb6ff] text-white' : 'border-[#f87171] text-[#f87171]')}>
+                <FolderOpen size={28} />
+                <div className="text-lg font-semibold">{canDrop ? `Drop to send to ${deviceName}` : connected ? 'File transfer is disabled for this device' : 'Connect first to send files'}</div>
+                {canDrop && (
+                  <div className="mono text-[12px] text-[#9aa3b2]">
+                    → {destDir ?? 'Device default folder'}
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {state.observers.length > 0 && (
@@ -525,7 +593,16 @@ export function Viewer() {
           )}
         </div>
 
-        {drawer === 'files' && <FilesDrawer deviceId={deviceId} enabled={allowFiles} onClose={() => setDrawer(null)} />}
+        {drawer === 'files' && (
+          <FilesDrawer
+            deviceId={deviceId}
+            enabled={allowFiles}
+            onClose={() => {
+              refreshDestDir()
+              setDrawer(null)
+            }}
+          />
+        )}
         {drawer === 'chat' && <ChatDrawer lines={state.chat} deviceName={deviceName} connected={connected} onSend={sendChat} onClose={() => setDrawer(null)} />}
       </div>
       <audio ref={audioRef} autoPlay className="hidden" />
@@ -541,6 +618,7 @@ function DisplayTile({
   controlling,
   isCurrent,
   multi,
+  showStats,
   stats,
   rtc,
   onEnter,
@@ -553,6 +631,7 @@ function DisplayTile({
   controlling: boolean
   isCurrent: boolean
   multi: boolean
+  showStats: boolean
   stats: AgentStats | null
   rtc: ViewerState | null
   onEnter: () => void
@@ -669,7 +748,7 @@ function DisplayTile({
           <span className="text-sm opacity-80">Your browser blocked autoplay for this site (check the autoplay / Shields settings to avoid this).</span>
         </button>
       )}
-      {stats && <StatsOverlay stats={stats} rtc={rtc} />}
+      {showStats && <StatsOverlay display={display} stats={stats} rtc={rtc} />}
     </div>
   )
 }
@@ -751,16 +830,21 @@ function PhasePill({ state }: { state: ViewerState }) {
   )
 }
 
-function StatsOverlay({ stats: a, rtc }: { stats: AgentStats; rtc: ViewerState | null }) {
+function StatsOverlay({ display, stats: a, rtc }: { display: DisplayInfo; stats: AgentStats | null; rtc: ViewerState | null }) {
   const r = rtc?.rtcStats
-  const rows: [string, string][] = [
-    ['display', `#${a.display + 1}`],
-    ['codec', `${CODEC_LABEL[a.codec]} ${a.hardware ? 'hw' : 'sw'}`],
-    ['size', `${a.width}×${a.height}`],
-    ['encoder fps', a.fps.toFixed(0)],
-    ['bitrate', kbps(a.bitrate_kbps)],
-    ['pipeline', `${a.pipeline_ms.toFixed(1)} ms`],
-  ]
+  const rows: [string, string][] = [['display', `#${display.index + 1} ${display.name}`.trim()]]
+  if (a) {
+    rows.push(['codec', `${CODEC_LABEL[a.codec]} ${a.hardware ? 'hw' : 'sw'}`])
+    rows.push(['size', `${a.width}×${a.height}`])
+    rows.push(['encoder fps', a.fps.toFixed(0)])
+    rows.push(['bitrate', kbps(a.bitrate_kbps)])
+    rows.push(['pipeline', `${a.pipeline_ms.toFixed(1)} ms`])
+  } else {
+    rows.push(['encoder', rtc?.phase === 'connected' ? 'waiting for agent stats…' : 'not connected'])
+    if (rtc?.codec) rows.push(['codec', CODEC_LABEL[rtc.codec]])
+    if (r?.width && r?.height) rows.push(['size', `${r.width}×${r.height}`])
+    if (r?.bitrateKbps !== undefined) rows.push(['bitrate', kbps(r.bitrateKbps)])
+  }
   if (r) {
     rows.push(['decoder fps', r.fps !== undefined ? r.fps.toFixed(0) : '—'])
     rows.push(['rtt', r.rttMs !== undefined ? `${r.rttMs.toFixed(0)} ms` : '—'])

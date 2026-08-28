@@ -6,6 +6,7 @@ import { useLive } from '@/store/live'
 import { applyTheme, readTheme, type Theme } from '@/lib/theme'
 import { cx } from './ui'
 import { toast } from '@/lib/toast'
+import { DEFAULT_BRANDING, logoUrl, useBranding } from '@/lib/branding'
 
 const NAV = [
   { to: '/devices', label: 'Devices', icon: MonitorSmartphone },
@@ -119,12 +120,18 @@ export function Layout() {
 }
 
 export function Wordmark({ className }: { className?: string }) {
+  const branding = useBranding().data ?? DEFAULT_BRANDING
+  const logo = logoUrl(branding)
   return (
-    <span className={cx('flex items-center gap-2 font-semibold tracking-tight', className)}>
-      <span className="grid size-6 place-items-center rounded-md bg-accent text-accent-ink">
-        <MonitorSmartphone size={14} />
-      </span>
-      Remote Console
+    <span className={cx('flex min-w-0 items-center gap-2 font-semibold tracking-tight', className)}>
+      {logo ? (
+        <img src={logo} alt="" className="size-6 shrink-0 rounded-md object-contain" />
+      ) : (
+        <span className="grid size-6 shrink-0 place-items-center rounded-md bg-accent text-accent-ink">
+          <MonitorSmartphone size={14} />
+        </span>
+      )}
+      <span className="truncate">{branding.product_name || DEFAULT_BRANDING.product_name}</span>
     </span>
   )
 }

@@ -90,6 +90,20 @@ export interface ServerInfo {
   public_url: string
   stun_urls: string[]
   turn_enabled: boolean
+  /** base64 ed25519 key that signs baked agent trailers */
+  console_public_key?: string
+  branding_product_name?: string
+}
+
+/* ── agent bakery ── */
+
+export type AgentPlatform = 'macos-universal' | 'windows-x86_64' | 'windows-aarch64'
+
+export interface AgentDownload {
+  platform: AgentPlatform
+  available: boolean
+  source: 'local' | 'release'
+  size?: number
 }
 
 export interface ApiErrorBody {

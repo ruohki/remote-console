@@ -11,23 +11,36 @@ import { AddDeviceDialog } from '@/components/AddDeviceDialog'
 import { dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useNow } from '@/hooks/useNow'
+import { BrandingTab } from './settings/BrandingTab'
+import { AgentDownloadMenu, AgentDownloadsPanel } from '@/components/AgentDownloads'
 
-export function Settings({ tab = 'info' }: { tab?: 'info' | 'tokens' }) {
+type SettingsTab = 'info' | 'tokens' | 'branding' | 'agent'
+
+export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   const isAdmin = useIsAdmin()
+  const current: SettingsTab = isAdmin || tab === 'info' ? tab : 'info'
   return (
     <div className="mx-auto max-w-5xl">
-      <PageHeader title="Settings" subtitle="Console information and enrollment tokens." />
-      <div className="mb-4 flex gap-1 border-b border-line">
-        <TabLink to="/settings" active={tab === 'info'}>
+      <PageHeader title="Settings" subtitle="Console information, enrollment tokens, branding and agent downloads." />
+      <div className="mb-4 flex gap-1 overflow-x-auto border-b border-line">
+        <TabLink to="/settings" active={current === 'info'}>
           Console
         </TabLink>
         {isAdmin && (
-          <TabLink to="/settings/tokens" active={tab === 'tokens'}>
-            Enrollment tokens
-          </TabLink>
+          <>
+            <TabLink to="/settings/tokens" active={current === 'tokens'}>
+              Enrollment tokens
+            </TabLink>
+            <TabLink to="/settings/branding" active={current === 'branding'}>
+              Branding
+            </TabLink>
+            <TabLink to="/settings/agent" active={current === 'agent'}>
+              Agent downloads
+            </TabLink>
+          </>
         )}
       </div>
-      {tab === 'info' ? <InfoTab /> : isAdmin ? <TokensTab /> : <InfoTab />}
+      {current === 'tokens' ? <TokensTab /> : current === 'branding' ? <BrandingTab /> : current === 'agent' ? <AgentDownloadsPanel /> : <InfoTab />}
     </div>
   )
 }
@@ -76,6 +89,16 @@ function InfoTab() {
         </span>
       ),
     ],
+    [
+      'Signing key',
+      i.console_public_key ? (
+        <span className="mono break-all" title="ed25519 public key that signs baked agent binaries">
+          {i.console_public_key}
+        </span>
+      ) : (
+        <span className="text-ink-faint">not available</span>
+      ),
+    ],
     ['This browser', <span className="text-ink-muted">{navigator.userAgent}</span>],
   ]
   return (
@@ -115,7 +138,8 @@ function TokensTab() {
 
   return (
     <>
-      <div className="mb-3 flex justify-end">
+      <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="text-ink-muted">Each token can also be downloaded as a pre-configured agent that enrolls itself.</div>
         <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
           New token
         </Button>
@@ -140,7 +164,7 @@ function TokensTab() {
               <Th className="hidden md:table-cell">Defaults</Th>
               <Th className="hidden lg:table-cell">Expires</Th>
               <Th className="hidden lg:table-cell">Created</Th>
-              <Th className="w-24" />
+              <Th className="w-56" />
             </tr>
           </thead>
           <tbody>
@@ -165,11 +189,14 @@ function TokensTab() {
                 <Td className="hidden lg:table-cell text-ink-muted">{t.expires_at ? relativeTime(t.expires_at) : 'never'}</Td>
                 <Td className="hidden lg:table-cell text-ink-muted">{dateTime(t.created_at)}</Td>
                 <Td className="text-right">
-                  {!t.revoked && (
-                    <Button size="sm" variant="ghost" icon={<ShieldOff size={13} />} onClick={() => setRevoking(t)}>
-                      Revoke
-                    </Button>
-                  )}
+                  <div className="flex items-center justify-end gap-1">
+                    {!t.revoked && <TokenDownload token={t} />}
+                    {!t.revoked && (
+                      <Button size="sm" variant="ghost" icon={<ShieldOff size={13} />} onClick={() => setRevoking(t)}>
+                        Revoke
+                      </Button>
+                    )}
+                  </div>
                 </Td>
               </tr>
             ))}
@@ -193,4 +220,43 @@ function TokensTab() {
       />
     </>
   )
+}
+
+/**
+ * The plain token is only known right after creation, so downloads for an existing token
+ * are only possible while the console still has it — the API accepts the token value, not
+ * its id. We keep it in session storage for the current browser session when it was created here.
+ */
+function TokenDownload({ token }: { token: EnrollToken }) {
+  const plain = readPlainToken(token.id)
+  if (!plain) {
+    return (
+      <span className="text-[11.5px] text-ink-faint" title="The token value was only shown once; create a new token to download a pre-configured agent.">
+        token not on hand
+      </span>
+    )
+  }
+  return <AgentDownloadMenu token={plain} label="Agent" size="sm" variant="ghost" />
+}
+
+const PLAIN_KEY = 'console.plainTokens'
+
+/** Remember a freshly created token for this browser session so its downloads stay available. */
+export function rememberPlainToken(id: string, token: string) {
+  try {
+    const map = JSON.parse(sessionStorage.getItem(PLAIN_KEY) ?? '{}') as Record<string, string>
+    map[id] = token
+    sessionStorage.setItem(PLAIN_KEY, JSON.stringify(map))
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+export function readPlainToken(id: string): string | null {
+  try {
+    const map = JSON.parse(sessionStorage.getItem(PLAIN_KEY) ?? '{}') as Record<string, string>
+    return map[id] ?? null
+  } catch {
+    return null
+  }
 }

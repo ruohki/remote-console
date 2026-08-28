@@ -9,10 +9,20 @@ import { transferManager, useFiles } from './store'
 import { isTerminal, type Transfer, type TransferStatus } from './manager'
 import { BlobSink, FileSystemSink, MEMORY_SINK_WARN_BYTES, fileSystemAccessAvailable, guessMime, pickSaveFile } from './sinks'
 import { resumeStore, type DownloadRecord, type UploadRecord } from './resume'
+import { flattenDrop, isFileDrag, snapshotDrop } from './dnd'
 
 type Tab = 'transfers' | 'browse'
 
 const destKey = (deviceId: string) => `remote.destDir.${deviceId}`
+
+/** Remembered upload destination for a device (`null` = the agent's default folder). */
+export function readDestDir(deviceId: string): string | null {
+  try {
+    return localStorage.getItem(destKey(deviceId))
+  } catch {
+    return null
+  }
+}
 
 export function FilesDrawer({ deviceId, enabled, onClose, defaultTab = 'transfers' }: { deviceId: string; enabled: boolean; onClose: () => void; defaultTab?: Tab }) {
   const [tab, setTab] = useState<Tab>(defaultTab)
@@ -41,7 +51,21 @@ export function FilesDrawer({ deviceId, enabled, onClose, defaultTab = 'transfer
   }
 
   return (
-    <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#0e1116] text-[13px] text-[#e6e9ef]">
+    <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#0e1116] text-[13px] text-[#e6e9ef]"
+      onDragOver={(e) => {
+        if (!enabled || !isFileDrag(e.dataTransfer)) return
+        e.preventDefault()
+        e.dataTransfer.dropEffect = 'copy'
+      }}
+      onDrop={(e) => {
+        if (!enabled || !isFileDrag(e.dataTransfer)) return
+        e.preventDefault()
+        const snap = snapshotDrop(e.dataTransfer)
+        void flattenDrop(snap).then((files) => {
+          for (const f of files) void transferManager.upload(f.file)
+        })
+      }}
+    >
       <div className="flex h-10 items-center gap-1 border-b border-white/10 px-2">
         <TabButton active={tab === 'transfers'} onClick={() => setTab('transfers')}>
           Transfers

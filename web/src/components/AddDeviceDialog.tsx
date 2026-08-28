@@ -5,6 +5,8 @@ import { api, errorMessage } from '@/lib/api'
 import type { EnrollTokenCreated, EnrollTokenInput, Group } from '@/lib/types'
 import type { DeviceMode } from '@/protocol'
 import { Button, CopyButton, Dialog, Field, Input, Select } from './ui'
+import { AgentDownloadMenu } from './AgentDownloads'
+import { rememberPlainToken } from '@/pages/Settings'
 
 /**
  * "Add device" = create an enrollment token and hand the operator the one-line installers.
@@ -25,6 +27,7 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
     mutationFn: (input: EnrollTokenInput) => api.post<EnrollTokenCreated>('/api/enroll-tokens', input),
     onSuccess: (t) => {
       setCreated(t)
+      rememberPlainToken(t.id, t.token)
       qc.invalidateQueries({ queryKey: ['enroll-tokens'] })
     },
   })
@@ -137,6 +140,13 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
           </div>
           <Installer title="macOS" hint="Terminal, will ask for your password (sudo)." command={created.install.macos} />
           <Installer title="Windows" hint="PowerShell, run as administrator." command={created.install.windows} />
+          <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-raised px-3 py-2">
+            <div className="text-[12.5px] text-ink-muted">
+              <div className="font-medium text-ink">Or hand over a ready-made agent</div>
+              A download with this token baked in: it carries the console address and branding, enrolls itself and needs no command line.
+            </div>
+            <AgentDownloadMenu token={created.token} label="Download agent" align="right" />
+          </div>
           <div>
             <div className="eyebrow mb-1">Token</div>
             <div className="flex items-center gap-2">

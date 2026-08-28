@@ -18,6 +18,7 @@ import { GroupsPage } from '@/pages/Groups'
 import { GroupDetail } from '@/pages/GroupDetail'
 import { NotFound } from '@/pages/NotFound'
 import { Skeleton } from '@/components/ui'
+import { useApplyBranding } from '@/lib/branding'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -28,6 +29,12 @@ const queryClient = new QueryClient({
     },
   },
 })
+
+/** Loads the public branding once and keeps the document title / accent in sync. */
+function BrandingBoot() {
+  useApplyBranding()
+  return null
+}
 
 function RequireAuth({ admin }: { admin?: boolean }) {
   const { user, needsSetup } = useAuth()
@@ -52,6 +59,7 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AuthProvider>
+            <BrandingBoot />
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/setup" element={<Setup />} />
@@ -65,6 +73,8 @@ export default function App() {
                   <Route path="/sessions" element={<Sessions />} />
                   <Route path="/settings" element={<Settings />} />
                   <Route path="/settings/tokens" element={<Settings tab="tokens" />} />
+                  <Route path="/settings/branding" element={<Settings tab="branding" />} />
+                  <Route path="/settings/agent" element={<Settings tab="agent" />} />
                   <Route element={<RequireAuth admin />}>
                     <Route path="/groups" element={<GroupsPage />} />
                     <Route path="/groups/:id" element={<GroupDetail />} />
