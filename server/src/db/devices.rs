@@ -3,7 +3,7 @@
 use super::models::DeviceRow;
 use super::{enum_str, now, Db};
 use protocol::common::{Arch, DisplayInfo, Os, VideoCodec};
-use protocol::config::AgentConfig;
+use protocol::config::{AgentConfig, LocalOverrides};
 use sqlx::Result;
 
 pub struct NewDevice<'a> {
@@ -108,6 +108,7 @@ pub struct Presence<'a> {
     pub displays: &'a [DisplayInfo],
     pub logged_in_user: Option<&'a str>,
     pub ip: &'a str,
+    pub local_overrides: &'a LocalOverrides,
 }
 
 /// Called on `hello`: refresh everything the agent reports and mark it online.
@@ -115,7 +116,7 @@ pub async fn mark_online(db: &Db, id: &str, p: Presence<'_>) -> Result<()> {
     sqlx::query(
         "UPDATE devices SET
             hostname = ?, os = ?, arch = ?, agent_version = ?, codecs = ?, displays = ?,
-            logged_in_user = ?, last_ip = ?, online = 1, last_seen_at = ?
+            logged_in_user = ?, last_ip = ?, online = 1, last_seen_at = ?, local_overrides = ?
          WHERE id = ?",
     )
     .bind(p.hostname)
@@ -127,6 +128,7 @@ pub async fn mark_online(db: &Db, id: &str, p: Presence<'_>) -> Result<()> {
     .bind(p.logged_in_user)
     .bind(p.ip)
     .bind(now())
+    .bind(json(p.local_overrides))
     .bind(id)
     .execute(db)
     .await?;
@@ -138,17 +140,20 @@ pub async fn heartbeat(
     id: &str,
     logged_in_user: Option<&str>,
     displays: Option<&[DisplayInfo]>,
+    local_overrides: Option<&LocalOverrides>,
 ) -> Result<()> {
     sqlx::query(
         "UPDATE devices SET
             last_seen_at = ?, online = 1,
             logged_in_user = COALESCE(?, logged_in_user),
-            displays = COALESCE(?, displays)
+            displays = COALESCE(?, displays),
+            local_overrides = COALESCE(?, local_overrides)
          WHERE id = ?",
     )
     .bind(now())
     .bind(logged_in_user)
     .bind(displays.map(|d| json(&d)))
+    .bind(local_overrides.map(json))
     .bind(id)
     .execute(db)
     .await?;

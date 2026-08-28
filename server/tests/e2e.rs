@@ -3,7 +3,7 @@
 use futures_util::{SinkExt, StreamExt};
 use protocol::agent::{AgentCapabilities, AgentToConsole, ConsoleToAgent};
 use protocol::common::*;
-use protocol::config::{EnrollRequest, EnrollResponse};
+use protocol::config::{EnrollRequest, EnrollResponse, LocalOverrides};
 use protocol::ui::{ConsoleToUi, UiToConsole};
 use remote_console::app::{build_router, AppState};
 use remote_console::config::Config;
@@ -21,6 +21,7 @@ type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
 struct TestApp {
     base: String,
     ws_base: String,
+    state: AppState,
     _dir: tempfile::TempDir,
 }
 
@@ -29,7 +30,7 @@ async fn spawn_app() -> TestApp {
     let db_path = dir.path().join("console.db");
     let config = Config::for_tests(format!("sqlite://{}?mode=rwc", db_path.display()));
     let state = AppState::init(config).await.expect("state");
-    let app = build_router(state);
+    let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -45,6 +46,7 @@ async fn spawn_app() -> TestApp {
     TestApp {
         base: format!("http://{addr}"),
         ws_base: format!("ws://{addr}"),
+        state,
         _dir: dir,
     }
 }
@@ -200,6 +202,7 @@ async fn agent_hello(app: &TestApp, enrolled: &EnrollResponse, secret: &str) -> 
                 clipboard: true,
             },
             logged_in_user: Some("alice".into()),
+            local_overrides: LocalOverrides::default(),
         },
     )
     .await;
@@ -1893,7 +1896,7 @@ async fn spawn_app_with_binaries() -> (TestApp, Vec<u8>) {
     let mut config = Config::for_tests(format!("sqlite://{}?mode=rwc", db_path.display()));
     config.agent_binary_dir = Some(bin_dir);
     let state = AppState::init(config).await.expect("state");
-    let app = build_router(state);
+    let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -1910,6 +1913,7 @@ async fn spawn_app_with_binaries() -> (TestApp, Vec<u8>) {
         TestApp {
             base: format!("http://{addr}"),
             ws_base: format!("ws://{addr}"),
+            state,
             _dir: dir,
         },
         base,
@@ -2002,19 +2006,36 @@ async fn branding_and_agent_bakery() {
         .to_str()
         .unwrap()
         .to_string();
-    assert!(
-        cd.contains("Acme-Remote-macos-universal"),
-        "disposition: {cd}"
+    assert!(cd.contains("Acme-Remote.zip"), "disposition: {cd}");
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/zip"
     );
+    assert_eq!(resp.headers().get("x-agent-signed").unwrap(), "0");
     let baked = resp.bytes().await.unwrap().to_vec();
-    assert!(
-        baked.len() > base.len(),
-        "baked binary should be larger than the base"
-    );
-    assert_eq!(&baked[..base.len()], &base[..], "base bytes preserved");
 
-    // trailer verifies against the console key and carries our config
-    let payload = read_trailer(&baked).unwrap().expect("trailer present");
+    // the zip holds a complete .app bundle: plist, unmodified binary (0755), signed sidecar
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(baked.clone())).unwrap();
+    let names: Vec<String> = archive.file_names().map(String::from).collect();
+    assert!(
+        names.contains(&"Acme Remote.app/Contents/Info.plist".to_string()),
+        "names: {names:?}"
+    );
+    let plist = read_zip_entry(&mut archive, "Acme Remote.app/Contents/Info.plist");
+    assert!(String::from_utf8_lossy(&plist).contains("<string>Acme Remote</string>"));
+    {
+        let exe = archive
+            .by_name("Acme Remote.app/Contents/MacOS/remote-agent")
+            .unwrap();
+        assert_eq!(exe.unix_mode().map(|m| m & 0o777), Some(0o755));
+    }
+    let exe_bytes = read_zip_entry(&mut archive, "Acme Remote.app/Contents/MacOS/remote-agent");
+    assert_eq!(exe_bytes, base, "base bytes preserved inside the bundle");
+    let sidecar = read_zip_entry(
+        &mut archive,
+        "Acme Remote.app/Contents/Resources/baked.json",
+    );
+    let payload: protocol::bakery::BakedPayload = serde_json::from_slice(&sidecar).unwrap();
     let key = verify_payload(&payload).expect("signature valid");
     assert_eq!(
         base64::engine::general_purpose::STANDARD.encode(key.as_bytes()),
@@ -2027,6 +2048,53 @@ async fn branding_and_agent_bakery() {
     );
     assert!(payload.config.quick_support);
     assert_eq!(payload.config.branding.product_name, "Acme Remote");
+
+    // Windows downloads keep the executable trailer format
+    std::fs::write(
+        app.state
+            .config
+            .agent_binary_dir
+            .as_ref()
+            .unwrap()
+            .join("remote-agent-windows-x86_64.exe"),
+        b"MZ fake windows base",
+    )
+    .unwrap();
+    let win = admin
+        .get(format!(
+            "{}/api/agent/download/windows-x86_64?token={token_str}",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(win.status(), 200);
+    let cd = win
+        .headers()
+        .get("content-disposition")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        cd.contains("Acme-Remote-windows-x86_64.exe"),
+        "disposition: {cd}"
+    );
+    let exe = win.bytes().await.unwrap().to_vec();
+    assert!(exe.starts_with(b"MZ fake windows base"));
+    let trailer = read_trailer(&exe)
+        .unwrap()
+        .expect("windows trailer present");
+    verify_payload(&trailer).expect("windows trailer valid");
+    std::fs::remove_file(
+        app.state
+            .config
+            .agent_binary_dir
+            .as_ref()
+            .unwrap()
+            .join("remote-agent-windows-x86_64.exe"),
+    )
+    .unwrap();
 
     // token-only download (no cookie) works too
     let anon = reqwest::Client::new();
@@ -2119,4 +2187,277 @@ async fn create_token_max1(app: &TestApp, c: &reqwest::Client) -> String {
         .json(&json!({ "label": "one", "default_mode": "unattended", "default_tags": [], "max_uses": 1 }))
         .send().await.unwrap().json().await.unwrap();
     v["token"].as_str().unwrap().to_string()
+}
+
+// ── helpers for the bundle / overrides / pagination tests ────────────────────
+
+fn read_zip_entry(archive: &mut zip::ZipArchive<std::io::Cursor<Vec<u8>>>, name: &str) -> Vec<u8> {
+    use std::io::Read;
+    let mut entry = archive.by_name(name).expect(name);
+    let mut buf = Vec::new();
+    entry.read_to_end(&mut buf).unwrap();
+    buf
+}
+
+async fn get_json<T: DeserializeOwned>(c: &reqwest::Client, url: &str) -> T {
+    let r = c.get(url).send().await.expect("get");
+    assert_eq!(r.status(), 200, "{}", url);
+    r.json().await.expect("json")
+}
+
+#[tokio::test]
+async fn device_overrides_from_hello_and_heartbeat() {
+    let app = spawn_app().await;
+    let admin = client();
+    let cookie = setup_admin(&app, &admin).await;
+    let token = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, token["token"].as_str().unwrap()).await;
+    let secret = enrolled.device_secret.clone();
+
+    // UI socket subscribed before the agent connects
+    let mut ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&cookie)).await;
+    send(&mut ui, &UiToConsole::Subscribe).await;
+    let _snapshot: ConsoleToUi = recv(&mut ui).await;
+
+    // hello carries a help-me override
+    let mut agent = connect_ws(&format!("{}/ws/agent", app.ws_base), None).await;
+    send(
+        &mut agent,
+        &AgentToConsole::Hello {
+            protocol_version: protocol::PROTOCOL_VERSION,
+            device_id: enrolled.device_id.clone(),
+            device_secret: secret.clone(),
+            agent_version: "0.1.0".into(),
+            hostname: "test-host".into(),
+            os: Os::Macos,
+            arch: Arch::Aarch64,
+            mode: DeviceMode::HelpMe,
+            capabilities: AgentCapabilities {
+                codecs: vec![VideoCodec::H264],
+                displays: vec![],
+                input: true,
+                clipboard: true,
+            },
+            logged_in_user: None,
+            local_overrides: LocalOverrides {
+                mode: Some(DeviceMode::HelpMe),
+                ..Default::default()
+            },
+        },
+    )
+    .await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+
+    let update: ConsoleToUi = recv_until(
+        &mut ui,
+        |m: &ConsoleToUi| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.online),
+    )
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = update else {
+        unreachable!()
+    };
+    assert_eq!(device.local_overrides.mode, Some(DeviceMode::HelpMe));
+    assert_eq!(device.local_overrides.allow_input, None);
+
+    // REST summary shows the same
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["local_overrides"]["mode"], "help_me");
+    assert!(devices[0]["local_overrides"].get("allow_input").is_none());
+    // the banner toggle is gone from the config
+    let detail: Value = get_json(
+        &admin,
+        &format!("{}/api/devices/{}", app.base, enrolled.device_id),
+    )
+    .await;
+    assert!(detail["config"].get("show_session_indicator").is_none());
+
+    // heartbeat with changed overrides → stored + pushed live
+    send(
+        &mut agent,
+        &AgentToConsole::Heartbeat {
+            uptime_s: 10,
+            logged_in_user: None,
+            cpu_percent: None,
+            mem_percent: None,
+            displays: None,
+            local_overrides: Some(LocalOverrides {
+                mode: Some(DeviceMode::HelpMe),
+                allow_input: Some(false),
+                allow_audio: Some(false),
+                ..Default::default()
+            }),
+        },
+    )
+    .await;
+    let update: ConsoleToUi = recv_until(&mut ui, |m: &ConsoleToUi| {
+        matches!(m, ConsoleToUi::DeviceUpdate { device } if device.local_overrides.allow_input == Some(false))
+    })
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = update else {
+        unreachable!()
+    };
+    assert_eq!(device.local_overrides.allow_audio, Some(false));
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["local_overrides"]["allow_input"], false);
+
+    // a heartbeat without overrides keeps the stored ones (COALESCE)
+    send(
+        &mut agent,
+        &AgentToConsole::Heartbeat {
+            uptime_s: 11,
+            logged_in_user: None,
+            cpu_percent: None,
+            mem_percent: None,
+            displays: None,
+            local_overrides: None,
+        },
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["local_overrides"]["allow_input"], false);
+
+    // config patch ignores the removed field instead of failing
+    let r = admin
+        .patch(format!(
+            "{}/api/devices/{}/config",
+            app.base, enrolled.device_id
+        ))
+        .json(&json!({ "show_session_indicator": false, "max_fps": 24 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let detail: Value = r.json().await.unwrap();
+    assert_eq!(detail["config"]["max_fps"], 24);
+}
+
+#[tokio::test]
+async fn sessions_paginate_with_before_cursor() {
+    use remote_console::db;
+
+    let app = spawn_app().await;
+    let admin = client();
+    let _cookie = setup_admin(&app, &admin).await;
+    let token = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, token["token"].as_str().unwrap()).await;
+    let me: Value = get_json(&admin, &format!("{}/api/auth/me", app.base)).await;
+    let operator_id = me["user"]["id"].as_str().unwrap().to_string();
+
+    for i in 0..3 {
+        db::sessions::insert(
+            &app.state.db,
+            &format!("ses_page{i}"),
+            &enrolled.device_id,
+            &operator_id,
+            SessionState::Ended,
+            None,
+        )
+        .await
+        .unwrap();
+        // distinct millisecond timestamps
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
+    let page1: Vec<Value> = get_json(&admin, &format!("{}/api/sessions?limit=2", app.base)).await;
+    assert_eq!(page1.len(), 2);
+    assert_eq!(page1[0]["id"], "ses_page2");
+    assert_eq!(page1[1]["id"], "ses_page1");
+    let cursor = page1[1]["started_at"].as_str().unwrap().to_string();
+
+    let page2: Vec<Value> = get_json(
+        &admin,
+        &format!("{}/api/sessions?limit=2&before={cursor}", app.base),
+    )
+    .await;
+    assert_eq!(page2.len(), 1, "{page2:?}");
+    assert_eq!(page2[0]["id"], "ses_page0");
+
+    let page3: Vec<Value> = get_json(
+        &admin,
+        &format!(
+            "{}/api/sessions?limit=2&before={}",
+            app.base,
+            page2[0]["started_at"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert!(page3.is_empty());
+
+    // per-device listing supports the same cursor
+    let dev1: Vec<Value> = get_json(
+        &admin,
+        &format!(
+            "{}/api/devices/{}/sessions?limit=1",
+            app.base, enrolled.device_id
+        ),
+    )
+    .await;
+    assert_eq!(dev1.len(), 1);
+    assert_eq!(dev1[0]["id"], "ses_page2");
+    let dev2: Vec<Value> = get_json(
+        &admin,
+        &format!(
+            "{}/api/devices/{}/sessions?limit=5&before={}",
+            app.base,
+            enrolled.device_id,
+            dev1[0]["started_at"].as_str().unwrap()
+        ),
+    )
+    .await;
+    assert_eq!(dev2.len(), 2);
+
+    // limit is capped at 200 (no error)
+    let r = admin
+        .get(format!("{}/api/sessions?limit=9999", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+}
+
+#[tokio::test]
+async fn signing_is_skipped_cleanly_when_not_configured() {
+    let (app, _base) = spawn_app_with_binaries().await;
+    let admin = client();
+    let _cookie = setup_admin(&app, &admin).await;
+
+    let downloads: Vec<Value> =
+        get_json(&admin, &format!("{}/api/agent/downloads", app.base)).await;
+    let mac = downloads
+        .iter()
+        .find(|d| d["platform"] == "macos-universal")
+        .unwrap();
+    assert_eq!(mac["signing_configured"], false);
+    assert_eq!(mac["signed"], false);
+    assert_eq!(mac["notarized"], false);
+
+    let r = admin
+        .get(format!("{}/api/agent/download/macos-universal", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    assert_eq!(r.headers().get("x-agent-signed").unwrap(), "0");
+    assert_eq!(r.headers().get("x-agent-notarized").unwrap(), "0");
+
+    // ?sign=0 is accepted too
+    let r = admin
+        .get(format!(
+            "{}/api/agent/download/macos-universal?sign=0",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // outcome is reflected in the listing after the bake
+    let downloads: Vec<Value> =
+        get_json(&admin, &format!("{}/api/agent/downloads", app.base)).await;
+    let mac = downloads
+        .iter()
+        .find(|d| d["platform"] == "macos-universal")
+        .unwrap();
+    assert_eq!(mac["signed"], false);
 }

@@ -26,6 +26,11 @@ Configuration is via environment variables (see `.env.example`):
 | `STUN_URLS` | `stun:stun.l.google.com:19302` | comma separated |
 | `AGENT_DOWNLOAD_BASE` | GitHub releases of `ruohki/remote-agent` | where install scripts fetch binaries (fallback for baking) |
 | `AGENT_BINARY_DIR` | – | directory of base agent binaries to bake branding into (else fetched & cached) |
+| `MACOS_SIGN_IDENTITY` | – | `Developer ID Application: Name (TEAMID)`; signs baked `.app` bundles with `codesign` (macOS host) |
+| `MACOS_NOTARY_PROFILE` | – | `notarytool` keychain profile (`xcrun notarytool store-credentials <profile>`); notarizes + staples bundles |
+| `MACOS_SIGN_P12` / `MACOS_SIGN_P12_PASSWORD` | – | Developer ID certificate for `rcodesign` on non-macOS hosts (Docker) |
+| `APPLE_API_KEY_JSON` | – | App Store Connect API key file for `rcodesign notary-submit` |
+| `WINDOWS_SIGN_PFX` / `WINDOWS_SIGN_PFX_PASSWORD` | – | reserved for Authenticode signing (not applied yet, see docs) |
 | `SESSION_TTL_HOURS` | `168` | login session lifetime |
 | `RUST_LOG` | `info` | log filter |
 

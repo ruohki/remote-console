@@ -85,6 +85,7 @@ mod tests {
             logo_png_base64: None,
             support_text: "  hi ".into(),
             organization: "Acme Inc".into(),
+            apply_to_console: true,
         }
     }
 

@@ -21,6 +21,9 @@ pub struct ListQuery {
     pub device_id: Option<String>,
     #[serde(default = "default_limit")]
     pub limit: i64,
+    /// Only sessions started strictly before this ISO-8601 timestamp (pagination cursor).
+    #[serde(default)]
+    pub before: Option<String>,
 }
 
 fn default_limit() -> i64 {
@@ -49,7 +52,8 @@ pub async fn list(
             active_only,
             device_id: q.device_id.as_deref(),
             device_ids: visible.as_deref(),
-            limit: q.limit,
+            limit: q.limit.clamp(1, 200),
+            before: q.before.as_deref(),
         },
     )
     .await?;

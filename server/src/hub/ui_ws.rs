@@ -177,6 +177,7 @@ async fn handle_message(
                     device_id: None,
                     device_ids: visible.as_deref(),
                     limit: 500,
+                    before: None,
                 },
             )
             .await

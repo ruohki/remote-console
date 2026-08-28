@@ -50,6 +50,7 @@ pub fn default_branding() -> Branding {
         logo_png_base64: None,
         support_text: String::new(),
         organization: String::new(),
+        apply_to_console: true,
     }
 }
 

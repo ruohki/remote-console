@@ -2,7 +2,7 @@
 
 use crate::db::{enum_parse, enum_str};
 use protocol::common::{Arch, DeviceMode, DisplayInfo, EndReason, Os, SessionState, VideoCodec};
-use protocol::config::AgentConfig;
+use protocol::config::{AgentConfig, LocalOverrides};
 use protocol::ui::{DevicePermission, DeviceSummary, GroupRef, SessionSummary};
 use serde::{Deserialize, Serialize};
 
@@ -168,11 +168,17 @@ pub struct DeviceRow {
     pub displays: String,
     pub enrolled_with: Option<String>,
     pub created_at: String,
+    /// `protocol::config::LocalOverrides` JSON (restrictions set at the device).
+    pub local_overrides: String,
 }
 
 impl DeviceRow {
     pub fn config(&self) -> AgentConfig {
         serde_json::from_str(&self.config).unwrap_or_default()
+    }
+
+    pub fn local_overrides(&self) -> LocalOverrides {
+        serde_json::from_str(&self.local_overrides).unwrap_or_default()
     }
 
     pub fn tags(&self) -> Vec<String> {
@@ -221,6 +227,7 @@ impl DeviceRow {
             active_session_id,
             groups,
             permission,
+            local_overrides: self.local_overrides(),
         }
     }
 

@@ -47,7 +47,10 @@ pub struct Filter<'a> {
     pub device_id: Option<&'a str>,
     /// Restrict to these devices (RBAC); `Some(&[])` yields nothing, `None` = no restriction.
     pub device_ids: Option<&'a [String]>,
+    /// Clamped to 1..=500 here; the HTTP API caps at 200.
     pub limit: i64,
+    /// Pagination cursor: only rows with `started_at < before` (ISO-8601, as returned).
+    pub before: Option<&'a str>,
 }
 
 pub async fn list(db: &Db, f: Filter<'_>) -> Result<Vec<SessionRow>> {
@@ -65,7 +68,11 @@ pub async fn list(db: &Db, f: Filter<'_>) -> Result<Vec<SessionRow>> {
         let placeholders = vec!["?"; ids.len()].join(",");
         sql.push_str(&format!(" AND s.device_id IN ({placeholders})"));
     }
-    sql.push_str(" ORDER BY s.started_at DESC LIMIT ?");
+    let before = f.before.map(str::trim).filter(|b| !b.is_empty());
+    if before.is_some() {
+        sql.push_str(" AND s.started_at < ?");
+    }
+    sql.push_str(" ORDER BY s.started_at DESC, s.id DESC LIMIT ?");
     let mut q = sqlx::query_as::<_, SessionRow>(&sql);
     if let Some(d) = f.device_id {
         q = q.bind(d);
@@ -74,6 +81,9 @@ pub async fn list(db: &Db, f: Filter<'_>) -> Result<Vec<SessionRow>> {
         for id in ids {
             q = q.bind(id);
         }
+    }
+    if let Some(b) = before {
+        q = q.bind(b);
     }
     q.bind(f.limit.clamp(1, 500)).fetch_all(db).await
 }

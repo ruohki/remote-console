@@ -71,6 +71,7 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
             mode,
             capabilities,
             logged_in_user,
+            local_overrides,
         }) => Hello {
             protocol_version,
             device_id,
@@ -82,6 +83,7 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
             mode,
             capabilities,
             logged_in_user,
+            local_overrides,
         },
         Ok(_) => {
             let _ = close(
@@ -148,6 +150,7 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
             displays: &hello.capabilities.displays,
             logged_in_user: hello.logged_in_user.as_deref(),
             ip: &ip,
+            local_overrides: &hello.local_overrides,
         },
     )
     .await
@@ -223,6 +226,7 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
     ping.tick().await;
     let mut nonce: u64 = 0;
     let mut last_user = hello.logged_in_user.clone();
+    let mut last_overrides = hello.local_overrides.clone();
     loop {
         tokio::select! {
             _ = cancel.cancelled() => break,
@@ -245,7 +249,7 @@ async fn handle(hub: Arc<Hub>, socket: WebSocket, ip: String) {
                     }
                 };
                 hub.touch_agent(&device_id, conn_id);
-                handle_message(&hub, &device_id, &mut last_user, parsed).await;
+                handle_message(&hub, &device_id, &mut last_user, &mut last_overrides, parsed).await;
             }
         }
     }
@@ -277,12 +281,14 @@ struct Hello {
     mode: protocol::common::DeviceMode,
     capabilities: protocol::agent::AgentCapabilities,
     logged_in_user: Option<String>,
+    local_overrides: protocol::config::LocalOverrides,
 }
 
 async fn handle_message(
     hub: &Arc<Hub>,
     device_id: &str,
     last_user: &mut Option<String>,
+    last_overrides: &mut protocol::config::LocalOverrides,
     msg: AgentToConsole,
 ) {
     match msg {
@@ -292,6 +298,7 @@ async fn handle_message(
         AgentToConsole::Heartbeat {
             logged_in_user,
             displays,
+            local_overrides,
             ..
         } => {
             if let Err(err) = db::devices::heartbeat(
@@ -299,6 +306,7 @@ async fn handle_message(
                 device_id,
                 logged_in_user.as_deref(),
                 displays.as_deref(),
+                local_overrides.as_ref(),
             )
             .await
             {
@@ -308,7 +316,16 @@ async fn handle_message(
             if user_changed {
                 *last_user = logged_in_user;
             }
-            if displays.is_some() || user_changed {
+            let overrides_changed = local_overrides
+                .as_ref()
+                .is_some_and(|o| *o != *last_overrides);
+            if let Some(o) = local_overrides {
+                if overrides_changed {
+                    tracing::info!(device = %device_id, ?o, "device-side overrides changed");
+                }
+                *last_overrides = o;
+            }
+            if displays.is_some() || user_changed || overrides_changed {
                 hub.broadcast_device(device_id).await;
             }
         }

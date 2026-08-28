@@ -1,0 +1,310 @@
+//! Code signing and notarization of baked macOS bundles (best effort).
+//!
+//! Two backends:
+//!
+//! * **`codesign` / `notarytool`** (macOS host): `MACOS_SIGN_IDENTITY` names a
+//!   `Developer ID Application` identity in the keychain; `MACOS_NOTARY_PROFILE` names a
+//!   `notarytool` keychain profile (`xcrun notarytool store-credentials <profile>`).
+//! * **`rcodesign`** (any host, e.g. the Docker image): `MACOS_SIGN_P12` +
+//!   `MACOS_SIGN_P12_PASSWORD` for signing, `APPLE_API_KEY_JSON` (an App Store Connect API key
+//!   file as produced by `rcodesign encode-app-store-connect-api-key`) for notarization.
+//!
+//! Every failure is logged and degrades to an unsigned bundle; the caller reports the outcome
+//! through [`SignOutcome`] so the UI can show what it got.
+
+use anyhow::{anyhow, Context, Result};
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+/// Signing configuration read from the environment.
+#[derive(Debug, Clone, Default)]
+pub struct SignConfig {
+    pub macos_identity: Option<String>,
+    pub notary_profile: Option<String>,
+    pub p12: Option<PathBuf>,
+    pub p12_password: Option<String>,
+    pub api_key_json: Option<PathBuf>,
+    pub windows_pfx: Option<PathBuf>,
+    pub windows_pfx_password: Option<String>,
+}
+
+/// Which tool will sign a macOS bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MacBackend {
+    Codesign,
+    Rcodesign,
+}
+
+/// What signing achieved for one bundle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SignOutcome {
+    pub signed: bool,
+    pub notarized: bool,
+}
+
+fn env_opt(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
+impl SignConfig {
+    pub fn from_env() -> Self {
+        Self {
+            macos_identity: env_opt("MACOS_SIGN_IDENTITY"),
+            notary_profile: env_opt("MACOS_NOTARY_PROFILE"),
+            p12: env_opt("MACOS_SIGN_P12").map(PathBuf::from),
+            p12_password: env_opt("MACOS_SIGN_P12_PASSWORD"),
+            api_key_json: env_opt("APPLE_API_KEY_JSON").map(PathBuf::from),
+            windows_pfx: env_opt("WINDOWS_SIGN_PFX").map(PathBuf::from),
+            windows_pfx_password: env_opt("WINDOWS_SIGN_PFX_PASSWORD"),
+        }
+    }
+
+    /// The backend a macOS bundle would be signed with on this host, if any.
+    pub fn macos_backend(&self) -> Option<MacBackend> {
+        if self.macos_identity.is_some() && tool_on_path("codesign") {
+            return Some(MacBackend::Codesign);
+        }
+        if self.p12.is_some() && self.p12_password.is_some() && tool_on_path("rcodesign") {
+            return Some(MacBackend::Rcodesign);
+        }
+        None
+    }
+
+    pub fn macos_configured(&self) -> bool {
+        self.macos_backend().is_some()
+    }
+
+    /// Whether notarization would be attempted after signing.
+    pub fn macos_notary_configured(&self) -> bool {
+        match self.macos_backend() {
+            Some(MacBackend::Codesign) => self.notary_profile.is_some() && tool_on_path("xcrun"),
+            Some(MacBackend::Rcodesign) => self.api_key_json.is_some(),
+            None => false,
+        }
+    }
+
+    /// Windows Authenticode signing is configured (see [`sign_windows_exe`] for the caveat).
+    pub fn windows_configured(&self) -> bool {
+        self.windows_pfx.is_some() && tool_on_path("osslsigncode")
+    }
+}
+
+/// Whether an executable named `name` exists on `PATH` (plus the usual macOS locations).
+pub fn tool_on_path(name: &str) -> bool {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    dirs.push(PathBuf::from("/usr/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.iter().any(|d| d.join(name).is_file())
+}
+
+/// Sign (and, when configured, notarize + staple) the bundle at `app_dir`.
+/// `work_dir` receives temporary artefacts (the zip submitted for notarization).
+/// Never fails: problems are logged and reflected in the outcome.
+pub fn sign_bundle(cfg: &SignConfig, app_dir: &Path, work_dir: &Path) -> SignOutcome {
+    let Some(backend) = cfg.macos_backend() else {
+        return SignOutcome::default();
+    };
+    match sign_with(backend, cfg, app_dir, work_dir) {
+        Ok(outcome) => outcome,
+        Err(err) => {
+            tracing::warn!("signing {} failed: {err:#}", app_dir.display());
+            // A failed notarization still leaves a signed bundle behind; report what holds.
+            SignOutcome {
+                signed: is_signed(app_dir),
+                notarized: false,
+            }
+        }
+    }
+}
+
+fn sign_with(
+    backend: MacBackend,
+    cfg: &SignConfig,
+    app_dir: &Path,
+    work_dir: &Path,
+) -> Result<SignOutcome> {
+    let mut outcome = SignOutcome::default();
+    match backend {
+        MacBackend::Codesign => {
+            let identity = cfg.macos_identity.as_deref().unwrap_or_default();
+            run(
+                "codesign",
+                &[
+                    "--force",
+                    "--options",
+                    "runtime",
+                    "--timestamp",
+                    "--sign",
+                    identity,
+                    &app_dir.to_string_lossy(),
+                ],
+            )
+            .context("codesign")?;
+            run(
+                "codesign",
+                &["--verify", "--strict", "--deep", &app_dir.to_string_lossy()],
+            )
+            .context("codesign --verify")?;
+            outcome.signed = true;
+            tracing::info!(app = %app_dir.display(), "bundle signed with {identity}");
+
+            if let Some(profile) = cfg.notary_profile.as_deref() {
+                let zip = work_dir.join("notarize.zip");
+                run(
+                    "ditto",
+                    &[
+                        "-c",
+                        "-k",
+                        "--keepParent",
+                        &app_dir.to_string_lossy(),
+                        &zip.to_string_lossy(),
+                    ],
+                )
+                .context("ditto")?;
+                let out = run(
+                    "xcrun",
+                    &[
+                        "notarytool",
+                        "submit",
+                        &zip.to_string_lossy(),
+                        "--keychain-profile",
+                        profile,
+                        "--wait",
+                    ],
+                )
+                .context("notarytool submit")?;
+                if !out.contains("status: Accepted") {
+                    return Err(anyhow!("notarization was not accepted:\n{out}"));
+                }
+                run("xcrun", &["stapler", "staple", &app_dir.to_string_lossy()])
+                    .context("stapler staple")?;
+                outcome.notarized = true;
+                tracing::info!(app = %app_dir.display(), "bundle notarized and stapled");
+            }
+        }
+        MacBackend::Rcodesign => {
+            let p12 = cfg.p12.as_deref().unwrap_or(Path::new(""));
+            let pw = cfg.p12_password.as_deref().unwrap_or_default();
+            run(
+                "rcodesign",
+                &[
+                    "sign",
+                    "--p12-file",
+                    &p12.to_string_lossy(),
+                    "--p12-password",
+                    pw,
+                    "--code-signature-flags",
+                    "runtime",
+                    &app_dir.to_string_lossy(),
+                ],
+            )
+            .context("rcodesign sign")?;
+            outcome.signed = true;
+            if let Some(key) = cfg.api_key_json.as_deref() {
+                run(
+                    "rcodesign",
+                    &[
+                        "notary-submit",
+                        "--api-key-file",
+                        &key.to_string_lossy(),
+                        "--staple",
+                        &app_dir.to_string_lossy(),
+                    ],
+                )
+                .context("rcodesign notary-submit")?;
+                outcome.notarized = true;
+            }
+        }
+    }
+    Ok(outcome)
+}
+
+/// Windows Authenticode signing of a baked executable.
+///
+/// Not performed yet: the bakery appends the configuration trailer *after* the PE image, and
+/// Authenticode's hash covers everything up to the certificate table, so a signature would be
+/// invalidated by the trailer (or hide it behind the certificate table). Proper support means
+/// storing the payload inside the certificate table; until then this reports `signed:false`.
+pub fn sign_windows_exe(cfg: &SignConfig, _exe: &Path) -> SignOutcome {
+    if cfg.windows_configured() {
+        tracing::warn!(
+            "WINDOWS_SIGN_PFX is set but Authenticode signing of trailer-baked executables is not supported yet; serving unsigned"
+        );
+    }
+    SignOutcome::default()
+}
+
+/// Whether `codesign` considers the bundle validly signed (macOS host only).
+fn is_signed(app_dir: &Path) -> bool {
+    tool_on_path("codesign")
+        && run(
+            "codesign",
+            &["--verify", "--strict", &app_dir.to_string_lossy()],
+        )
+        .is_ok()
+}
+
+/// Run a tool, returning combined stdout+stderr on success and an error carrying the same on
+/// failure.
+fn run(program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("running {program}"))?;
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(anyhow!(
+            "{program} {} exited with {}: {}",
+            args.first().copied().unwrap_or(""),
+            output.status,
+            text.trim()
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unconfigured_means_no_backend() {
+        let cfg = SignConfig::default();
+        assert_eq!(cfg.macos_backend(), None);
+        assert!(!cfg.macos_configured());
+        assert!(!cfg.macos_notary_configured());
+        assert!(!cfg.windows_configured());
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            sign_bundle(&cfg, tmp.path(), tmp.path()),
+            SignOutcome::default()
+        );
+    }
+
+    #[test]
+    fn rcodesign_backend_needs_both_p12_fields_and_the_tool() {
+        let cfg = SignConfig {
+            p12: Some(PathBuf::from("/nonexistent.p12")),
+            p12_password: None,
+            ..Default::default()
+        };
+        assert_eq!(cfg.macos_backend(), None);
+    }
+
+    #[test]
+    fn tool_lookup_finds_sh() {
+        assert!(tool_on_path("sh"));
+        assert!(!tool_on_path("definitely-not-a-tool-xyz"));
+    }
+}

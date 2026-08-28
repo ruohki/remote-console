@@ -1,6 +1,6 @@
 //! Branded agent downloads (bakery).
 
-use crate::agent_bakery::{download_filename, Availability, Platform};
+use crate::agent_bakery::{Availability, Platform};
 use crate::app::AppState;
 use crate::auth::{self, AdminUser};
 use crate::db;
@@ -25,6 +25,9 @@ pub struct DownloadQuery {
     pub token: Option<String>,
     #[serde(default)]
     pub quick: Option<u8>,
+    /// `0` skips code signing even when it is configured.
+    #[serde(default)]
+    pub sign: Option<u8>,
 }
 
 pub async fn download(
@@ -74,8 +77,8 @@ async fn download_inner(
 
     let branding = db::settings::branding(&state.db).await?;
     let quick = q.quick == Some(1);
-    let filename = download_filename(&branding.product_name, platform);
-    let bytes = state
+    let sign = q.sign != Some(0);
+    let baked = state
         .bakery
         .bake(
             &state.config,
@@ -88,6 +91,7 @@ async fn download_inner(
                 .map(String::from),
             quick,
             branding,
+            sign,
         )
         .await
         .map_err(|e| ApiError::new(StatusCode::NOT_FOUND, "no_base_binary", format!("{e:#}")))?;
@@ -102,19 +106,32 @@ async fn download_inner(
             .map(|(id, name)| db::audit::Actor { id, name }),
         "agent.bake",
         Some(platform.slug()),
-        serde_json::json!({ "quick": quick, "token": token_label }),
+        serde_json::json!({
+            "quick": quick,
+            "token": token_label,
+            "signed": baked.signed,
+            "notarized": baked.notarized,
+        }),
     )
     .await;
 
-    let mut resp = (StatusCode::OK, bytes).into_response();
+    let filename = baked.filename;
+    let content_type = baked.content_type;
+    let (signed, notarized) = (baked.signed, baked.notarized);
+    let mut resp = (StatusCode::OK, baked.bytes).into_response();
     let h = resp.headers_mut();
-    h.insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/octet-stream"),
-    );
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     if let Ok(v) = HeaderValue::from_str(&format!("attachment; filename=\"{filename}\"")) {
         h.insert(header::CONTENT_DISPOSITION, v);
     }
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert(
+        "x-agent-signed",
+        HeaderValue::from_static(if signed { "1" } else { "0" }),
+    );
+    h.insert(
+        "x-agent-notarized",
+        HeaderValue::from_static(if notarized { "1" } else { "0" }),
+    );
     Ok(resp)
 }

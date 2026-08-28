@@ -130,7 +130,6 @@ pub struct ConfigPatch {
     pub allow_input: Option<bool>,
     pub allow_clipboard: Option<bool>,
     pub approval_timeout_s: Option<u32>,
-    pub show_session_indicator: Option<bool>,
     pub allow_file_transfer: Option<bool>,
     /// `""` (or whitespace) clears the override back to the agent default.
     pub transfer_dir: Option<String>,
@@ -189,9 +188,6 @@ impl ConfigPatch {
                 ));
             }
             cfg.approval_timeout_s = v;
-        }
-        if let Some(v) = self.show_session_indicator {
-            cfg.show_session_indicator = v;
         }
         if let Some(v) = self.allow_file_transfer {
             cfg.allow_file_transfer = v;
@@ -274,6 +270,9 @@ pub async fn delete(
 pub struct SessionsQuery {
     #[serde(default = "default_limit")]
     pub limit: i64,
+    /// Only sessions started strictly before this ISO-8601 timestamp (pagination cursor).
+    #[serde(default)]
+    pub before: Option<String>,
 }
 
 fn default_limit() -> i64 {
@@ -297,7 +296,8 @@ pub async fn sessions(
             active_only: false,
             device_id: Some(&id),
             device_ids: None,
-            limit: q.limit,
+            limit: q.limit.clamp(1, 200),
+            before: q.before.as_deref(),
         },
     )
     .await?;
