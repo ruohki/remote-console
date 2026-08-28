@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { chatSoundEnabled, decideChatNotification, ensureNotificationPermission, notificationPermission, playChatSound, previewText, setChatSoundEnabled, showSystemNotification, titleWithUnread } from '@/lib/notify'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   ArrowLeft,
+  Bell,
+  BellOff,
   ChevronDown,
   ClipboardCopy,
   ClipboardPaste,
@@ -62,10 +65,21 @@ export function Viewer() {
   const knownDisplays = useMemo(() => device?.displays ?? [], [device?.displays])
   const [drawer, setDrawer] = useState<Drawer>(null)
 
-  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard } = useViewerSession(deviceId, {
+  const [chatPulse, setChatPulse] = useState(0)
+  const [chatSound, setChatSound] = useState(chatSoundEnabled)
+  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat } = useViewerSession(deviceId, {
     knownDisplays,
     wantAudio: allowAudio,
-    onChatNotify: (line: ChatLine) => toast.info(`${deviceName}: ${line.text}`, 'Open the chat to reply.'),
+    onChatNotify: (line: ChatLine, drawerOpen: boolean) => {
+      const d = decideChatNotification({ from: line.from, drawerOpen, tabVisible: document.visibilityState === 'visible', tabFocused: document.hasFocus(), permission: notificationPermission() })
+      const body = previewText(line.text)
+      if (d.toast) {
+        toast.custom({ kind: 'info', title: `${deviceName} says`, detail: body, ttlMs: 8000, group: 'chat', action: { label: 'Open chat', onClick: () => setDrawer('chat') } })
+        setChatPulse((n) => n + 1)
+      }
+      if (d.system) showSystemNotification({ title: `${deviceName}: new message`, body, tag: `chat-${deviceId}`, onClick: () => setDrawer('chat') })
+      if (d.sound) playChatSound()
+    },
   })
 
   const rootRef = useRef<HTMLDivElement>(null)
@@ -118,7 +132,35 @@ export function Viewer() {
 
   useEffect(() => {
     setChatOpen(drawer === 'chat')
+    if (drawer === 'chat') toast.dismissGroup('chat')
   }, [drawer, setChatOpen])
+
+  // Unread chat lines prefix the tab title until the drawer is opened.
+  useEffect(() => {
+    document.title = titleWithUnread(document.title, state.unreadChat)
+    return () => {
+      document.title = titleWithUnread(document.title, 0)
+    }
+  }, [state.unreadChat])
+
+  // Ask for system notifications once per viewer, the first time a session connects.
+  const askedNotifyRef = useRef(false)
+  useEffect(() => {
+    if (state.phase !== 'connected' || askedNotifyRef.current) return
+    askedNotifyRef.current = true
+    void ensureNotificationPermission()
+  }, [state.phase])
+
+  // Dev/test hook: inject a device chat line (`?debug=1` or dev builds).
+  useEffect(() => {
+    const enabled = import.meta.env.DEV || new URLSearchParams(window.location.search).get('debug') === '1'
+    if (!enabled) return
+    const w = window as unknown as { __viewerDebug?: { pushChat: (text: string) => void } }
+    w.__viewerDebug = { pushChat: debugPushDeviceChat }
+    return () => {
+      delete w.__viewerDebug
+    }
+  }, [debugPushDeviceChat])
 
   // The remembered destination applies to drops and pastes even before the Files drawer was opened
   // (the drawer itself keeps the manager in sync while it is open).
@@ -470,8 +512,18 @@ export function Viewer() {
           >
             <FolderOpen size={14} />
           </HudButton>
-          <HudButton active={drawer === 'chat'} onClick={() => setDrawer((d) => (d === 'chat' ? null : 'chat'))} title="Chat with the person at the device" badge={state.unreadChat || undefined}>
+          <HudButton active={drawer === 'chat'} onClick={() => setDrawer((d) => (d === 'chat' ? null : 'chat'))} title="Chat with the person at the device" badge={state.unreadChat || undefined} pulseKey={chatPulse}>
             <MessageSquare size={14} />
+          </HudButton>
+          <HudButton
+            onClick={() => {
+              const next = !chatSound
+              setChatSoundEnabled(next)
+              setChatSound(next)
+            }}
+            title={chatSound ? 'Chat sound on — click to mute' : 'Chat sound muted — click to enable'}
+          >
+            {chatSound ? <Bell size={14} /> : <BellOff size={14} />}
           </HudButton>
           <HudButton onClick={() => sendControl({ t: 'request_keyframe' })} disabled={!connected} title="Refresh the picture">
             <RefreshCw size={14} />
@@ -755,15 +807,17 @@ function DisplayTile({
 
 /* ───────────── HUD parts ───────────── */
 
-function HudButton({ children, onClick, title, active, disabled, danger, badge }: { children: React.ReactNode; onClick: () => void; title: string; active?: boolean; disabled?: boolean; danger?: boolean; badge?: number }) {
+function HudButton({ children, onClick, title, active, disabled, danger, badge, pulseKey }: { children: React.ReactNode; onClick: () => void; title: string; active?: boolean; disabled?: boolean; danger?: boolean; badge?: number; pulseKey?: number }) {
   return (
     <button
+      key={pulseKey}
       onClick={onClick}
       title={title}
       aria-label={title}
       disabled={disabled}
       className={cx(
         'relative rounded-md p-1.5 transition-colors disabled:opacity-40',
+        pulseKey ? 'animate-hud-pulse' : undefined,
         active ? 'bg-[#6cb6ff]/20 text-[#6cb6ff]' : danger ? 'text-[#f87171] hover:bg-[#f87171]/15' : 'text-[#c8ced8] hover:bg-white/10 hover:text-white',
       )}
     >

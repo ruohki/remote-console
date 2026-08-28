@@ -111,8 +111,8 @@ export interface ViewerSessionOptions {
   knownDisplays: DisplayInfo[]
   /** Whether the device config allows audio (an audio transceiver is added anyway; the agent ignores it otherwise). */
   wantAudio?: boolean
-  /** Whether this viewer is opened in "watch" mode by an admin (chat marks as observer). */
-  onChatNotify?: (line: ChatLine) => void
+  /** A chat line from the device arrived; `drawerOpen` tells whether the operator is looking at the chat. */
+  onChatNotify?: (line: ChatLine, drawerOpen: boolean) => void
 }
 
 /**
@@ -139,6 +139,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
   })
   const chatOpenRef = useRef(false)
 
+
   const patch = useCallback((p: Partial<ViewerState> | ((s: ViewerState) => Partial<ViewerState>)) => {
     setState((s) => {
       const next = typeof p === 'function' ? p(s) : p
@@ -146,6 +147,19 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
       return { ...s, ...next }
     })
   }, [])
+
+  /** Apply an incoming chat line (device or operator echo) and notify the page about device lines. */
+  const receiveChat = useCallback(
+    (from: ChatLine['from'], text: string, tsMs: number) => {
+      const line: ChatLine = { id: `${tsMs}-${Math.random().toString(36).slice(2, 8)}`, from, text, tsMs }
+      patch((s) => ({ chat: applyChatLine(s.chat, line, 'remote'), unreadChat: chatOpenRef.current || from === 'operator' ? s.unreadChat : s.unreadChat + 1 }))
+      if (from === 'device') optionsRef.current.onChatNotify?.(line, chatOpenRef.current)
+    },
+    [patch],
+  )
+
+  /** Test/dev hook: inject a device chat line as if it arrived on the control channel. */
+  const debugPushDeviceChat = useCallback((text: string) => receiveChat('device', text, Date.now()), [receiveChat])
 
   const clearTimers = () => {
     for (const t of timers.current) clearTimeout(t)
@@ -253,14 +267,11 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
         case 'clipboard_available':
           patch({ remoteClipboardRich: { kind: msg.kind, names: msg.names, totalBytes: Number(msg.total_bytes), at: Date.now() } })
           break
-        case 'chat': {
+        case 'chat':
           // Device lines arrive here on the control channel; the operator's own lines are echoed
           // locally by sendChat. The console's session_event stream later confirms both.
-          const line: ChatLine = { id: `${Number(msg.ts_ms)}-${Math.random().toString(36).slice(2, 8)}`, from: msg.from, text: msg.text, tsMs: Number(msg.ts_ms) }
-          patch((s) => ({ chat: applyChatLine(s.chat, line, 'remote'), unreadChat: chatOpenRef.current || msg.from === 'operator' ? s.unreadChat : s.unreadChat + 1 }))
-          if (msg.from === 'device' && !chatOpenRef.current) optionsRef.current.onChatNotify?.(line)
+          receiveChat(msg.from, msg.text, Number(msg.ts_ms))
           break
-        }
         case 'session_ended_by_user':
           teardown()
           patch({ phase: 'ended', endReason: 'device_user_closed' })
@@ -274,7 +285,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
         }
       }
     },
-    [patch, teardown],
+    [patch, teardown, receiveChat],
   )
 
   const start = useCallback(async () => {
@@ -543,7 +554,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
 
   const clearRichClipboard = useCallback(() => patch({ remoteClipboardRich: null }), [patch])
 
-  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard }
+  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, sendChat, setChatOpen, seedChat, clearRichClipboard, debugPushDeviceChat }
 }
 
 class SessionError extends Error {
