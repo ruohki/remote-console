@@ -329,13 +329,15 @@ function AccessPanel({ groupId, grants, users, loading, onSaved }: { groupId: st
                     <Select
                       value={value}
                       aria-label={`Permission for ${u.name}`}
-                      onChange={(e) => setEdited({ ...choices, [u.id]: e.target.value as GrantChoice })}
-                      className="h-7 text-[12.5px]"
-                    >
-                      <option value="none">No access</option>
-                      <option value="view">View</option>
-                      <option value="connect">Connect</option>
-                    </Select>
+                      onChange={(v) => setEdited({ ...choices, [u.id]: v })}
+                      size="sm"
+                      className="w-32"
+                      options={[
+                        { value: 'none', label: 'No access' },
+                        { value: 'view', label: 'View' },
+                        { value: 'connect', label: 'Connect' },
+                      ]}
+                    />
                   </Td>
                 </tr>
               )

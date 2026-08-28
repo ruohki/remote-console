@@ -1,9 +1,9 @@
-import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes, forwardRef, useEffect, useRef, useState } from 'react'
+import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes, forwardRef, useEffect, useRef, useState } from 'react'
 import { Check, Copy, Loader2, X } from 'lucide-react'
+import { cx } from './cx'
 
-export function cx(...parts: (string | false | null | undefined)[]) {
-  return parts.filter(Boolean).join(' ')
-}
+export { cx }
+export { Select, type SelectOption, type SelectProps } from './Select'
 
 /* ───────────── Button ───────────── */
 
@@ -63,14 +63,6 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
   return <textarea ref={ref} className={cx(FIELD, 'h-auto min-h-20 py-1.5 leading-normal', className)} {...rest} />
 })
 
-export const Select = forwardRef<HTMLSelectElement, SelectHTMLAttributes<HTMLSelectElement>>(function Select({ className, children, ...rest }, ref) {
-  return (
-    <select ref={ref} className={cx(FIELD, 'pr-7', className)} {...rest}>
-      {children}
-    </select>
-  )
-})
-
 export function Field({ label, hint, children, className }: { label: string; hint?: string; children: ReactNode; className?: string }) {
   return (
     <label className={cx('block', className)}>
@@ -89,12 +81,20 @@ export function Toggle({ checked, onChange, label, disabled }: { checked: boolea
       aria-checked={checked}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="inline-flex items-center gap-2 disabled:opacity-50"
+      className="group inline-flex cursor-pointer items-center gap-2.5 disabled:cursor-not-allowed disabled:opacity-50"
     >
-      <span className={cx('relative h-4.5 w-8 rounded-full border transition-colors', checked ? 'bg-accent border-accent' : 'bg-raised border-line-strong')}>
-        <span className={cx('absolute top-0.5 size-3 rounded-full bg-white shadow transition-transform', checked ? 'translate-x-4' : 'translate-x-0.5')} />
+      {/* Fixed 36×20 track (no border, so the padding box is exactly 36×20); the 16px knob is
+          centred with a 2px inset and slides 2px→18px. Exact pixels keep the layout immune to
+          spacing-scale, border-box and inline-flow surprises. */}
+      <span
+        className={cx(
+          'relative inline-block h-5 w-9 shrink-0 rounded-full transition-colors group-focus-visible:ring-2 group-focus-visible:ring-accent/50 group-focus-visible:ring-offset-1',
+          checked ? 'bg-accent' : 'bg-line-strong',
+        )}
+      >
+        <span className="absolute block h-4 w-4 rounded-full bg-white shadow transition-all" style={{ top: 2, left: checked ? 18 : 2 }} />
       </span>
-      {label && <span className="text-[13px]">{label}</span>}
+      {label && <span className="text-[13px] leading-tight">{label}</span>}
     </button>
   )
 }

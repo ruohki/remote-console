@@ -129,6 +129,13 @@ export class TransferManager {
   private speedSamples = new Map<string, { at: number; bytes: number }[]>()
   callbacks: ManagerCallbacks = {}
   deviceId = ''
+  /** Default destination folder for `file` uploads that don't name one; undefined = the
+   *  agent's configured transfer directory. Set by the UI's destination picker. */
+  defaultDestDir: string | undefined = undefined
+
+  setDefaultDestDir(dir: string | undefined) {
+    this.defaultDestDir = dir && dir.trim() ? dir : undefined
+  }
 
   /* ───────────── lifecycle ───────────── */
 
@@ -218,6 +225,9 @@ export class TransferManager {
 
   async upload(file: File, opts: { destDir?: string; kind?: TransferKind; group?: string; token?: string } = {}): Promise<string> {
     const kind = opts.kind ?? 'file'
+    // Regular files honour the operator's chosen destination when the caller didn't pin one.
+    const destDir = opts.destDir ?? (kind === 'file' ? this.defaultDestDir : undefined)
+    opts = { ...opts, destDir }
     let token = opts.token
     const key = uploadKey(this.deviceId, file)
     if (!token && kind === 'file') {

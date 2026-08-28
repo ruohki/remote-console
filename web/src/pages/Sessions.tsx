@@ -51,10 +51,16 @@ export function Sessions() {
         title="Sessions"
         subtitle="Every remote control session, live and past."
         actions={
-          <Select value={scope} onChange={(e) => setScope(e.target.value as 'active' | 'all')} className="w-36">
-            <option value="active">Active only</option>
-            <option value="all">All</option>
-          </Select>
+          <Select
+            value={scope}
+            onChange={setScope}
+            className="w-36"
+            aria-label="Filter sessions"
+            options={[
+              { value: 'active', label: 'Active only' },
+              { value: 'all', label: 'All' },
+            ]}
+          />
         }
       />
       {history.isPending && rows.length === 0 ? (

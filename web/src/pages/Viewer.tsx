@@ -30,7 +30,7 @@ import { toRemotePixels } from '@/lib/geometry'
 import { keyboardToInput, mouseButton, RESERVED_SHORTCUTS, shortcutKey, wheelToInput } from '@/lib/input'
 import { tileGrid } from '@/lib/displays'
 import { api } from '@/lib/api'
-import { Button, cx } from '@/components/ui'
+import { Button, Select, cx } from '@/components/ui'
 import { CODEC_LABEL, END_REASON_LABEL, bytes, kbps } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import type { ControlMessage, DisplayInfo, InputEvent } from '@/protocol'
@@ -696,19 +696,8 @@ function HudButton({ children, onClick, title, active, disabled, danger, badge }
   )
 }
 
-function HudSelect({ icon, value, onChange, options }: { icon: React.ReactNode; value: string; onChange: (v: string) => void; options: { value: string; label: string }[] }) {
-  return (
-    <label className="flex items-center gap-1 rounded-md px-1.5 py-1 text-[#c8ced8] hover:bg-white/10">
-      {icon}
-      <select value={value} onChange={(e) => onChange(e.target.value)} className="bg-transparent text-[12px] text-inherit outline-none">
-        {options.map((o) => (
-          <option key={o.value} value={o.value} className="bg-[#161a21] text-[#e6e9ef]">
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </label>
-  )
+function HudSelect({ icon, value, onChange, options, ariaLabel }: { icon: React.ReactNode; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; ariaLabel?: string }) {
+  return <Select variant="hud" menuTone="dark" icon={icon} value={value} onChange={onChange} options={options} aria-label={ariaLabel} className="text-[12px]" />
 }
 
 function QualityMenu({ sendControl, disabled, defaults }: { sendControl: (m: ControlMessage) => boolean; disabled: boolean; defaults: { fps: number; bitrate: number } }) {
@@ -721,6 +710,7 @@ function QualityMenu({ sendControl, disabled, defaults }: { sendControl: (m: Con
     <div className={cx('flex items-center gap-1', disabled && 'opacity-40')}>
       <HudSelect
         icon={<span className="mono text-[10px]">FPS</span>}
+        ariaLabel="Frame rate"
         value={String(fps)}
         onChange={(v) => {
           setFps(Number(v))
@@ -730,6 +720,7 @@ function QualityMenu({ sendControl, disabled, defaults }: { sendControl: (m: Con
       />
       <HudSelect
         icon={<span className="mono text-[10px]">BR</span>}
+        ariaLabel="Bitrate"
         value={String(bitrate)}
         onChange={(v) => {
           setBitrate(Number(v))

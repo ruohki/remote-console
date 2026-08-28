@@ -65,43 +65,55 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Expires after">
-              <Select value={expires} onChange={(e) => setExpires(e.target.value)}>
-                <option value="1">1 hour</option>
-                <option value="24">24 hours</option>
-                <option value="168">7 days</option>
-                <option value="720">30 days</option>
-                <option value="">Never</option>
-              </Select>
+              <Select
+                value={expires}
+                onChange={setExpires}
+                options={[
+                  { value: '1', label: '1 hour' },
+                  { value: '24', label: '24 hours' },
+                  { value: '168', label: '7 days' },
+                  { value: '720', label: '30 days' },
+                  { value: '', label: 'Never' },
+                ]}
+              />
             </Field>
             <Field label="Maximum uses">
-              <Select value={maxUses} onChange={(e) => setMaxUses(e.target.value)}>
-                <option value="1">1 device</option>
-                <option value="10">10 devices</option>
-                <option value="100">100 devices</option>
-                <option value="">Unlimited</option>
-              </Select>
+              <Select
+                value={maxUses}
+                onChange={setMaxUses}
+                options={[
+                  { value: '1', label: '1 device' },
+                  { value: '10', label: '10 devices' },
+                  { value: '100', label: '100 devices' },
+                  { value: '', label: 'Unlimited' },
+                ]}
+              />
             </Field>
             <Field label="Default mode">
-              <Select value={mode} onChange={(e) => setMode(e.target.value as DeviceMode)}>
-                <option value="unattended">Unattended</option>
-                <option value="help_me">Help me (user approves)</option>
-              </Select>
+              <Select
+                value={mode}
+                onChange={(v) => setMode(v as DeviceMode)}
+                options={[
+                  { value: 'unattended', label: 'Unattended', description: 'Connect any time' },
+                  { value: 'help_me', label: 'Help me', description: 'User approves each session' },
+                ]}
+              />
             </Field>
             <Field label="Default tags" hint="Comma separated.">
               <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="office, windows" />
             </Field>
             <Field label="Default group" hint="Operators only see devices in groups they are granted." className="col-span-2">
-              <Select value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-                <option value="">No group (admins only)</option>
-                {(groups.data ?? [])
-                  .slice()
-                  .sort((a, b) => a.name.localeCompare(b.name))
-                  .map((g) => (
-                    <option key={g.id} value={g.id}>
-                      {g.name}
-                    </option>
-                  ))}
-              </Select>
+              <Select
+                value={groupId}
+                onChange={setGroupId}
+                options={[
+                  { value: '', label: 'No group (admins only)' },
+                  ...(groups.data ?? [])
+                    .slice()
+                    .sort((a, b) => a.name.localeCompare(b.name))
+                    .map((g) => ({ value: g.id, label: g.name })),
+                ]}
+              />
             </Field>
           </div>
           {create.isError && (

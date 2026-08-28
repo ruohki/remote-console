@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowDownToLine, ArrowUpFromLine, ChevronRight, Eye, EyeOff, File as FileIcon, Folder, FolderPlus, HardDrive, Home, Pencil, RefreshCw, RotateCcw, Trash2, Upload, X } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Check, ChevronRight, Eye, EyeOff, File as FileIcon, Folder, FolderInput, FolderPlus, HardDrive, Home, Pencil, RefreshCw, RotateCcw, Trash2, Upload, X } from 'lucide-react'
 import type { FileEntry } from '@/protocol'
 import { Button, ConfirmDialog, Input, cx } from '@/components/ui'
 import { bytes, dateTime, eta, throughput } from '@/lib/format'
@@ -12,8 +12,34 @@ import { resumeStore, type DownloadRecord, type UploadRecord } from './resume'
 
 type Tab = 'transfers' | 'browse'
 
+const destKey = (deviceId: string) => `remote.destDir.${deviceId}`
+
 export function FilesDrawer({ deviceId, enabled, onClose, defaultTab = 'transfers' }: { deviceId: string; enabled: boolean; onClose: () => void; defaultTab?: Tab }) {
   const [tab, setTab] = useState<Tab>(defaultTab)
+  // Destination folder for uploads (null = the device's default folder), remembered per device.
+  const [destDir, setDestDirState] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(destKey(deviceId))
+    } catch {
+      return null
+    }
+  })
+  const [picking, setPicking] = useState(false)
+
+  useEffect(() => {
+    transferManager.setDefaultDestDir(destDir ?? undefined)
+  }, [destDir])
+
+  const setDestDir = (dir: string | null) => {
+    setDestDirState(dir)
+    try {
+      if (dir) localStorage.setItem(destKey(deviceId), dir)
+      else localStorage.removeItem(destKey(deviceId))
+    } catch {
+      /* storage disabled */
+    }
+  }
+
   return (
     <aside className="flex h-full w-[380px] shrink-0 flex-col border-l border-white/10 bg-[#0e1116] text-[13px] text-[#e6e9ef]">
       <div className="flex h-10 items-center gap-1 border-b border-white/10 px-2">
@@ -30,9 +56,34 @@ export function FilesDrawer({ deviceId, enabled, onClose, defaultTab = 'transfer
       {!enabled ? (
         <div className="p-4 text-[#9aa3b2]">File transfer is disabled for this device. An admin can enable it in the device settings.</div>
       ) : tab === 'transfers' ? (
-        <TransfersTab deviceId={deviceId} />
+        <TransfersTab
+          deviceId={deviceId}
+          destDir={destDir}
+          onChangeDest={() => {
+            setPicking(true)
+            setTab('browse')
+          }}
+          onResetDest={() => setDestDir(null)}
+        />
       ) : (
-        <BrowseTab />
+        <BrowseTab
+          pickMode={
+            picking
+              ? {
+                  onPick: (path) => {
+                    setDestDir(path)
+                    setPicking(false)
+                    setTab('transfers')
+                  },
+                  onCancel: () => {
+                    setPicking(false)
+                    setTab('transfers')
+                  },
+                }
+              : undefined
+          }
+          onSetUploadDest={setDestDir}
+        />
       )}
     </aside>
   )
@@ -48,7 +99,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
 
 /* ───────────── transfers ───────────── */
 
-function TransfersTab({ deviceId }: { deviceId: string }) {
+function TransfersTab({ deviceId, destDir, onChangeDest, onResetDest }: { deviceId: string; destDir: string | null; onChangeDest: () => void; onResetDest: () => void }) {
   const transfers = useFiles((s) => s.transfers)
   const fileInput = useRef<HTMLInputElement>(null)
   // Interrupted transfers persisted in IndexedDB (re-read whenever the live list changes).
@@ -87,6 +138,21 @@ function TransfersTab({ deviceId }: { deviceId: string }) {
         {finished.length > 0 && (
           <button onClick={() => transferManager.clearFinished()} className="ml-auto text-[11.5px] text-[#9aa3b2] hover:text-white">
             Clear finished
+          </button>
+        )}
+      </div>
+      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5 text-[11.5px]">
+        <FolderInput size={13} className="shrink-0 text-[#9aa3b2]" />
+        <span className="shrink-0 text-[#6b7381]">Save to</span>
+        <span className="mono min-w-0 flex-1 truncate text-[#c8ced8]" title={destDir ?? undefined}>
+          {destDir ?? 'Device default folder'}
+        </span>
+        <button onClick={onChangeDest} className="shrink-0 rounded px-1.5 py-0.5 text-[#6cb6ff] hover:bg-white/10">
+          Change…
+        </button>
+        {destDir && (
+          <button onClick={onResetDest} className="shrink-0 rounded px-1.5 py-0.5 text-[#9aa3b2] hover:bg-white/10 hover:text-white">
+            Reset
           </button>
         )}
       </div>
@@ -162,7 +228,12 @@ function TransferRow({ t }: { t: Transfer }) {
         {t.startOffset > 0 && <span title="Resumed from a previous attempt">resumed at {bytes(t.startOffset)}</span>}
       </div>
       {t.error && <div className="mt-0.5 text-[11.5px] text-[#f87171]">{t.error}</div>}
-      {t.status === 'done' && t.direction === 'to_device' && t.path && <div className="mono mt-0.5 truncate text-[11px] text-[#6b7381]">{t.path}</div>}
+      {t.direction === 'to_device' && t.kind === 'file' && (
+        <div className="mono mt-0.5 flex items-center gap-1 truncate text-[11px] text-[#6b7381]" title={t.path ?? undefined}>
+          <FolderInput size={11} className="shrink-0" />
+          <span className="truncate">{t.path ?? 'Device default folder'}</span>
+        </div>
+      )}
     </div>
   )
 }
@@ -231,7 +302,7 @@ function ResumeDownloadRow({ rec, onDone }: { rec: DownloadRecord; onDone: () =>
 
 type SortKey = 'name' | 'size' | 'modified'
 
-function BrowseTab() {
+function BrowseTab({ pickMode, onSetUploadDest }: { pickMode?: { onPick: (path: string) => void; onCancel: () => void }; onSetUploadDest?: (path: string) => void }) {
   const listing = useFiles((s) => s.listing)
   const loading = useFiles((s) => s.listingLoading)
   const path = useFiles((s) => s.listingPath)
@@ -300,11 +371,25 @@ function BrowseTab() {
 
   const uploadHere = (files: FileList | null) => {
     if (!files || atRoots || !listing) return
+    // Uploading into a folder also makes it the remembered destination.
+    onSetUploadDest?.(listing.path)
     for (const f of Array.from(files)) void transferManager.upload(f, { destDir: listing.path })
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
+      {pickMode && (
+        <div className="flex items-center gap-2 border-b border-white/10 bg-[#6cb6ff]/10 px-3 py-2">
+          <FolderInput size={14} className="shrink-0 text-[#6cb6ff]" />
+          <span className="min-w-0 flex-1 text-[12px] text-[#c8ced8]">{atRoots ? 'Open a folder to use it for uploads' : <span className="mono truncate">{listing?.path}</span>}</span>
+          <Button size="sm" variant="primary" icon={<Check size={13} />} disabled={atRoots || !listing} onClick={() => listing && pickMode.onPick(listing.path)}>
+            Use this folder
+          </Button>
+          <button onClick={pickMode.onCancel} className="rounded px-1.5 py-0.5 text-[11.5px] text-[#9aa3b2] hover:bg-white/10 hover:text-white">
+            Cancel
+          </button>
+        </div>
+      )}
       <div className="flex items-center gap-1 border-b border-white/10 px-2 py-1.5">
         <button onClick={() => requestListing(null)} className="rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white" title="Roots">
           <HardDrive size={13} />

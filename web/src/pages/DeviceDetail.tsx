@@ -421,29 +421,25 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
           )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Max frame rate">
-              <Select value={cfg.max_fps} onChange={(e) => set('max_fps', Number(e.target.value))}>
-                {[15, 30, 60].map((v) => (
-                  <option key={v} value={v}>
-                    {v} fps
-                  </option>
-                ))}
-              </Select>
+              <Select value={cfg.max_fps} onChange={(v) => set('max_fps', v)} options={[15, 30, 60].map((v) => ({ value: v, label: `${v} fps` }))} />
             </Field>
             <Field label="Max bitrate">
-              <Select value={cfg.max_bitrate_kbps} onChange={(e) => set('max_bitrate_kbps', Number(e.target.value))}>
-                {[2000, 4000, 8000, 15000, 30000].map((v) => (
-                  <option key={v} value={v}>
-                    {v / 1000} Mb/s
-                  </option>
-                ))}
-              </Select>
+              <Select
+                value={cfg.max_bitrate_kbps}
+                onChange={(v) => set('max_bitrate_kbps', v)}
+                options={[2000, 4000, 8000, 15000, 30000].map((v) => ({ value: v, label: `${v / 1000} Mb/s` }))}
+              />
             </Field>
           </div>
           <Field label="Preferred codec" hint="H.265 needs hardware support on both ends; H.264 is the fallback.">
-            <Select value={cfg.preferred_codec} onChange={(e) => set('preferred_codec', e.target.value as AgentConfig['preferred_codec'])}>
-              <option value="h265">H.265 (HEVC)</option>
-              <option value="h264">H.264</option>
-            </Select>
+            <Select
+              value={cfg.preferred_codec}
+              onChange={(v) => set('preferred_codec', v)}
+              options={[
+                { value: 'h265', label: 'H.265 (HEVC)' },
+                { value: 'h264', label: 'H.264' },
+              ]}
+            />
           </Field>
           <Field label="Heartbeat interval (seconds)">
             <Input type="number" min={5} max={300} value={cfg.heartbeat_interval_s} onChange={(e) => set('heartbeat_interval_s', Number(e.target.value))} />

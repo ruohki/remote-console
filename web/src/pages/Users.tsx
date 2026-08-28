@@ -84,12 +84,15 @@ export function UsersPage() {
                   <Select
                     value={u.role}
                     disabled={u.id === me?.id}
-                    onChange={(e) => patch.mutate({ id: u.id, body: { role: e.target.value as Role } })}
-                    className="h-7 w-32 text-[12.5px]"
-                  >
-                    <option value="admin">Admin</option>
-                    <option value="operator">Operator</option>
-                  </Select>
+                    onChange={(v) => patch.mutate({ id: u.id, body: { role: v } })}
+                    size="sm"
+                    className="w-32"
+                    aria-label={`Role for ${u.name}`}
+                    options={[
+                      { value: 'admin', label: 'Admin' },
+                      { value: 'operator', label: 'Operator' },
+                    ]}
+                  />
                 </Td>
                 <Td className="hidden md:table-cell">
                   {u.role === 'admin' ? (
@@ -221,10 +224,14 @@ function CreateUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
           <Input type="password" required minLength={10} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
         <Field label="Role" hint={role === 'operator' ? 'Operators see nothing until you grant them a device group.' : undefined}>
-          <Select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-            <option value="operator">Operator — connects to granted device groups</option>
-            <option value="admin">Admin — full access</option>
-          </Select>
+          <Select
+            value={role}
+            onChange={setRole}
+            options={[
+              { value: 'operator', label: 'Operator', description: 'Connects to granted device groups' },
+              { value: 'admin', label: 'Admin', description: 'Full access' },
+            ]}
+          />
         </Field>
         <div className="mt-2 flex justify-end gap-2">
           <Button type="button" onClick={onClose}>

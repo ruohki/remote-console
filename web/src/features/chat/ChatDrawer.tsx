@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Send, X } from 'lucide-react'
+import { Check, CheckCheck, Send, X } from 'lucide-react'
 import type { ChatLine } from '@/hooks/useViewerSession'
 import { cx } from '@/components/ui'
 import { timeOfDay } from '@/lib/format'
@@ -35,9 +35,12 @@ export function ChatDrawer({ lines, deviceName, connected, onSend, onClose }: { 
         {lines.length === 0 && <div className="m-auto text-center text-[12.5px] text-[#6b7381]">Messages appear on the device in a small window. Keep it short and friendly.</div>}
         {lines.map((l) => (
           <div key={l.id} className={cx('flex flex-col', l.from === 'operator' ? 'items-end' : 'items-start')}>
-            <div className={cx('max-w-[85%] rounded-lg px-2.5 py-1.5 break-words whitespace-pre-wrap', l.from === 'operator' ? 'bg-[#6cb6ff]/20 text-white' : 'bg-white/10')}>{l.text}</div>
-            <div className="mono mt-0.5 text-[10.5px] text-[#6b7381]">
-              {l.from === 'operator' ? 'You' : deviceName} · {timeOfDay(l.tsMs)}
+            <div className={cx('max-w-[85%] rounded-2xl px-3 py-1.5 break-words whitespace-pre-wrap', l.from === 'operator' ? 'rounded-br-sm bg-[#3d7edb] text-white' : 'rounded-bl-sm bg-white/10 text-[#e6e9ef]')}>{l.text}</div>
+            <div className="mono mt-0.5 flex items-center gap-1 text-[10.5px] text-[#6b7381]">
+              <span>
+                {l.from === 'operator' ? 'You' : deviceName} · {timeOfDay(l.tsMs)}
+              </span>
+              {l.from === 'operator' && (l.delivered ? <CheckCheck size={12} className="text-[#6cb6ff]" aria-label="Delivered" /> : <Check size={12} className="opacity-60" aria-label="Sent" />)}
             </div>
           </div>
         ))}

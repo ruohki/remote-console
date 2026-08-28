@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ChatParty, ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
+import type { ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
+import { applyChatLine, mergeChatSeed, type ChatLine } from '@/features/chat/transcript'
 import { uiSocket } from '@/lib/ws'
+
+export type { ChatLine } from '@/features/chat/transcript'
 import { applyCodecPreferences, fromRtcCandidate, readStats, toRtcCandidate, toRtcIceServers, type RtcStatsSnapshot } from '@/lib/webrtc'
 import { mapVideoTransceivers, primaryDisplay, videoTransceiverCount } from '@/lib/displays'
 import { RtcFilesChannel } from '@/features/files/channel'
@@ -22,13 +25,6 @@ export interface AgentStats {
   height: number
   pipeline_ms: number
   hardware: boolean
-}
-
-export interface ChatLine {
-  id: string
-  from: ChatParty
-  text: string
-  tsMs: number
 }
 
 export interface RemoteClipboardRich {
@@ -258,8 +254,10 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
           patch({ remoteClipboardRich: { kind: msg.kind, names: msg.names, totalBytes: Number(msg.total_bytes), at: Date.now() } })
           break
         case 'chat': {
+          // Device lines arrive here on the control channel; the operator's own lines are echoed
+          // locally by sendChat. The console's session_event stream later confirms both.
           const line: ChatLine = { id: `${Number(msg.ts_ms)}-${Math.random().toString(36).slice(2, 8)}`, from: msg.from, text: msg.text, tsMs: Number(msg.ts_ms) }
-          patch((s) => ({ chat: [...s.chat, line], unreadChat: chatOpenRef.current || msg.from === 'operator' ? s.unreadChat : s.unreadChat + 1 }))
+          patch((s) => ({ chat: applyChatLine(s.chat, line, 'remote'), unreadChat: chatOpenRef.current || msg.from === 'operator' ? s.unreadChat : s.unreadChat + 1 }))
           if (msg.from === 'device' && !chatOpenRef.current) optionsRef.current.onChatNotify?.(line)
           break
         }
@@ -517,7 +515,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
       if (!trimmed) return false
       const tsMs = Date.now()
       if (!sendControl({ t: 'chat', from: 'operator', text: trimmed, ts_ms: BigInt(tsMs) })) return false
-      patch((s) => ({ chat: [...s.chat, { id: `${tsMs}-op`, from: 'operator', text: trimmed, tsMs }] }))
+      patch((s) => ({ chat: applyChatLine(s.chat, { id: `${tsMs}-op`, from: 'operator', text: trimmed, tsMs }, 'local') }))
       return true
     },
     [sendControl, patch],
@@ -536,10 +534,8 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
   const seedChat = useCallback(
     (lines: ChatLine[]) => {
       patch((s) => {
-        const known = new Set(s.chat.map((l) => `${l.tsMs}|${l.from}|${l.text}`))
-        const add = lines.filter((l) => !known.has(`${l.tsMs}|${l.from}|${l.text}`))
-        if (add.length === 0) return {}
-        return { chat: [...s.chat, ...add].sort((a, b) => a.tsMs - b.tsMs) }
+        const chat = mergeChatSeed(s.chat, lines)
+        return chat === s.chat ? {} : { chat }
       })
     },
     [patch],
