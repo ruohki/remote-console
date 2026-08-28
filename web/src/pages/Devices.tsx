@@ -6,13 +6,18 @@ import { api } from '@/lib/api'
 import type { DeviceSummary } from '@/protocol'
 import { useLive } from '@/store/live'
 import { Button, EmptyState, Input, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
-import { GroupChips, ModeBadge, OsIcon, StatusLed, Tags } from '@/components/badges'
+import { GroupChips, ModeBadge, OsIcon, OverrideBadge, StatusLed, Tags } from '@/components/badges'
+import { Pager } from '@/components/Pager'
+import { slicePage } from '@/lib/paging'
 import { useAuth } from '@/store/auth'
 import { canConnect } from '@/lib/access'
 import { AddDeviceDialog } from '@/components/AddDeviceDialog'
 import { relativeTime, OS_LABEL } from '@/lib/format'
 
 type Filter = 'all' | 'online' | 'offline'
+
+/** Devices per page once the list grows beyond one page. */
+const DEVICE_PAGE = 100
 
 export function Devices() {
   // Select the stable map and derive the list; a selector returning a fresh array would
@@ -26,6 +31,9 @@ export function Devices() {
   const [tag, setTag] = useState<string | null>(null)
   const [group, setGroup] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
+  // Page is remembered together with the filter key it belongs to, so changing a filter
+  // implicitly returns to page 1 without an effect.
+  const [pageState, setPageState] = useState<{ key: string; page: number }>({ key: '', page: 1 })
   const navigate = useNavigate()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
@@ -60,6 +68,11 @@ export function Devices() {
       )
       .sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name))
   }, [devices, q, filter, tag, group])
+
+  const filterKey = `${q}|${filter}|${tag ?? ''}|${group ?? ''}`
+  const page = pageState.key === filterKey ? pageState.page : 1
+  const setPage = (f: (p: number) => number) => setPageState({ key: filterKey, page: f(page) })
+  const paged = useMemo(() => slicePage(list, page, DEVICE_PAGE), [list, page])
 
   const loading = !hydrated && fallback.isPending && devices.length === 0
   const onlineCount = devices.filter((d) => d.online).length
@@ -181,7 +194,7 @@ export function Devices() {
             </tr>
           </thead>
           <tbody>
-            {list.map((d) => (
+            {paged.rows.map((d) => (
               <tr
                 key={d.id}
                 className="row-hover cursor-pointer"
@@ -213,7 +226,10 @@ export function Devices() {
                   </div>
                 </Td>
                 <Td>
-                  <ModeBadge mode={d.mode} />
+                  <div className="flex flex-wrap items-center gap-1">
+                    <ModeBadge mode={d.mode} />
+                    <OverrideBadge overrides={d.local_overrides} />
+                  </div>
                 </Td>
                 <Td className="hidden sm:table-cell text-ink-muted">{d.online ? 'now' : relativeTime(d.last_seen_at)}</Td>
                 <Td className="text-right">
@@ -233,6 +249,19 @@ export function Devices() {
             ))}
           </tbody>
         </Table>
+      )}
+
+      {list.length > DEVICE_PAGE && (
+        <Pager
+          page={paged.page}
+          rows={paged.rows.length}
+          pageSize={DEVICE_PAGE}
+          total={list.length}
+          hasPrev={paged.page > 1}
+          hasNext={paged.page < paged.pages}
+          onPrev={() => setPage((p) => p - 1)}
+          onNext={() => setPage((p) => p + 1)}
+        />
       )}
 
       <AddDeviceDialog open={adding} onClose={() => setAdding(false)} />

@@ -22,7 +22,7 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   return (
     <div className="mx-auto max-w-5xl">
       <PageHeader title="Settings" subtitle="Console information, enrollment tokens, branding and agent downloads." />
-      <div className="mb-4 flex gap-1 overflow-x-auto border-b border-line">
+      <div className="mb-4 flex flex-wrap gap-1 border-b border-line">
         <TabLink to="/settings" active={current === 'info'}>
           Console
         </TabLink>

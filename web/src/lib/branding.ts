@@ -8,6 +8,7 @@ export const DEFAULT_BRANDING: Branding = {
   accent: '#2f7fe0',
   support_text: '',
   organization: '',
+  apply_to_console: true,
 }
 
 export const MAX_LOGO_BYTES = 512 * 1024
@@ -48,14 +49,25 @@ const BRAND_VARS = ['--brand-accent', '--brand-accent-ink', '--brand-accent-dark
 /** Apply branding to the document: title and the accent tokens (theme-aware via CSS). */
 export function applyBranding(b: Branding) {
   const root = document.documentElement
-  document.title = b.product_name || DEFAULT_BRANDING.product_name
-  if (isHexColor(b.accent) && b.accent.toLowerCase() !== DEFAULT_BRANDING.accent) {
+  const useIt = consoleBranded(b)
+  document.title = useIt ? b.product_name || DEFAULT_BRANDING.product_name : DEFAULT_BRANDING.product_name
+  if (useIt && isHexColor(b.accent) && b.accent.toLowerCase() !== DEFAULT_BRANDING.accent) {
     for (const [k, v] of Object.entries(accentVariables(b.accent))) root.style.setProperty(k, v)
     root.dataset.brandAccent = b.accent
   } else {
     for (const k of BRAND_VARS) root.style.removeProperty(k)
     delete root.dataset.brandAccent
   }
+}
+
+/** Whether the console itself should show this branding (the agent always gets it). */
+export function consoleBranded(b: Branding | undefined): boolean {
+  return !!b && b.apply_to_console !== false
+}
+
+/** Branding as the console should display it (defaults when not applied to the console). */
+export function consoleBranding(b: Branding | undefined): Branding {
+  return consoleBranded(b) ? (b as Branding) : DEFAULT_BRANDING
 }
 
 /** Data URL for the logo, if any. */

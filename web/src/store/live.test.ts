@@ -16,6 +16,7 @@ const device = (id: string, online = true): DeviceSummary => ({
   displays: [],
   groups: [],
   permission: 'connect',
+  local_overrides: {},
 })
 
 const session = (id: string, state: SessionSummary['state'] = 'connected', started = '2026-08-28T10:00:00Z'): SessionSummary => ({

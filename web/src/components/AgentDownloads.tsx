@@ -7,7 +7,7 @@ import { bytes } from '@/lib/format'
 import { Badge, Button, EmptyState, Skeleton, Table, Td, Th, Toggle, cx } from './ui'
 
 export const PLATFORMS: { id: AgentPlatform; label: string; short: string; ext: string; icon: typeof Apple }[] = [
-  { id: 'macos-universal', label: 'macOS (Apple silicon + Intel)', short: 'macOS', ext: '', icon: Apple },
+  { id: 'macos-universal', label: 'macOS (Apple silicon + Intel)', short: 'macOS', ext: '.zip (app bundle)', icon: Apple },
   { id: 'windows-x86_64', label: 'Windows x64', short: 'Windows x64', ext: '.exe', icon: Monitor },
   { id: 'windows-aarch64', label: 'Windows ARM64', short: 'Windows ARM64', ext: '.exe', icon: Monitor },
 ]
@@ -98,6 +98,19 @@ export function AgentDownloadMenu({ token, label = 'Download agent', size = 'md'
   )
 }
 
+function SigningBadge({ d, platform }: { d: AgentDownload | undefined; platform: AgentPlatform }) {
+  if (!d || !d.available) return <span className="text-ink-faint">—</span>
+  const isMac = platform === 'macos-universal'
+  if (d.notarized) return <Badge tone="live">Signed &amp; notarized</Badge>
+  if (d.signed) return <Badge tone={isMac ? 'warn' : 'live'}>{isMac ? 'Signed, not notarized' : 'Signed'}</Badge>
+  if (d.signing_configured) return <Badge tone="warn">Signing configured · not baked yet</Badge>
+  return (
+    <Badge tone="warn" className="whitespace-nowrap">
+      Unsigned
+    </Badge>
+  )
+}
+
 /** Settings → Agent downloads: availability per platform plus an explanation of baking. */
 export function AgentDownloadsPanel() {
   const downloads = useAgentDownloads()
@@ -131,6 +144,7 @@ export function AgentDownloadsPanel() {
             <tr>
               <Th>Platform</Th>
               <Th>Status</Th>
+              <Th>Signing</Th>
               <Th>Source</Th>
               <Th className="text-right">Size</Th>
               <Th className="w-32" />
@@ -150,6 +164,9 @@ export function AgentDownloadsPanel() {
                     </div>
                   </Td>
                   <Td>{ok ? <Badge tone="live">Available</Badge> : <Badge tone="warn">Not available</Badge>}</Td>
+                  <Td>
+                    <SigningBadge d={d} platform={p.id} />
+                  </Td>
                   <Td className="text-ink-muted">{d ? (d.source === 'local' ? 'AGENT_BINARY_DIR' : 'GitHub release') : '—'}</Td>
                   <Td className="mono text-right text-ink-muted">{d?.size !== undefined ? bytes(d.size) : '—'}</Td>
                   <Td className="text-right">
@@ -171,6 +188,18 @@ export function AgentDownloadsPanel() {
           </tbody>
         </Table>
       )}
+      <div className="panel p-4 text-[12.5px] text-ink-muted">
+        <div className="mb-1 font-medium text-ink">macOS downloads and Gatekeeper</div>
+        <p>
+          macOS downloads are a <span className="mono">&lt;Product&gt;.zip</span> containing a double-clickable <span className="mono">&lt;Product&gt;.app</span>. When a
+          Developer ID identity and notarization are configured on the console (<span className="mono">MACOS_SIGN_IDENTITY</span>,{' '}
+          <span className="mono">MACOS_NOTARY_PROFILE</span>), the app is signed and notarized and opens like any other app.
+        </p>
+        <p className="mt-1.5">
+          Without signing, macOS shows “Apple could not verify … is free of malware”. The person at the device then has to allow it once: System Settings →
+          Privacy &amp; Security → <b>Open Anyway</b> (or remove the quarantine flag with <span className="mono">xattr -d com.apple.quarantine</span>).
+        </p>
+      </div>
       {downloads.isSuccess && downloads.data.every((d) => !d.available) && (
         <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px]">
           No base binaries are available. Put release builds into <span className="mono">AGENT_BINARY_DIR</span> (files named like the release assets) or make sure

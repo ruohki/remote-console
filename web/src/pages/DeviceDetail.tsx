@@ -1,6 +1,8 @@
 import { useState } from 'react'
+
+const SESSION_PAGE = 25
 import { Link, useNavigate, useParams } from 'react-router'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Eye, FolderKanban, MonitorPlay, Save, Trash2 } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import type { DeviceDetail as Detail, Group } from '@/lib/types'
@@ -8,8 +10,12 @@ import { canConnect } from '@/lib/access'
 import type { AgentConfig, SessionSummary } from '@/protocol'
 import { useLive } from '@/store/live'
 import { useAuth, useIsAdmin } from '@/store/auth'
-import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
-import { CodecBadge, GroupChips, ModeBadge, OsIcon, SessionStateBadge, StatusLed } from '@/components/badges'
+import { Badge, Button, DangerConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
+import { CodecBadge, GroupChips, ModeBadge, OsIcon, OverrideBadge, SessionStateBadge, StatusLed } from '@/components/badges'
+import { LoadMore } from '@/components/Pager'
+import { appendPage, isLastPage, timeCursor } from '@/lib/paging'
+import { hasOverrides, overrideLabels } from '@/lib/overrides'
+import { ShieldAlert } from 'lucide-react'
 import { NotFound } from './NotFound'
 import { dateTime, duration, END_REASON_LABEL, OS_LABEL, relativeTime, CODEC_LABEL } from '@/lib/format'
 import { toast } from '@/lib/toast'
@@ -30,10 +36,23 @@ export function DeviceDetail() {
     retry: false,
   })
   const [openSession, setOpenSession] = useState<SessionSummary | null>(null)
+  // Session history: first page plus one query per "load older" cursor (no effects needed).
+  const [cursors, setCursors] = useState<string[]>([])
   const sessions = useQuery({
     queryKey: ['device-sessions', id],
-    queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: 50 }),
+    queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: SESSION_PAGE }),
   })
+  const olderQueries = useQueries({
+    queries: cursors.map((before) => ({
+      queryKey: ['device-sessions', id, before],
+      queryFn: () => api.get<SessionSummary[]>(`/api/devices/${id}/sessions`, { limit: SESSION_PAGE, before }),
+    })),
+  })
+  let sessionRows: SessionSummary[] = sessions.data ?? []
+  for (const q of olderQueries) if (q.data) sessionRows = appendPage(sessionRows, q.data)
+  const lastLoaded = olderQueries.length ? olderQueries.at(-1)?.data : sessions.data
+  const moreSessions = !!lastLoaded && !isLastPage(lastLoaded.length, SESSION_PAGE)
+  const olderLoading = olderQueries.some((q) => q.isFetching)
 
   const [deleting, setDeleting] = useState(false)
   const remove = useMutation({
@@ -114,7 +133,10 @@ export function DeviceDetail() {
                 {d.online ? <Badge tone="live">Online</Badge> : <Badge>Offline · {relativeTime(d.last_seen_at)}</Badge>}
               </Item>
               <Item label="Mode">
-                <ModeBadge mode={d.mode} />
+                <span className="inline-flex flex-wrap items-center gap-1">
+                  <ModeBadge mode={d.mode} />
+                  <OverrideBadge overrides={d.local_overrides} />
+                </span>
               </Item>
               <Item label="Signed-in user">{d.logged_in_user ?? <span className="text-ink-faint">nobody</span>}</Item>
               <Item label="Last IP">
@@ -165,7 +187,7 @@ export function DeviceDetail() {
             <div className="border-b border-line px-4 py-2.5 font-medium">Recent sessions</div>
             {sessions.isPending ? (
               <Skeleton className="m-4 h-24" />
-            ) : !sessions.data?.length ? (
+            ) : sessionRows.length === 0 ? (
               <EmptyState title="No sessions yet" />
             ) : (
               <Table className="rounded-none border-0">
@@ -180,7 +202,7 @@ export function DeviceDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sessions.data.map((s) => (
+                  {sessionRows.map((s) => (
                     <tr key={s.id} className="row-hover cursor-pointer" onClick={() => setOpenSession(s)}>
                       <Td>
                         <SessionStateBadge state={s.state} />
@@ -197,11 +219,24 @@ export function DeviceDetail() {
                 </tbody>
               </Table>
             )}
+            {sessionRows.length > 0 && (
+              <LoadMore
+                shown={sessionRows.length}
+                hasMore={moreSessions}
+                loading={olderLoading}
+                onClick={() => {
+                  const c = timeCursor(lastLoaded ?? [])
+                  if (c !== undefined && !cursors.includes(c)) setCursors((cs) => [...cs, c])
+                }}
+                label="Load older sessions"
+              />
+            )}
           </section>
           <SessionDetailDialog session={openSession} open={!!openSession} onClose={() => setOpenSession(null)} />
         </div>
 
         <div className="flex flex-col gap-4">
+          <RestrictionsPanel device={d} />
           <ConfigForm key={`${d.id}|${JSON.stringify(d.config)}`} device={d} editable={isAdmin} onSaved={() => qc.invalidateQueries({ queryKey: ['device', id] })} />
         </div>
       </div>
@@ -218,19 +253,34 @@ export function DeviceDetail() {
         />
       )}
 
-      <ConfirmDialog
+      <DangerConfirmDialog
         open={deleting}
         onClose={() => setDeleting(false)}
         onConfirm={() => remove.mutate()}
         title="Remove this device?"
-        body={
-          <>
-            <b>{d.name}</b> is unenrolled and its agent told to stop. To bring it back, run the installer again with a new token.
-          </>
-        }
+        expectedName={d.name}
         confirmLabel="Remove device"
-        danger
         loading={remove.isPending}
+        body={
+          <div className="flex flex-col gap-2">
+            <div className="rounded-md border border-line bg-raised px-3 py-2">
+              <div className="font-medium text-ink">{d.name}</div>
+              <div className="mono text-[12px] text-ink-faint">
+                {d.hostname} · {d.id}
+              </div>
+              {d.groups.length > 0 && (
+                <div className="mt-1.5">
+                  <GroupChips groups={d.groups} />
+                </div>
+              )}
+            </div>
+            <ul className="list-disc pl-5 text-[12.5px]">
+              <li>The agent receives a goodbye and stops; any running session ends.</li>
+              <li>Its enrollment is deleted — the device must be enrolled again with a new token to come back.</li>
+              <li>Session history and audit entries for this device are removed with it.</li>
+            </ul>
+          </div>
+        }
       />
     </div>
   )
@@ -395,6 +445,7 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
         }}
       >
         <fieldset disabled={!editable} className="contents">
+          <div className="eyebrow">Access</div>
           <div className="rounded-md border border-line bg-raised p-2.5">
             <div className="mb-1.5 font-medium">Access mode</div>
             <div className="flex gap-1">
@@ -419,6 +470,19 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
               <Input type="number" min={10} max={600} value={cfg.approval_timeout_s} onChange={(e) => set('approval_timeout_s', Number(e.target.value))} />
             </Field>
           )}
+          <div className="eyebrow pt-2">Permissions</div>
+          <div className="flex flex-col gap-2">
+            <Toggle checked={cfg.allow_input} onChange={(v) => set('allow_input', v)} label="Allow mouse and keyboard control" />
+            <Toggle checked={cfg.allow_clipboard} onChange={(v) => set('allow_clipboard', v)} label="Allow clipboard sync" />
+            <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer and remote file browsing" />
+            <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow streaming the device's audio" />
+          </div>
+          {cfg.allow_file_transfer && (
+            <Field label="Upload folder on the device" hint="Leave empty for Downloads/RemoteAgent in the user's home.">
+              <Input value={cfg.transfer_dir ?? ''} placeholder="~/Downloads/RemoteAgent" onChange={(e) => set('transfer_dir', e.target.value.trim() ? e.target.value : undefined)} />
+            </Field>
+          )}
+          <div className="eyebrow pt-2">Video</div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Max frame rate">
               <Select value={cfg.max_fps} onChange={(v) => set('max_fps', v)} options={[15, 30, 60].map((v) => ({ value: v, label: `${v} fps` }))} />
@@ -441,21 +505,10 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
               ]}
             />
           </Field>
+          <div className="eyebrow pt-2">Agent</div>
           <Field label="Heartbeat interval (seconds)">
             <Input type="number" min={5} max={300} value={cfg.heartbeat_interval_s} onChange={(e) => set('heartbeat_interval_s', Number(e.target.value))} />
           </Field>
-          <div className="flex flex-col gap-2 pt-1">
-            <Toggle checked={cfg.allow_input} onChange={(v) => set('allow_input', v)} label="Allow mouse and keyboard control" />
-            <Toggle checked={cfg.allow_clipboard} onChange={(v) => set('allow_clipboard', v)} label="Allow clipboard sync" />
-            <Toggle checked={cfg.show_session_indicator} onChange={(v) => set('show_session_indicator', v)} label="Show a banner on the device during sessions" />
-            <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer and remote file browsing" />
-            <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow streaming the device's audio" />
-          </div>
-          {cfg.allow_file_transfer && (
-            <Field label="Upload folder on the device" hint="Leave empty for Downloads/RemoteAgent in the user's home.">
-              <Input value={cfg.transfer_dir ?? ''} placeholder="~/Downloads/RemoteAgent" onChange={(e) => set('transfer_dir', e.target.value.trim() ? e.target.value : undefined)} />
-            </Field>
-          )}
           <Field label="Display name shown on the device">
             <Input value={cfg.display_name} onChange={(e) => set('display_name', e.target.value)} />
           </Field>
@@ -468,6 +521,36 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
           </div>
         )}
       </form>
+    </section>
+  )
+}
+
+/** Read-only view of what the person at the device restricted in the agent app. */
+function RestrictionsPanel({ device }: { device: Detail }) {
+  const labels = overrideLabels(device.local_overrides)
+  const active = hasOverrides(device.local_overrides)
+  return (
+    <section className="panel">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
+        <ShieldAlert size={14} className={active ? 'text-warn' : 'text-ink-faint'} />
+        <span className="font-medium">Device-side restrictions</span>
+        {active && <Badge tone="warn" className="ml-auto">Active</Badge>}
+      </div>
+      <div className="px-4 py-3 text-[12.5px]">
+        {active ? (
+          <ul className="flex flex-col gap-1">
+            {labels.map((l) => (
+              <li key={l} className="flex items-center gap-2">
+                <span className="size-1.5 shrink-0 rounded-full bg-warn" />
+                {l}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <div className="text-ink-muted">The person at the device has not restricted anything; the settings below apply as-is.</div>
+        )}
+        <p className="mt-2 text-ink-faint">Set in the agent app on the device. Restrictions only tighten the console settings and cannot be changed from here.</p>
+      </div>
     </section>
   )
 }

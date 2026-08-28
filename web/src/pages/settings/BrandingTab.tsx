@@ -1,17 +1,17 @@
 import { type FormEvent, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ImagePlus, MonitorSmartphone, Trash2 } from 'lucide-react'
+import { Circle, ImagePlus, Info, MessageSquare, MonitorSmartphone, Trash2 } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
 import { DEFAULT_BRANDING, accentVariables, isHexColor, logoUrl, readLogo, useBranding } from '@/lib/branding'
 import type { Branding } from '@/protocol'
-import { Button, Field, Input, Skeleton, Textarea, cx } from '@/components/ui'
+import { Button, Field, Input, Skeleton, Textarea, Toggle, cx } from '@/components/ui'
 import { toast } from '@/lib/toast'
 
-/** Settings → Branding: product name, accent, logo and support text used by the console and baked agents. */
+/** Settings → Branding: what the person at the device sees (agent app, banner, approval prompt) and, optionally, the console. */
 export function BrandingTab() {
   const branding = useBranding()
   if (branding.isPending && !branding.data) return <Skeleton className="h-64 w-full max-w-3xl" />
-  return <BrandingForm key={JSON.stringify(branding.data ?? DEFAULT_BRANDING)} initial={branding.data ?? DEFAULT_BRANDING} />
+  return <BrandingForm key={JSON.stringify(branding.data ?? DEFAULT_BRANDING)} initial={{ ...DEFAULT_BRANDING, ...(branding.data ?? {}) }} />
 }
 
 function BrandingForm({ initial }: { initial: Branding }) {
@@ -32,6 +32,7 @@ function BrandingForm({ initial }: { initial: Branding }) {
       toast.success('Branding saved', 'Agents downloaded from now on carry it.')
       qc.invalidateQueries({ queryKey: ['branding'] })
       qc.invalidateQueries({ queryKey: ['info'] })
+      qc.invalidateQueries({ queryKey: ['agent-downloads'] })
     },
     onError: (e) => toast.error('Could not save the branding', errorMessage(e)),
   })
@@ -54,16 +55,19 @@ function BrandingForm({ initial }: { initial: Branding }) {
   }
 
   const dirty = JSON.stringify(form) !== JSON.stringify(initial)
-  const logo = logoUrl(form)
-  const previewVars = isHexColor(form.accent) ? (accentVariables(form.accent) as React.CSSProperties) : undefined
+  const name = form.product_name.trim() || DEFAULT_BRANDING.product_name
 
   return (
-    <form onSubmit={submit} className="grid max-w-5xl gap-4 lg:grid-cols-[1fr_320px]">
+    <form onSubmit={submit} className="grid max-w-6xl gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
       <div className="panel flex flex-col gap-4 p-4">
-        <Field label="Product name" hint="Shown in the console, the agent window and the banner on the device.">
+        <div className="text-ink-muted">
+          This branding is baked into every agent you download: the person at the device sees it in the agent app, the session banner and the
+          approval prompt.
+        </div>
+        <Field label="Product name" hint="The name of your remote support tool as the person at the device sees it.">
           <Input value={form.product_name} maxLength={60} onChange={(e) => setForm({ ...form, product_name: e.target.value })} placeholder="Acme Remote Support" required />
         </Field>
-        <Field label="Accent colour" hint="Buttons, links and the agent's accent stripe. The dark theme lightens it automatically.">
+        <Field label="Accent colour" hint="Buttons, the active item in the agent's sidebar and the banner stripe.">
           <div className="flex items-center gap-2">
             <input
               type="color"
@@ -78,16 +82,16 @@ function BrandingForm({ initial }: { initial: Branding }) {
             </Button>
           </div>
         </Field>
-        <Field label="Logo" hint="PNG, up to 512 KiB. Square or wide logos both work; it is shown at 24–48 px.">
+        <Field label="Logo" hint="PNG, up to 512 KiB. Shown at 24–48 px in the agent app and banner; also used as the macOS app icon.">
           <div className="flex items-center gap-3">
             <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised">
-              {logo ? <img src={logo} alt="Logo preview" className="max-h-full max-w-full object-contain" /> : <MonitorSmartphone size={20} className="text-ink-faint" />}
+              {logoUrl(form) ? <img src={logoUrl(form)!} alt="Logo preview" className="max-h-full max-w-full object-contain" /> : <MonitorSmartphone size={20} className="text-ink-faint" />}
             </div>
             <input ref={fileInput} type="file" accept="image/png" className="hidden" onChange={(e) => void pickLogo(e.target.files?.[0])} />
             <Button type="button" size="sm" icon={<ImagePlus size={13} />} onClick={() => fileInput.current?.click()}>
-              {logo ? 'Replace PNG' : 'Upload PNG'}
+              {logoUrl(form) ? 'Replace PNG' : 'Upload PNG'}
             </Button>
-            {logo && (
+            {logoUrl(form) && (
               <Button type="button" size="sm" variant="ghost" icon={<Trash2 size={13} />} onClick={() => setForm({ ...form, logo_png_base64: undefined })}>
                 Remove
               </Button>
@@ -97,12 +101,24 @@ function BrandingForm({ initial }: { initial: Branding }) {
         <Field label="Organisation" hint="Shown in the agent's About section.">
           <Input value={form.organization} onChange={(e) => setForm({ ...form, organization: e.target.value })} placeholder="Acme IT" />
         </Field>
-        <Field label="Support text" hint="Shown to the person at the device, e.g. how to reach you.">
+        <Field label="Support text" hint="Shown on the agent's start screen, e.g. how to reach you.">
           <Textarea rows={3} value={form.support_text} onChange={(e) => setForm({ ...form, support_text: e.target.value })} placeholder="Support by Acme IT · +49 123 456 · help@acme.example" />
         </Field>
+        <div className="rounded-md border border-line bg-raised px-3 py-2.5">
+          <Toggle checked={form.apply_to_console} onChange={(v) => setForm({ ...form, apply_to_console: v })} label="Also use this branding in the web console" />
+          <p className="mt-1 pl-11 text-[12px] text-ink-faint">
+            Title, logo and accent of this console follow the branding. Off keeps the console as it is; agents still get the branding.
+          </p>
+        </div>
         <div className="flex items-center justify-end gap-2 border-t border-line pt-3">
           {dirty && (
-            <Button type="button" onClick={() => { setForm(initial); setHex(initial.accent) }}>
+            <Button
+              type="button"
+              onClick={() => {
+                setForm(initial)
+                setHex(initial.accent)
+              }}
+            >
               Discard
             </Button>
           )}
@@ -112,39 +128,180 @@ function BrandingForm({ initial }: { initial: Branding }) {
         </div>
       </div>
 
-      {/* live preview */}
-      <div className="flex flex-col gap-3" style={previewVars} data-brand-accent={isHexColor(form.accent) ? form.accent : undefined}>
-        <div className="eyebrow">Preview</div>
-        <div className="panel overflow-hidden">
-          <div className="flex h-12 items-center gap-2 border-b border-line px-4 font-semibold tracking-tight">
-            {logo ? (
-              <img src={logo} alt="" className="size-6 rounded-md object-contain" />
-            ) : (
-              <span className="grid size-6 place-items-center rounded-md bg-accent text-accent-ink">
-                <MonitorSmartphone size={14} />
-              </span>
-            )}
-            <span className="truncate">{form.product_name || DEFAULT_BRANDING.product_name}</span>
+      <BrandingPreview branding={{ ...form, product_name: name }} />
+    </form>
+  )
+}
+
+/* ───────────── previews: faithful mocks of what the device user sees ───────────── */
+
+function BrandingPreview({ branding }: { branding: Branding }) {
+  const accent = isHexColor(branding.accent) ? branding.accent : DEFAULT_BRANDING.accent
+  const vars = accentVariables(accent) as React.CSSProperties
+  const logo = logoUrl(branding)
+  return (
+    <div className="flex flex-col gap-4" style={vars} data-brand-accent={accent}>
+      <div>
+        <div className="eyebrow">What the person at the device sees</div>
+        <div className="text-[12px] text-ink-faint">Live preview · updates as you type</div>
+      </div>
+
+      <Captioned caption="Agent app window" hint="Opens when the agent is started by hand or from the menu bar / tray.">
+        <AgentWindowMock branding={branding} logo={logo} />
+      </Captioned>
+
+      <Captioned caption="Session banner" hint="Always shown on the device while an operator is connected.">
+        <BannerMock branding={branding} logo={logo} />
+      </Captioned>
+
+      <Captioned caption="Approval prompt" hint="Shown in “Help me” mode before an operator may connect.">
+        <ApprovalMock branding={branding} logo={logo} />
+      </Captioned>
+
+      {branding.apply_to_console && (
+        <Captioned caption="Console header" hint="Because “Also use this branding in the web console” is on.">
+          <ConsoleHeaderMock branding={branding} logo={logo} />
+        </Captioned>
+      )}
+    </div>
+  )
+}
+
+function Captioned({ caption, hint, children }: { caption: string; hint?: string; children: React.ReactNode }) {
+  return (
+    <figure className="m-0">
+      <figcaption className="mb-1.5">
+        <div className="text-[12.5px] font-medium">{caption}</div>
+        {hint && <div className="text-[11.5px] text-ink-faint">{hint}</div>}
+      </figcaption>
+      {children}
+    </figure>
+  )
+}
+
+function Logo({ logo, size = 24, className }: { logo: string | null; size?: number; className?: string }) {
+  return logo ? (
+    <img src={logo} alt="" style={{ width: size, height: size }} className={cx('shrink-0 rounded-md object-contain', className)} />
+  ) : (
+    <span style={{ width: size, height: size }} className={cx('grid shrink-0 place-items-center rounded-md bg-accent text-accent-ink', className)}>
+      <MonitorSmartphone size={Math.round(size * 0.55)} />
+    </span>
+  )
+}
+
+/** 168 px rail + Status screen, mirroring `crates/agent/src/app/assets`. */
+function AgentWindowMock({ branding, logo }: { branding: Branding; logo: string | null }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-line-strong bg-surface shadow-pop" aria-label="Agent window preview">
+      <div className="flex h-7 items-center gap-1.5 border-b border-line bg-raised px-2.5">
+        <span className="size-2.5 rounded-full bg-[#ff5f57]" />
+        <span className="size-2.5 rounded-full bg-[#febc2e]" />
+        <span className="size-2.5 rounded-full bg-[#28c840]" />
+        <span className="ml-2 truncate text-[11px] text-ink-muted">{branding.product_name}</span>
+      </div>
+      <div className="grid grid-cols-[112px_1fr] text-[11.5px]">
+        <div className="flex flex-col gap-0.5 border-r border-line bg-raised p-2">
+          <div className="mb-1.5 flex items-center gap-1.5 px-1 py-0.5 font-semibold">
+            <Logo logo={logo} size={18} />
+            <span className="truncate">{branding.product_name}</span>
           </div>
-          <div className="flex flex-col gap-2 p-4">
-            <div className="rounded-md bg-accent-soft px-2.5 py-1.5 text-[13px] font-medium text-accent">Devices</div>
-            <div className="px-2.5 py-1.5 text-[13px] text-ink-muted">Sessions</div>
-            <div className="mt-2 flex gap-2">
-              <span className="rounded-md bg-accent px-3 py-1.5 text-[13px] font-medium text-accent-ink">Connect</span>
-              <span className="rounded-md border border-line px-3 py-1.5 text-[13px]">Details</span>
+          {['Status', 'Chat', 'Install', 'Settings', 'About'].map((item, i) => (
+            <div key={item} className={cx('flex items-center gap-1.5 rounded-md px-1.5 py-1', i === 0 ? 'bg-accent-soft font-medium text-accent' : 'text-ink-muted')}>
+              {i === 1 ? <MessageSquare size={11} /> : i === 4 ? <Info size={11} /> : <Circle size={7} className={i === 0 ? 'fill-current' : ''} />}
+              {item}
+            </div>
+          ))}
+          <div className="mt-auto flex items-center gap-1 px-1.5 pt-2 text-[10.5px] text-ink-faint">
+            <span className="size-1.5 rounded-full bg-live" /> Online
+          </div>
+        </div>
+        <div className="flex flex-col gap-2.5 p-3">
+          <div className="flex items-center gap-2.5">
+            <Logo logo={logo} size={34} className="rounded-lg" />
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-semibold">{branding.product_name}</div>
+              <div className="truncate text-[11px] text-ink-muted">{branding.organization || 'Remote support'}</div>
             </div>
           </div>
-        </div>
-        <div className="panel p-4 text-[12.5px]">
-          <div className="mb-2 flex items-center gap-2 font-semibold">
-            <span className="inline-block h-4 w-1 rounded-sm bg-accent" />
-            {form.product_name || DEFAULT_BRANDING.product_name}
+          <div className="grid grid-cols-2 gap-1.5">
+            <div className="rounded-md border border-line bg-raised px-2 py-1.5">
+              <div className="text-[9.5px] tracking-wide text-ink-faint uppercase">Console</div>
+              <div className="flex items-center gap-1 font-medium">
+                <span className="size-1.5 rounded-full bg-live" /> Connected
+              </div>
+            </div>
+            <div className="rounded-md border border-line bg-raised px-2 py-1.5">
+              <div className="text-[9.5px] tracking-wide text-ink-faint uppercase">This device</div>
+              <div className="truncate font-medium">Front desk PC</div>
+            </div>
           </div>
-          <div className="text-ink-muted">Alice is controlling this computer.</div>
-          {form.support_text.trim() && <div className="mt-2 whitespace-pre-wrap text-ink-faint">{form.support_text}</div>}
-          <div className="mt-3 text-[11px] text-ink-faint">How the banner on the device looks.</div>
+          <div className="rounded-md border border-line bg-raised px-2 py-2">
+            <div className="flex items-center gap-2">
+              <span className="grid size-6 place-items-center rounded-full bg-accent text-[11px] font-bold text-accent-ink">A</span>
+              <div className="min-w-0 flex-1">
+                <div className="truncate font-medium">Alice</div>
+                <div className="text-[10.5px] text-ink-muted">is controlling this computer</div>
+              </div>
+              <span className="rounded-md bg-accent px-2 py-0.5 text-[10.5px] font-medium text-accent-ink">Open chat</span>
+              <span className="rounded-md border border-line px-2 py-0.5 text-[10.5px]">End</span>
+            </div>
+          </div>
+          {branding.support_text.trim() ? (
+            <div className="whitespace-pre-wrap text-[10.5px] text-ink-muted">{branding.support_text}</div>
+          ) : (
+            <div className="text-[10.5px] text-ink-faint">Support text appears here.</div>
+          )}
         </div>
       </div>
-    </form>
+    </div>
+  )
+}
+
+function BannerMock({ branding, logo }: { branding: Branding; logo: string | null }) {
+  return (
+    <div className="flex items-center gap-2.5 overflow-hidden rounded-lg border border-line-strong bg-surface py-2 pr-2 pl-0 shadow-pop" aria-label="Session banner preview">
+      <span className="h-9 w-1 shrink-0 rounded-r bg-accent" />
+      <Logo logo={logo} size={22} />
+      <div className="min-w-0 flex-1 text-[12px]">
+        <span className="font-semibold">{branding.product_name}</span>
+        <span className="text-ink-faint"> · </span>
+        <span className="text-ink-muted">Alice is controlling this computer</span>
+      </div>
+      <span className="rounded-md border border-line px-2 py-1 text-[11.5px]">Disconnect</span>
+    </div>
+  )
+}
+
+function ApprovalMock({ branding, logo }: { branding: Branding; logo: string | null }) {
+  return (
+    <div className="mx-auto w-[300px] rounded-xl border border-line-strong bg-surface p-4 text-center shadow-pop" aria-label="Approval prompt preview">
+      <div className="mx-auto mb-2 w-fit">
+        <Logo logo={logo} size={44} className="rounded-xl" />
+      </div>
+      <div className="text-[12.5px] font-semibold">
+        {branding.product_name}: Alice wants to control this computer.
+      </div>
+      <div className="mt-1 text-[11.5px] text-ink-muted">You can end the session at any time from the banner.</div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
+        <span className="rounded-md border border-line px-2 py-1.5">Deny</span>
+        <span className="rounded-md bg-accent px-2 py-1.5 font-medium text-accent-ink">Allow</span>
+      </div>
+    </div>
+  )
+}
+
+function ConsoleHeaderMock({ branding, logo }: { branding: Branding; logo: string | null }) {
+  return (
+    <div className="overflow-hidden rounded-lg border border-line-strong bg-surface shadow-pop" aria-label="Console header preview">
+      <div className="flex h-10 items-center gap-2 border-b border-line px-3 text-[12.5px] font-semibold tracking-tight">
+        <Logo logo={logo} size={20} />
+        <span className="truncate">{branding.product_name}</span>
+      </div>
+      <div className="flex gap-2 p-3 text-[11.5px]">
+        <span className="rounded-md bg-accent-soft px-2 py-1 font-medium text-accent">Devices</span>
+        <span className="px-2 py-1 text-ink-muted">Sessions</span>
+        <span className="ml-auto rounded-md bg-accent px-2.5 py-1 font-medium text-accent-ink">Connect</span>
+      </div>
+    </div>
   )
 }

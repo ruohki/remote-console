@@ -77,12 +77,19 @@
   --accent: var(--brand-accent);
   --accent-ink: var(--brand-accent-ink);
   --accent-soft: color-mix(in oklab, var(--brand-accent) 14%, var(--surface));
+  /* theme tokens resolve at :root, so nested previews restate them */
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
 }
 .dark[data-brand-accent],
 .dark [data-brand-accent] {
   --accent: var(--brand-accent-dark);
   --accent-ink: var(--brand-accent-dark-ink);
   --accent-soft: color-mix(in oklab, var(--brand-accent-dark) 18%, var(--surface));
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
 }
 
 @layer base {

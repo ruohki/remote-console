@@ -326,6 +326,44 @@ function ResumeDownloadRow({ rec, onDone }: { rec: DownloadRecord; onDone: () =>
 
 type SortKey = 'name' | 'size' | 'modified'
 
+/* Promise-based confirmation for large in-memory downloads (replaces window.confirm). */
+type LargeAsk = { name: string; size: number; resolve: (ok: boolean) => void }
+let largeAskListener: ((a: LargeAsk | null) => void) | null = null
+function askLargeDownload(name: string, size: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!largeAskListener) return resolve(true)
+    largeAskListener({ name, size, resolve })
+  })
+}
+
+function LargeDownloadDialog() {
+  const [ask, setAsk] = useState<LargeAsk | null>(null)
+  useEffect(() => {
+    largeAskListener = setAsk
+    return () => {
+      largeAskListener = null
+    }
+  }, [])
+  const answer = (ok: boolean) => {
+    ask?.resolve(ok)
+    setAsk(null)
+  }
+  return (
+    <ConfirmDialog
+      open={!!ask}
+      onClose={() => answer(false)}
+      onConfirm={() => answer(true)}
+      title="Large download"
+      body={
+        <>
+          <b>{ask?.name}</b> is {ask ? bytes(ask.size) : ''}. This browser cannot stream to disk, so the whole file is held in memory before it is saved. Continue?
+        </>
+      }
+      confirmLabel="Download anyway"
+    />
+  )
+}
+
 function BrowseTab({ pickMode, onSetUploadDest }: { pickMode?: { onPick: (path: string) => void; onCancel: () => void }; onSetUploadDest?: (path: string) => void }) {
   const listing = useFiles((s) => s.listing)
   const loading = useFiles((s) => s.listingLoading)
@@ -387,7 +425,7 @@ function BrowseTab({ pickMode, onSetUploadDest }: { pickMode?: { onPick: (path: 
       if (!handle) return
       await transferManager.download(remotePath, e.name, size, async (resume) => FileSystemSink.open(handle, resume ? await FileSystemSink.existingSize(handle) : 0))
     } else {
-      if (size > MEMORY_SINK_WARN_BYTES && !window.confirm(`${e.name} is ${bytes(size)}. This browser has to hold it in memory before saving; continue?`)) return
+      if (size > MEMORY_SINK_WARN_BYTES && !(await askLargeDownload(e.name, size))) return
       await transferManager.download(remotePath, e.name, size, async () => new BlobSink(e.name, guessMime(e.name), true))
     }
     toast.info(`Fetching ${e.name}`, 'Progress is in the Transfers tab.')
@@ -443,6 +481,7 @@ function BrowseTab({ pickMode, onSetUploadDest }: { pickMode?: { onPick: (path: 
               <Upload size={13} />
             </button>
             <input ref={uploadInput} type="file" multiple className="hidden" onChange={(e) => uploadHere(e.target.files)} />
+            <LargeDownloadDialog />
           </>
         )}
       </div>

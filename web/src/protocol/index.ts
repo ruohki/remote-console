@@ -24,6 +24,7 @@ export type { GroupRef } from './GroupRef';
 export type { IceCandidate } from './IceCandidate';
 export type { IceServer } from './IceServer';
 export type { InputEvent } from './InputEvent';
+export type { LocalOverrides } from './LocalOverrides';
 export type { MouseButton } from './MouseButton';
 export type { OperatorInfo } from './OperatorInfo';
 export type { Os } from './Os';

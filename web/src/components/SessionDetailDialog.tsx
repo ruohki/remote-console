@@ -7,7 +7,7 @@ import { bytes, dateTime, duration, END_REASON_LABEL } from '@/lib/format'
 import type { SessionEventRow } from '@/store/live'
 
 export function SessionDetailDialog({ session, open, onClose }: { session: SessionSummary | null; open: boolean; onClose: () => void }) {
-  const { rows, isPending } = useSessionEvents(open ? session?.id : null)
+  const { rows, isPending, hiddenEarlier, showEarlier, total } = useSessionEvents(open ? session?.id : null)
   return (
     <Dialog open={open} onClose={onClose} title="Session" width="max-w-2xl">
       {session && (
@@ -33,7 +33,14 @@ export function SessionDetailDialog({ session, open, onClose }: { session: Sessi
             ) : rows.length === 0 ? (
               <EmptyState title="Nothing happened yet" detail="Chat lines, file transfers and clipboard syncs show up here." />
             ) : (
-              <SessionTimeline rows={rows} />
+              <>
+                {hiddenEarlier > 0 && (
+                  <button type="button" onClick={showEarlier} className="mb-2 text-[12.5px] text-accent hover:underline">
+                    Show {Math.min(hiddenEarlier, 200)} earlier events ({total} total)
+                  </button>
+                )}
+                <SessionTimeline rows={rows} />
+              </>
             )}
           </div>
         </div>

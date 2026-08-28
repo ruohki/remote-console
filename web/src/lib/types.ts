@@ -104,6 +104,11 @@ export interface AgentDownload {
   available: boolean
   source: 'local' | 'release'
   size?: number
+  /** result of the last bake for this platform */
+  signed?: boolean
+  notarized?: boolean
+  /** a signing identity is configured on the console */
+  signing_configured?: boolean
 }
 
 export interface ApiErrorBody {

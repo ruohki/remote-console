@@ -67,3 +67,19 @@ export function Tags({ tags }: { tags: string[] }) {
     </span>
   )
 }
+
+import { ShieldAlert } from 'lucide-react'
+import { hasOverrides, overrideLabels } from '@/lib/overrides'
+import type { LocalOverrides } from '@/protocol'
+
+/** Shown when the person at the device restricted what operators may do. */
+export function OverrideBadge({ overrides, className }: { overrides: LocalOverrides | undefined | null; className?: string }) {
+  if (!hasOverrides(overrides)) return null
+  return (
+    <Badge tone="warn" className={className}>
+      <span className="inline-flex items-center gap-1" title={overrideLabels(overrides).join(' · ')}>
+        <ShieldAlert size={11} /> Restricted by user
+      </span>
+    </Badge>
+  )
+}

@@ -1,3 +1,4 @@
+import { confirmAllowed } from '@/lib/confirm'
 import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes, forwardRef, useEffect, useRef, useState } from 'react'
 import { Check, Copy, Loader2, X } from 'lucide-react'
 import { cx } from './cx'
@@ -224,12 +225,80 @@ export function ConfirmDialog({
   )
 }
 
+/**
+ * Destructive confirmation that requires typing the resource name (or checking an
+ * acknowledgement when there is no name). Gating logic lives in `lib/confirm.ts`.
+ */
+export function DangerConfirmDialog({
+  open,
+  onClose,
+  onConfirm,
+  title,
+  body,
+  expectedName,
+  confirmLabel = 'Delete',
+  loading,
+  ackLabel = 'I understand this cannot be undone',
+}: {
+  open: boolean
+  onClose: () => void
+  onConfirm: () => void
+  title: string
+  body: ReactNode
+  /** name to type; omit for a checkbox acknowledgement */
+  expectedName?: string
+  confirmLabel?: string
+  loading?: boolean
+  ackLabel?: string
+}) {
+  const [typed, setTyped] = useState('')
+  const [ack, setAck] = useState(false)
+  const close = () => {
+    setTyped('')
+    setAck(false)
+    onClose()
+  }
+  const expected = expectedName ?? null
+  const allowed = confirmAllowed({ expected, typed, acknowledged: ack })
+  return (
+    <Dialog open={open} onClose={close} title={title} width="max-w-md">
+      <div className="text-ink-muted">{body}</div>
+      <form
+        className="mt-4 flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          if (allowed && !loading) onConfirm()
+        }}
+      >
+        {expected && expected.trim() ? (
+          <Field label={`Type ${expected} to confirm`}>
+            <Input value={typed} onChange={(e) => setTyped(e.target.value)} placeholder={expected} autoFocus spellCheck={false} autoComplete="off" />
+          </Field>
+        ) : (
+          <label className="flex cursor-pointer items-center gap-2">
+            <input type="checkbox" className="accent-danger" checked={ack} onChange={(e) => setAck(e.target.checked)} />
+            <span>{ackLabel}</span>
+          </label>
+        )}
+        <div className="flex justify-end gap-2">
+          <Button type="button" onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="danger" disabled={!allowed} loading={loading}>
+            {confirmLabel}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
 /* ───────────── Table ───────────── */
 
-export function Table({ children, className }: { children: ReactNode; className?: string }) {
+export function Table({ children, className, fixed }: { children: ReactNode; className?: string; fixed?: boolean }) {
   return (
-    <div className={cx('panel overflow-x-auto', className)}>
-      <table className="w-full border-collapse text-left">{children}</table>
+    <div className={cx('panel', fixed ? 'overflow-hidden' : 'overflow-x-auto', className)}>
+      <table className={cx('w-full border-collapse text-left', fixed && 'table-fixed')}>{children}</table>
     </div>
   )
 }
@@ -238,9 +307,9 @@ export function Th({ children, className }: { children?: ReactNode; className?: 
   return <th className={cx('eyebrow border-b border-line px-3 py-2 font-medium', className)}>{children}</th>
 }
 
-export function Td({ children, className, colSpan, onClick }: { children?: ReactNode; className?: string; colSpan?: number; onClick?: React.MouseEventHandler<HTMLTableCellElement> }) {
+export function Td({ children, className, colSpan, onClick, title }: { children?: ReactNode; className?: string; colSpan?: number; onClick?: React.MouseEventHandler<HTMLTableCellElement>; title?: string }) {
   return (
-    <td colSpan={colSpan} onClick={onClick} className={cx('border-b border-line px-3 py-2 align-middle last:border-b-0', className)}>
+    <td colSpan={colSpan} onClick={onClick} title={title} className={cx('border-b border-line px-3 py-2 align-middle last:border-b-0', className)}>
       {children}
     </td>
   )

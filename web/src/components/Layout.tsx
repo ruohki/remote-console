@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router'
-import { Activity, ClipboardList, FolderKanban, LogOut, Menu, MonitorSmartphone, Moon, Settings, Sun, SunMoon, Users, X } from 'lucide-react'
+import { Activity, ClipboardList, Download, FolderKanban, LogOut, Menu, MonitorSmartphone, Moon, Palette, Settings, Sun, SunMoon, Users, X } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { useLive } from '@/store/live'
 import { applyTheme, readTheme, type Theme } from '@/lib/theme'
 import { cx } from './ui'
 import { toast } from '@/lib/toast'
-import { DEFAULT_BRANDING, logoUrl, useBranding } from '@/lib/branding'
+import { DEFAULT_BRANDING, consoleBranding, logoUrl, useBranding } from '@/lib/branding'
 
 const NAV = [
   { to: '/devices', label: 'Devices', icon: MonitorSmartphone },
@@ -14,7 +14,9 @@ const NAV = [
   { to: '/groups', label: 'Groups', icon: FolderKanban, admin: true },
   { to: '/users', label: 'Users', icon: Users, admin: true },
   { to: '/audit', label: 'Audit', icon: ClipboardList, admin: true },
-  { to: '/settings', label: 'Settings', icon: Settings },
+  { to: '/settings', label: 'Settings', icon: Settings, end: true },
+  { to: '/settings/branding', label: 'Branding', icon: Palette, admin: true, sub: true },
+  { to: '/settings/agent', label: 'Agent downloads', icon: Download, admin: true, sub: true },
 ]
 
 export function Layout() {
@@ -48,10 +50,12 @@ export function Layout() {
         <NavLink
           key={n.to}
           to={n.to}
+          end={'end' in n && n.end}
           onClick={() => setOpen(false)}
           className={({ isActive }) =>
             cx(
               'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors',
+              'sub' in n && n.sub && 'ml-4 text-[12.5px]',
               isActive ? 'bg-accent-soft text-accent font-medium' : 'text-ink-muted hover:bg-raised hover:text-ink',
             )
           }
@@ -120,7 +124,7 @@ export function Layout() {
 }
 
 export function Wordmark({ className }: { className?: string }) {
-  const branding = useBranding().data ?? DEFAULT_BRANDING
+  const branding = consoleBranding(useBranding().data)
   const logo = logoUrl(branding)
   return (
     <span className={cx('flex min-w-0 items-center gap-2 font-semibold tracking-tight', className)}>
