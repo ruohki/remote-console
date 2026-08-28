@@ -2,7 +2,8 @@
 
 Management server and web viewer for [`remote-agent`](../remote-agent): device registry,
 enrollment tokens, one-line install scripts, WebRTC signaling hub, TURN credentials and the
-operator UI (live device list, remote control viewer, sessions, users).
+operator UI (live device list, multi-display remote control viewer with audio, file transfer,
+chat and clipboard, session timelines, device groups with per-user access, users, audit log).
 
 Design and wire protocol: [`../remote-agent/ARCHITECTURE.md`](../remote-agent/ARCHITECTURE.md).
 
