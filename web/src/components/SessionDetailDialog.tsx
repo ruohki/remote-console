@@ -1,9 +1,10 @@
-import { ArrowDownToLine, ArrowUpFromLine, Clipboard, Hand, MessageSquare, MonitorSmartphone, Volume2 } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, Clipboard, EyeOff, Hand, MessageSquare, MonitorSmartphone, Volume2 } from 'lucide-react'
 import type { SessionSummary } from '@/protocol'
 import { Dialog, EmptyState, Skeleton } from '@/components/ui'
 import { CodecBadge, SessionStateBadge } from '@/components/badges'
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { bytes, dateTime, duration, END_REASON_LABEL } from '@/lib/format'
+import { privacyScreenEventLabel } from '@/lib/privacyScreen'
 import type { SessionEventRow } from '@/store/live'
 
 export function SessionDetailDialog({ session, open, onClose }: { session: SessionSummary | null; open: boolean; onClose: () => void }) {
@@ -88,6 +89,8 @@ function iconFor(r: SessionEventRow) {
       return <Volume2 size={14} />
     case 'control_paused':
       return <Hand size={14} />
+    case 'privacy_screen':
+      return <EyeOff size={14} />
     default:
       return null
   }
@@ -129,6 +132,8 @@ function describe(r: SessionEventRow): React.ReactNode {
       return <>Audio {e.enabled ? 'enabled' : 'disabled'}</>
     case 'control_paused':
       return e.paused ? <span className="font-medium text-amber-300">Remote control paused by the person at the device</span> : <>Remote control resumed by the person at the device</>
+    case 'privacy_screen':
+      return e.active ? <span className="font-medium">{privacyScreenEventLabel(true, e.reason)}</span> : <>{privacyScreenEventLabel(false, e.reason)}</>
     default:
       return JSON.stringify(e)
   }

@@ -169,6 +169,7 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
             logged_in_user: hello.logged_in_user.as_deref(),
             ip: &ip,
             local_overrides: &hello.local_overrides,
+            privacy_screen: hello.capabilities.privacy_screen,
         },
     )
     .await

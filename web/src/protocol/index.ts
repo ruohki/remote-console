@@ -29,6 +29,8 @@ export type { LocalOverrides } from './LocalOverrides';
 export type { MouseButton } from './MouseButton';
 export type { OperatorInfo } from './OperatorInfo';
 export type { Os } from './Os';
+export type { PrivacyScreenReason } from './PrivacyScreenReason';
+export type { PrivacyScreenSupport } from './PrivacyScreenSupport';
 export type { SessionDescription } from './SessionDescription';
 export type { SessionEvent } from './SessionEvent';
 export type { SessionRole } from './SessionRole';

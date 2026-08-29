@@ -1,7 +1,9 @@
 //! Row types and their conversions to API / protocol types.
 
 use crate::db::{enum_parse, enum_str};
-use protocol::common::{Arch, DeviceMode, DisplayInfo, EndReason, Os, SessionState, VideoCodec};
+use protocol::common::{
+    Arch, DeviceMode, DisplayInfo, EndReason, Os, PrivacyScreenSupport, SessionState, VideoCodec,
+};
 use protocol::config::{AgentConfig, LocalOverrides};
 use protocol::ui::{DevicePermission, DeviceSummary, GroupRef, SessionSummary};
 use serde::{Deserialize, Serialize};
@@ -239,6 +241,8 @@ pub struct DeviceRow {
     pub created_at: String,
     /// `protocol::config::LocalOverrides` JSON (restrictions set at the device).
     pub local_overrides: String,
+    /// `protocol::common::PrivacyScreenSupport` wire name, as last reported in `hello`.
+    pub privacy_screen: String,
 }
 
 impl DeviceRow {
@@ -260,6 +264,10 @@ impl DeviceRow {
 
     pub fn displays(&self) -> Vec<DisplayInfo> {
         serde_json::from_str(&self.displays).unwrap_or_default()
+    }
+
+    pub fn privacy_screen(&self) -> PrivacyScreenSupport {
+        enum_parse(&self.privacy_screen).unwrap_or_default()
     }
 
     pub fn os(&self) -> Os {
@@ -297,6 +305,7 @@ impl DeviceRow {
             groups,
             permission,
             local_overrides: self.local_overrides(),
+            privacy_screen: self.privacy_screen(),
         }
     }
 

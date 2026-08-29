@@ -135,6 +135,7 @@ pub struct ConfigPatch {
     pub transfer_dir: Option<String>,
     pub allow_audio: Option<bool>,
     pub allow_annotations: Option<bool>,
+    pub allow_privacy_screen: Option<bool>,
 }
 
 impl ConfigPatch {
@@ -207,6 +208,9 @@ impl ConfigPatch {
         if let Some(v) = self.allow_annotations {
             cfg.allow_annotations = v;
         }
+        if let Some(v) = self.allow_privacy_screen {
+            cfg.allow_privacy_screen = v;
+        }
         Ok(cfg)
     }
 }
@@ -235,6 +239,7 @@ pub async fn update_config(
             "transfer_dir": new_config.transfer_dir,
             "allow_audio": new_config.allow_audio,
             "allow_annotations": new_config.allow_annotations,
+            "allow_privacy_screen": new_config.allow_privacy_screen,
         }),
     )
     .await?;

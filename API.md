@@ -186,7 +186,11 @@ interface DeviceDetail extends protocol.DeviceSummary {
 | DELETE | `/api/devices/:id` | → 204 (agent receives `goodbye`) | admin |
 | GET | `/api/devices/:id/sessions` | → `protocol.SessionSummary[]` (newest first, `?limit=`) | operator |
 
-`DeviceSummary.mode` always mirrors `config.mode`.
+`DeviceSummary.mode` always mirrors `config.mode`. `DeviceSummary.privacy_screen`
+(`protocol.PrivacyScreenSupport`: `unsupported` | `screen_only` | `standard`) is what the agent
+reported in its last `hello`; it is kept while the device is offline. Config gains
+`allow_privacy_screen: boolean` (default `false`, admin PATCH like every other flag, audited in
+`device.config`) — see [Privacy screen](#privacy-screen).
 
 ## Device groups & access control (RBAC)
 
@@ -261,10 +265,35 @@ from the trailer token when it is not enrolled yet. Audit: `branding.update`, `a
 
 The person at the device can restrict what operators may do from the agent app's Settings
 screen (`protocol.LocalOverrides`: require approval, block input / audio / clipboard / file
-transfer). Overrides can only **tighten** the console config; they are reported in `hello`
+transfer / privacy screen). Overrides can only **tighten** the console config; they are reported in `hello`
 and `heartbeat` and exposed read-only as `DeviceSummary.local_overrides` so admins see the
 effective policy (the device detail page shows them next to the console config, and the
 config form no longer has a banner toggle — the branded banner is always shown).
+
+## Privacy screen
+
+An operator can hide the device's own displays behind a branded notice while working
+(`config.allow_privacy_screen`). Every gate must pass, in this order:
+
+1. Console policy: `AgentConfig.allow_privacy_screen` (admin-only `PATCH /api/devices/:id/config`,
+   default `false`).
+2. Operator permission: the requester's effective `DevicePermission` on the device must be
+   `manage` (admins always; `connect` is not enough). The console decides this when it grants the
+   session and sends it to the agent as `session_request.privacy_screen_allowed: boolean`
+   (`false` for observers).
+3. The device user's local override (`LocalOverrides.allow_privacy_screen = false`) vetoes.
+4. Device support: `DeviceSummary.privacy_screen` must not be `unsupported`.
+
+The person at the device can always lift the screen; once they do, the operator cannot re-engage
+it for the rest of that session (`reason: locked`).
+
+Engaging / releasing happens **browser ↔ agent over the WebRTC control channel**, the console
+never sees these messages: `set_privacy_screen { enabled }` (browser → agent),
+`privacy_screen { active, reason, locked }` (agent → browser, current state) and
+`privacy_screen_denied { reason }` (agent → browser; `protocol.PrivacyScreenReason`:
+`policy` | `permission` | `unsupported` | `locked` | …). The agent reports every state change to the
+console as session event `privacy_screen { active, reason }` (timeline, pushed live) and the
+console audits each one as `session.privacy_screen { device_id, active, reason }`.
 
 ## macOS app bundle & code signing
 
@@ -310,15 +339,16 @@ timeline: `observer_joined` / `observer_left`. Ending the operator session ends 
 
 `GET /api/sessions/:id/events?limit=500` → `{ id: number, session_id, ts, event: protocol.SessionEvent }[]`
 (oldest first). Events (`{ type: "chat" | "transfer_started" | … }`) are reported by the agent (`AgentToConsole::SessionEvent`: chat lines,
-file transfers started/completed/failed, clipboard syncs, display/audio changes), stored by the
-console and pushed live to every UI as `ConsoleToUi::SessionEvent`. Transfers additionally
-create audit entries `session.transfer`.
+file transfers started/completed/failed, clipboard syncs, display/audio changes, privacy screen
+engaged/released), stored by the console and pushed live to every UI as `ConsoleToUi::SessionEvent`.
+Transfers, clipboard syncs and privacy screen changes additionally create audit entries
+`session.transfer`, `session.clipboard` and `session.privacy_screen`.
 
 ## Audit log (admin)
 
 `GET /api/audit?limit=100&before=<id>` → `{ id, ts, user_id?, user_name?, action, target?, details }[]`
 Actions: `login`, `login_failed`, `user.create|update|delete`, `token.create|revoke`, `device.update|config|delete`,
-`session.start|approve|deny|end`, `enroll`.
+`session.start|approve|deny|end|transfer|clipboard|privacy_screen`, `enroll`.
 
 ## WebSocket `/ws/ui` (cookie auth)
 

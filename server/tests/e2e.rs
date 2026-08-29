@@ -173,7 +173,35 @@ async fn expect_close(ws: &mut Ws) -> u16 {
     .expect("timeout waiting for close")
 }
 
+fn default_capabilities() -> AgentCapabilities {
+    AgentCapabilities {
+        codecs: vec![VideoCodec::H265, VideoCodec::H264],
+        displays: vec![DisplayInfo {
+            index: 0,
+            name: "Main".into(),
+            x: 0,
+            y: 0,
+            width: 1920,
+            height: 1080,
+            scale: 1.0,
+            primary: true,
+        }],
+        input: true,
+        clipboard: true,
+        privacy_screen: PrivacyScreenSupport::Unsupported,
+    }
+}
+
 async fn agent_hello(app: &TestApp, enrolled: &EnrollResponse, secret: &str) -> Ws {
+    agent_hello_with(app, enrolled, secret, default_capabilities()).await
+}
+
+async fn agent_hello_with(
+    app: &TestApp,
+    enrolled: &EnrollResponse,
+    secret: &str,
+    capabilities: AgentCapabilities,
+) -> Ws {
     let mut ws = connect_ws(&format!("{}/ws/agent", app.ws_base), None).await;
     send(
         &mut ws,
@@ -186,21 +214,7 @@ async fn agent_hello(app: &TestApp, enrolled: &EnrollResponse, secret: &str) -> 
             os: Os::Macos,
             arch: Arch::Aarch64,
             mode: DeviceMode::Unattended,
-            capabilities: AgentCapabilities {
-                codecs: vec![VideoCodec::H265, VideoCodec::H264],
-                displays: vec![DisplayInfo {
-                    index: 0,
-                    name: "Main".into(),
-                    x: 0,
-                    y: 0,
-                    width: 1920,
-                    height: 1080,
-                    scale: 1.0,
-                    primary: true,
-                }],
-                input: true,
-                clipboard: true,
-            },
+            capabilities,
             logged_in_user: Some("alice".into()),
             local_overrides: LocalOverrides::default(),
         },
@@ -1714,11 +1728,13 @@ async fn groups_and_rbac_enforcement() {
         matches!(m, ConsoleToAgent::SessionRequest { .. })
     })
     .await;
+    // `connect` alone never unlocks the privacy screen
     assert!(matches!(
         req,
         ConsoleToAgent::SessionRequest {
             role: SessionRole::Operator,
             shadow_of: None,
+            privacy_screen_allowed: false,
             ..
         }
     ));
@@ -2237,6 +2253,7 @@ async fn device_overrides_from_hello_and_heartbeat() {
                 displays: vec![],
                 input: true,
                 clipboard: true,
+                privacy_screen: PrivacyScreenSupport::Unsupported,
             },
             logged_in_user: None,
             local_overrides: LocalOverrides {
@@ -2460,4 +2477,299 @@ async fn signing_is_skipped_cleanly_when_not_configured() {
         .find(|d| d["platform"] == "macos-universal")
         .unwrap();
     assert_eq!(mac["signed"], false);
+}
+
+// ── privacy screen ────────────────────────────────────────────────────────────
+
+/// Offer a session from `ui` and return the `session_request` the agent receives.
+async fn offer_and_take_request(ui: &mut Ws, agent: &mut Ws, device_id: &str) -> ConsoleToAgent {
+    send(
+        ui,
+        &UiToConsole::SessionOffer {
+            device_id: device_id.to_string(),
+            offer: SessionDescription {
+                kind: "offer".into(),
+                sdp: "v=0 offer".into(),
+            },
+            shadow_of: None,
+        },
+    )
+    .await;
+    let _created: ConsoleToUi =
+        recv_until(ui, |m| matches!(m, ConsoleToUi::SessionCreated { .. })).await;
+    recv_until(agent, |m| {
+        matches!(m, ConsoleToAgent::SessionRequest { .. })
+    })
+    .await
+}
+
+#[tokio::test]
+async fn device_config_privacy_screen_roundtrips_and_audits() {
+    let app = spawn_app().await;
+    let c = client();
+    let _cookie = setup_admin(&app, &c).await;
+    let tok = create_token(&app, &c, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    // off by default
+    let detail: Value = get_json(
+        &c,
+        &format!("{}/api/devices/{}", app.base, enrolled.device_id),
+    )
+    .await;
+    assert_eq!(detail["config"]["allow_privacy_screen"], false);
+
+    let r = c
+        .patch(format!(
+            "{}/api/devices/{}/config",
+            app.base, enrolled.device_id
+        ))
+        .json(&json!({ "allow_privacy_screen": true }))
+        .send()
+        .await
+        .expect("patch");
+    assert_eq!(r.status(), 200, "{}", r.text().await.unwrap_or_default());
+    let detail: Value = get_json(
+        &c,
+        &format!("{}/api/devices/{}", app.base, enrolled.device_id),
+    )
+    .await;
+    assert_eq!(detail["config"]["allow_privacy_screen"], true);
+    // other flags untouched
+    assert_eq!(detail["config"]["allow_annotations"], true);
+
+    let audit: Vec<Value> = get_json(&c, &format!("{}/api/audit?limit=50", app.base)).await;
+    let row = audit
+        .iter()
+        .find(|a| a["action"] == "device.config")
+        .expect("device.config audit entry");
+    assert_eq!(row["target"], enrolled.device_id);
+    assert_eq!(row["details"]["allow_privacy_screen"], true);
+}
+
+#[tokio::test]
+async fn session_request_privacy_screen_allowed_requires_manage() {
+    let app = spawn_app().await;
+    let admin = client();
+    let admin_cookie = setup_admin(&app, &admin).await;
+
+    // operator with `connect` on the device's group
+    let r = admin
+        .post(format!("{}/api/users", app.base))
+        .json(&json!({ "email": "op@example.com", "name": "Olive", "password": "operator-pass-123", "role": "operator" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let op_id = r.json::<Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (_op, op_cookie) = login(&app, "op@example.com", "operator-pass-123").await;
+    let group = create_group(&app, &admin, "Support").await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{group}/devices", app.base),
+        json!({ "device_ids": [enrolled.device_id] }),
+    )
+    .await;
+    assert_eq!(r.status(), 204);
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{group}/grants", app.base),
+        json!({ "grants": [{ "user_id": op_id, "permission": "connect" }] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+
+    let mut agent = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+
+    // admin (`manage`) → allowed
+    let mut admin_ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&admin_cookie)).await;
+    send(&mut admin_ui, &UiToConsole::Subscribe).await;
+    let _snap: ConsoleToUi = recv(&mut admin_ui).await;
+    let req = offer_and_take_request(&mut admin_ui, &mut agent, &enrolled.device_id).await;
+    let ConsoleToAgent::SessionRequest {
+        session_id,
+        privacy_screen_allowed,
+        role,
+        ..
+    } = req
+    else {
+        unreachable!()
+    };
+    assert_eq!(role, SessionRole::Operator);
+    assert!(privacy_screen_allowed, "admin holds manage");
+
+    // free the device again
+    send(&mut admin_ui, &UiToConsole::SessionEnd { session_id }).await;
+    let _ended: ConsoleToUi = recv_until(&mut admin_ui, |m| {
+        matches!(m, ConsoleToUi::SessionUpdate { session } if session.state == SessionState::Ended)
+    })
+    .await;
+    let _end: ConsoleToAgent = recv_until(&mut agent, |m| {
+        matches!(m, ConsoleToAgent::SessionEnd { .. })
+    })
+    .await;
+
+    // operator with only `connect` → not allowed
+    let mut op_ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&op_cookie)).await;
+    send(&mut op_ui, &UiToConsole::Subscribe).await;
+    let _snap: ConsoleToUi = recv(&mut op_ui).await;
+    let req = offer_and_take_request(&mut op_ui, &mut agent, &enrolled.device_id).await;
+    assert!(matches!(
+        req,
+        ConsoleToAgent::SessionRequest {
+            privacy_screen_allowed: false,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn privacy_screen_events_are_stored_pushed_and_audited() {
+    use protocol::agent::SessionEvent;
+
+    let app = spawn_app().await;
+    let c = client();
+    let cookie = setup_admin(&app, &c).await;
+    let tok = create_token(&app, &c, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    let mut agent = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+    let mut ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&cookie)).await;
+    send(&mut ui, &UiToConsole::Subscribe).await;
+    let _snap: ConsoleToUi = recv(&mut ui).await;
+    let req = offer_and_take_request(&mut ui, &mut agent, &enrolled.device_id).await;
+    let ConsoleToAgent::SessionRequest { session_id, .. } = req else {
+        unreachable!()
+    };
+
+    // engaged by the operator, then lifted by the person at the device
+    let engaged = SessionEvent::PrivacyScreen {
+        active: true,
+        reason: PrivacyScreenReason::Operator,
+    };
+    send(
+        &mut agent,
+        &AgentToConsole::SessionEvent {
+            session_id: session_id.clone(),
+            event: engaged.clone(),
+            ts_ms: 1,
+        },
+    )
+    .await;
+    let pushed: ConsoleToUi =
+        recv_until(&mut ui, |m| matches!(m, ConsoleToUi::SessionEvent { .. })).await;
+    assert!(matches!(pushed, ConsoleToUi::SessionEvent { event, .. } if event == engaged));
+    send(
+        &mut agent,
+        &AgentToConsole::SessionEvent {
+            session_id: session_id.clone(),
+            event: SessionEvent::PrivacyScreen {
+                active: false,
+                reason: PrivacyScreenReason::DeviceUser,
+            },
+            ts_ms: 2,
+        },
+    )
+    .await;
+    let _pushed: ConsoleToUi =
+        recv_until(&mut ui, |m| matches!(m, ConsoleToUi::SessionEvent { .. })).await;
+
+    // timeline
+    let events: Vec<Value> = get_json(
+        &c,
+        &format!("{}/api/sessions/{session_id}/events", app.base),
+    )
+    .await;
+    assert_eq!(events.len(), 2, "{events:?}");
+    assert_eq!(events[0]["event"]["type"], "privacy_screen");
+    assert_eq!(events[0]["event"]["active"], true);
+    assert_eq!(events[0]["event"]["reason"], "operator");
+    assert_eq!(events[1]["event"]["type"], "privacy_screen");
+    assert_eq!(events[1]["event"]["active"], false);
+    assert_eq!(events[1]["event"]["reason"], "device_user");
+
+    // audit trail, one row per change
+    let audit: Vec<Value> = get_json(&c, &format!("{}/api/audit?limit=50", app.base)).await;
+    let mut rows: Vec<&Value> = audit
+        .iter()
+        .filter(|a| a["action"] == "session.privacy_screen")
+        .collect();
+    rows.sort_by_key(|a| a["id"].as_i64().unwrap());
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[0]["target"], session_id);
+    assert_eq!(rows[0]["user_name"], "Admin");
+    assert_eq!(rows[0]["details"]["device_id"], enrolled.device_id);
+    assert_eq!(rows[0]["details"]["active"], true);
+    assert_eq!(rows[0]["details"]["reason"], "operator");
+    assert_eq!(rows[1]["details"]["active"], false);
+    assert_eq!(rows[1]["details"]["reason"], "device_user");
+}
+
+#[tokio::test]
+async fn hello_reports_privacy_screen_support() {
+    let app = spawn_app().await;
+    let admin = client();
+    let cookie = setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    // before any hello: unsupported
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["privacy_screen"], "unsupported");
+
+    let mut ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&cookie)).await;
+    send(&mut ui, &UiToConsole::Subscribe).await;
+    let _snap: ConsoleToUi = recv(&mut ui).await;
+
+    let mut agent = agent_hello_with(
+        &app,
+        &enrolled,
+        &enrolled.device_secret,
+        AgentCapabilities {
+            privacy_screen: PrivacyScreenSupport::ScreenOnly,
+            ..default_capabilities()
+        },
+    )
+    .await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+
+    let update: ConsoleToUi = recv_until(
+        &mut ui,
+        |m: &ConsoleToUi| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.online),
+    )
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = update else {
+        unreachable!()
+    };
+    assert_eq!(device.privacy_screen, PrivacyScreenSupport::ScreenOnly);
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["privacy_screen"], "screen_only");
+    let detail: Value = get_json(
+        &admin,
+        &format!("{}/api/devices/{}", app.base, enrolled.device_id),
+    )
+    .await;
+    assert_eq!(detail["privacy_screen"], "screen_only");
+
+    // the last reported value survives the agent going offline
+    drop(agent);
+    let offline: ConsoleToUi = recv_until(
+        &mut ui,
+        |m: &ConsoleToUi| matches!(m, ConsoleToUi::DeviceUpdate { device } if !device.online),
+    )
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = offline else {
+        unreachable!()
+    };
+    assert_eq!(device.privacy_screen, PrivacyScreenSupport::ScreenOnly);
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["online"], false);
+    assert_eq!(devices[0]["privacy_screen"], "screen_only");
 }

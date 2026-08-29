@@ -1,4 +1,6 @@
 import { reduceControlPaused } from '@/lib/controlPause'
+import { initialPrivacyScreen, reducePrivacyScreen, type PrivacyScreenState } from '@/lib/privacyScreen'
+import { toast } from '@/lib/toast'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
 import { applyChatLine, mergeChatSeed, type ChatLine } from '@/features/chat/transcript'
@@ -76,6 +78,8 @@ export interface ViewerState {
   controlPaused: boolean
   /** the agent refused annotations (policy or device-side setting) */
   annotationsDisabled: boolean
+  /** the device's own displays are hidden behind a notice (follows the agent's echo, not the button) */
+  privacyScreen: PrivacyScreenState
   /** the agent opened the unreliable pointer-move channel */
   fastInput: FastChannelState
 }
@@ -105,6 +109,7 @@ const initial: ViewerState = {
   observers: [],
   controlPaused: false,
   annotationsDisabled: false,
+  privacyScreen: initialPrivacyScreen,
   fastInput: 'closed',
 }
 
@@ -192,11 +197,17 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     statsTimer.current = null
   }
 
+  /** Mirror of `state.privacyScreen` for the control-channel reducer (side effects stay out of setState). */
+  const privacyScreenRef = useRef<PrivacyScreenState>(initialPrivacyScreen)
+
   const teardown = useCallback(() => {
     clearTimers()
     unsubscribe.current?.()
     unsubscribe.current = null
     transferManager.detach()
+    // The privacy screen never outlives the session (the agent drops it on disconnect).
+    privacyScreenRef.current = initialPrivacyScreen
+    patch({ privacyScreen: initialPrivacyScreen })
     inputRef.current?.close()
     fastInputRef.current?.close()
     controlRef.current?.close()
@@ -211,7 +222,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     pcRef.current = null
     remoteSet.current = false
     pendingCandidates.current = []
-  }, [cursorStore])
+  }, [cursorStore, patch])
 
   const fail = useCallback(
     (code: string, message?: string) => {
@@ -342,6 +353,14 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
           controlPausedRef.current = next.controlPaused
           if (next.controlPaused) sendInput({ t: 'rel' })
           patch({ controlPaused: next.controlPaused })
+          break
+        }
+        case 'privacy_screen':
+        case 'privacy_screen_denied': {
+          const next = reducePrivacyScreen(privacyScreenRef.current, msg)
+          privacyScreenRef.current = next.state
+          patch({ privacyScreen: next.state })
+          if (next.notice) toast[next.notice.kind](next.notice.text)
           break
         }
         default: {
@@ -662,6 +681,12 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     [sendControl, patch],
   )
 
+  /**
+   * Ask the agent to hide / show the device's displays. No optimistic state: the button follows
+   * the agent's `privacy_screen` echo, and a refusal arrives as `privacy_screen_denied`.
+   */
+  const setPrivacyScreen = useCallback((enabled: boolean) => sendControl({ t: 'set_privacy_screen', enabled }), [sendControl])
+
   const sendChat = useCallback(
     (text: string) => {
       const trimmed = text.trim()
@@ -712,7 +737,7 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
     return { bytes, framesDecoded }
   }, [])
 
-  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream }
+  return { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setPrivacyScreen, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream }
 }
 
 class SessionError extends Error {

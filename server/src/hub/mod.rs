@@ -506,11 +506,15 @@ impl Hub {
             Err(err) => return Err(StartError::Internal(format!("database: {err}"))),
         };
         // RBAC: the connection's current access map must grant `connect`.
-        match self.ui_access(ui_conn_id) {
-            Some(access) if access.can_connect(device_id) => {}
+        let access = match self.ui_access(ui_conn_id) {
+            Some(access) if access.can_connect(device_id) => access,
             Some(access) if access.can_see(device_id) => return Err(StartError::Forbidden),
             _ => return Err(StartError::NotFound),
-        }
+        };
+        let role = SessionRole::Operator;
+        // The privacy screen is reserved for operators holding `manage` on the device (admins
+        // always do); observers never get it. Policy and device support are the agent's call.
+        let privacy_screen_allowed = role == SessionRole::Operator && access.can_manage(device_id);
         let config = device.config();
         let help_me = config.mode == protocol::common::DeviceMode::HelpMe;
         let initial = if help_me {
@@ -577,9 +581,10 @@ impl Hub {
                 operator,
                 offer,
                 ice_servers,
-                role: SessionRole::Operator,
+                role,
                 shadow_of: None,
                 notify_operator: true,
+                privacy_screen_allowed,
             },
         );
         if !delivered {
@@ -688,7 +693,8 @@ impl Hub {
 
     // ── session events ───────────────────────────────────────────────────────
 
-    /// Store an agent-reported event, push it to every UI and audit transfers/clipboard.
+    /// Store an agent-reported event, push it to every UI and audit transfers/clipboard/privacy
+    /// screen changes.
     ///
     /// Returns `Ok(None)` when the event was dropped (rate limit / cap) and `Err` with a
     /// short reason when it was rejected (unknown session, wrong device, ended too long ago).
@@ -795,6 +801,16 @@ impl Hub {
                     "session.clipboard",
                     Some(session_id),
                     json!({ "device_id": device_id, "direction": direction, "summary": summary }),
+                )
+                .await;
+            }
+            SessionEvent::PrivacyScreen { active, reason } => {
+                db::audit::record_lossy(
+                    &self.db,
+                    actor,
+                    "session.privacy_screen",
+                    Some(session_id),
+                    json!({ "device_id": device_id, "active": active, "reason": reason }),
                 )
                 .await;
             }

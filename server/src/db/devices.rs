@@ -2,7 +2,7 @@
 
 use super::models::DeviceRow;
 use super::{enum_str, now, Db};
-use protocol::common::{Arch, DisplayInfo, Os, VideoCodec};
+use protocol::common::{Arch, DisplayInfo, Os, PrivacyScreenSupport, VideoCodec};
 use protocol::config::{AgentConfig, LocalOverrides};
 use sqlx::Result;
 
@@ -109,6 +109,7 @@ pub struct Presence<'a> {
     pub logged_in_user: Option<&'a str>,
     pub ip: &'a str,
     pub local_overrides: &'a LocalOverrides,
+    pub privacy_screen: PrivacyScreenSupport,
 }
 
 /// Called on `hello`: refresh everything the agent reports and mark it online.
@@ -116,7 +117,8 @@ pub async fn mark_online(db: &Db, id: &str, p: Presence<'_>) -> Result<()> {
     sqlx::query(
         "UPDATE devices SET
             hostname = ?, os = ?, arch = ?, agent_version = ?, codecs = ?, displays = ?,
-            logged_in_user = ?, last_ip = ?, online = 1, last_seen_at = ?, local_overrides = ?
+            logged_in_user = ?, last_ip = ?, online = 1, last_seen_at = ?, local_overrides = ?,
+            privacy_screen = ?
          WHERE id = ?",
     )
     .bind(p.hostname)
@@ -129,6 +131,7 @@ pub async fn mark_online(db: &Db, id: &str, p: Presence<'_>) -> Result<()> {
     .bind(p.ip)
     .bind(now())
     .bind(json(p.local_overrides))
+    .bind(enum_str(&p.privacy_screen))
     .bind(id)
     .execute(db)
     .await?;

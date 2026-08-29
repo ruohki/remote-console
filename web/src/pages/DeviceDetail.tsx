@@ -466,6 +466,12 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
             <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer" />
             <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow audio" />
             <Toggle checked={cfg.allow_annotations ?? true} onChange={(v) => set('allow_annotations', v)} label="Allow on-screen annotations" tip="Works even while input control is off" />
+            <Toggle
+              checked={cfg.allow_privacy_screen ?? false}
+              onChange={(v) => set('allow_privacy_screen', v)}
+              label="Allow privacy screen"
+              tip="Operators with manage permission can hide the device's displays during a session. The person at the device can always lift it."
+            />
           </div>
           {cfg.allow_file_transfer && (
             <Field label="Upload folder">

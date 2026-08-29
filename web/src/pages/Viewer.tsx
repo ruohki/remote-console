@@ -11,6 +11,7 @@ import {
   ClipboardCopy,
   ClipboardPaste,
   Eye,
+  EyeOff,
   FolderOpen,
   Hand,
   Keyboard,
@@ -39,6 +40,7 @@ import { Button, Select, cx } from '@/components/ui'
 import { CODEC_LABEL, END_REASON_LABEL, bytes, kbps } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { effectiveControl } from '@/lib/controlPause'
+import { privacyScreenDisabledReason } from '@/lib/privacyScreen'
 import type { ControlMessage, DisplayInfo, InputEvent } from '@/protocol'
 import type { DeviceDetail } from '@/lib/types'
 import { FileManager, readDestDir } from '@/features/files/FileManager'
@@ -74,6 +76,8 @@ export function Viewer() {
   const allowAudio = cfg?.allow_audio ?? true
   const allowClipboard = cfg?.allow_clipboard ?? true
   const allowAnnotations = (cfg?.allow_annotations ?? true)
+  // Off by default: it hides the operator's actions from the person at the device.
+  const allowPrivacyScreen = cfg?.allow_privacy_screen ?? false
 
   const deviceName = device?.name ?? 'Device'
   const knownDisplays = useMemo(() => device?.displays ?? [], [device?.displays])
@@ -83,7 +87,7 @@ export function Viewer() {
   const [chatBubble, setChatBubble] = useState<{ id: number; text: string } | null>(null)
   const chatBubbleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [chatSound, setChatSound] = useState(chatSoundEnabled)
-  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream } = useViewerSession(deviceId, {
+  const { state, start, end, sendInput, sendControl, selectDisplay, setActiveDisplays, setAudio, setPrivacyScreen, setViewport, sendChat, setChatOpen, seedChat, clearRichClipboard, cursorStore, readRawStats, debugPushDeviceChat, debugPushControl, debugFakeStream } = useViewerSession(deviceId, {
     knownDisplays,
     wantAudio: allowAudio,
     onChatNotify: (line: ChatLine, drawerOpen: boolean) => {
@@ -146,6 +150,16 @@ export function Viewer() {
   // While annotating, pointer events draw instead of controlling; the keyboard is not forwarded either.
   const controlling = control.controlling && !annotating
   const annotateAvailable = connected && allowAnnotations && !annotateDisabledByDevice
+
+  /* ───── privacy screen: gated by device support, device config and manage permission ───── */
+  const privacyActive = state.privacyScreen.active
+  const privacyDisabledReason = privacyScreenDisabledReason({
+    support: device?.privacy_screen ?? 'unsupported',
+    allowed: allowPrivacyScreen,
+    permission: device?.permission,
+    locked: state.privacyScreen.locked,
+  })
+  const privacyAvailable = connected && privacyDisabledReason === null
 
   /* ───── annotations: agent refusal, session lifecycle, keyboard ───── */
   useEffect(() => {
@@ -546,6 +560,12 @@ export function Viewer() {
           <span className="hidden sm:inline">{deviceName}</span>
         </button>
         <PhasePill state={state} />
+        {connected && privacyActive && (
+          <span className="flex items-center gap-1.5 rounded-md border border-[#6cb6ff]/30 bg-[#6cb6ff]/10 px-2 py-0.5 text-[11px] whitespace-nowrap text-[#6cb6ff]" role="status" data-testid="privacy-screen-chip">
+            <EyeOff size={12} />
+            Screen hidden at device
+          </span>
+        )}
         <div className="ml-1 hidden items-center gap-1 md:flex">
           {displays.length > 1 && (
             <div className="flex items-center gap-0.5 rounded-md border border-white/10 px-1 py-0.5" title="Displays">
@@ -634,6 +654,16 @@ export function Viewer() {
               />
             )}
           </span>
+          <HudButton
+            active={privacyActive}
+            disabled={!privacyAvailable}
+            onClick={() => {
+              if (privacyAvailable) setPrivacyScreen(!privacyActive)
+            }}
+            title={!connected ? 'Privacy screen' : (privacyDisabledReason ?? (privacyActive ? 'Show screen at device' : 'Privacy screen'))}
+          >
+            <EyeOff size={14} />
+          </HudButton>
           {device?.os === 'windows' && (
             <HudButton onClick={() => sendControl({ t: 'secure_attention' })} disabled={!connected} title="Ctrl+Alt+Del">
               <CadIcon />
