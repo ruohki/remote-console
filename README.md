@@ -28,7 +28,7 @@ Configuration is via environment variables (see `.env.example`):
 | `AGENT_BINARY_DIR` | – | directory of base agent binaries to bake branding into (else fetched & cached) |
 | `MACOS_SIGN_IDENTITY` | – | `Developer ID Application: Name (TEAMID)`; signs baked `.app` bundles with `codesign` (macOS host) |
 | `MACOS_NOTARY_PROFILE` | – | `notarytool` keychain profile (`xcrun notarytool store-credentials <profile>`); notarizes + staples bundles |
-| `MACOS_SIGN_P12` / `MACOS_SIGN_P12_PASSWORD` | – | Developer ID certificate for `rcodesign` on non-macOS hosts (Docker) |
+| `MACOS_SIGN_P12` / `MACOS_SIGN_P12_PASSWORD` (or `MACOS_SIGN_P12_PASSWORD_FILE`) | – | Developer ID certificate for `rcodesign` on non-macOS hosts (Docker); see [Signing from Linux](#signing-macos-agents-from-linux--docker) |
 | `APPLE_API_KEY_JSON` | – | App Store Connect API key file for `rcodesign notary-submit` |
 | `WINDOWS_SIGN_PFX` / `WINDOWS_SIGN_PFX_PASSWORD` | – | reserved for Authenticode signing (not applied yet, see docs) |
 | `SESSION_TTL_HOURS` | `168` | absolute login session lifetime (sessions also expire after 12 h idle) |
@@ -97,3 +97,28 @@ web/              Vite + React + TypeScript + Tailwind SPA
 ## License
 
 AGPL-3.0-only.
+
+
+## Signing macOS agents from Linux / Docker
+
+The Docker image ships [`rcodesign`](https://github.com/indygreg/apple-platform-rs) (pinned,
+checksum-verified), so baked `.app` bundles are signed and notarized without a Mac. One-time
+preparation, on a Mac with the Developer ID identity:
+
+1. **Certificate** — Keychain Access → My Certificates → right-click *Developer ID Application:
+   … (TEAMID)* → Export → `.p12` with a password (the private key must be included).
+2. **API key** — App Store Connect → Users and Access → Integrations → Team Keys → generate a
+   key with the *Developer* role; download `AuthKey_<KEYID>.p8` once. Encode it:
+   `rcodesign encode-app-store-connect-api-key -o app-store-connect.json <ISSUER-ID> <KEYID> AuthKey_<KEYID>.p8`
+3. Mount both files into the container and set
+
+   ```
+   MACOS_SIGN_P12=/secrets/developer-id.p12
+   MACOS_SIGN_P12_PASSWORD_FILE=/secrets/developer-id.password   # or MACOS_SIGN_P12_PASSWORD
+   APPLE_API_KEY_JSON=/secrets/app-store-connect.json
+   ```
+
+`MACOS_SIGN_IDENTITY` / `MACOS_NOTARY_PROFILE` are the macOS-host equivalents and are ignored on
+Linux. The container needs outbound HTTPS to `appstoreconnect.apple.com` (notary service) and
+`timestamp.apple.com` (secure timestamps). Notarization takes 1–5 minutes; the bakery caches
+the result per platform and branding, so only the first download waits.

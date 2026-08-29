@@ -24,6 +24,28 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo build --release --locked -p remote-console \
     && cp target/release/remote-console /usr/local/bin/remote-console
 
+# ── rcodesign (signs + notarizes baked macOS bundles without a Mac) ──────────────
+# Pinned release of https://github.com/indygreg/apple-platform-rs, checksum-verified.
+FROM debian:bookworm-slim AS rcodesign
+ARG TARGETARCH
+ARG RCODESIGN_VERSION=0.29.0
+ARG RCODESIGN_SHA256_AMD64=dbe85cedd8ee4217b64e9a0e4c2aef92ab8bcaaa41f20bde99781ff02e600002
+ARG RCODESIGN_SHA256_ARM64=4af92c87ddf52f5f2d1258a3b4e56c7dcb8f1b2468df744976c5f139e031961f
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eu; \
+    case "$TARGETARCH" in \
+      amd64) arch=x86_64; sum="$RCODESIGN_SHA256_AMD64" ;; \
+      arm64) arch=aarch64; sum="$RCODESIGN_SHA256_ARM64" ;; \
+      *) echo "unsupported TARGETARCH=$TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    name="apple-codesign-${RCODESIGN_VERSION}-${arch}-unknown-linux-musl"; \
+    curl -fsSL -o /tmp/rc.tgz "https://github.com/indygreg/apple-platform-rs/releases/download/apple-codesign%2F${RCODESIGN_VERSION}/${name}.tar.gz"; \
+    echo "${sum}  /tmp/rc.tgz" | sha256sum -c -; \
+    tar -xzf /tmp/rc.tgz -C /tmp; \
+    install -m 0755 "/tmp/${name}/rcodesign" /usr/local/bin/rcodesign; \
+    /usr/local/bin/rcodesign --version
+
 # ── runtime ────────────────────────────────────────────────────────────────────
 FROM debian:bookworm-slim
 RUN apt-get update \
@@ -32,6 +54,7 @@ RUN apt-get update \
     && useradd --system --uid 10001 --home /data console \
     && mkdir -p /data && chown console:console /data
 COPY --from=server /usr/local/bin/remote-console /usr/local/bin/remote-console
+COPY --from=rcodesign /usr/local/bin/rcodesign /usr/local/bin/rcodesign
 USER console
 WORKDIR /data
 VOLUME ["/data"]

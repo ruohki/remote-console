@@ -23,6 +23,8 @@ pub struct SignConfig {
     pub notary_profile: Option<String>,
     pub p12: Option<PathBuf>,
     pub p12_password: Option<String>,
+    /// File holding the `.p12` password (Docker/Kubernetes secrets); wins over the env value.
+    pub p12_password_file: Option<PathBuf>,
     pub api_key_json: Option<PathBuf>,
     pub windows_pfx: Option<PathBuf>,
     pub windows_pfx_password: Option<String>,
@@ -56,6 +58,7 @@ impl SignConfig {
             notary_profile: env_opt("MACOS_NOTARY_PROFILE"),
             p12: env_opt("MACOS_SIGN_P12").map(PathBuf::from),
             p12_password: env_opt("MACOS_SIGN_P12_PASSWORD"),
+            p12_password_file: env_opt("MACOS_SIGN_P12_PASSWORD_FILE").map(PathBuf::from),
             api_key_json: env_opt("APPLE_API_KEY_JSON").map(PathBuf::from),
             windows_pfx: env_opt("WINDOWS_SIGN_PFX").map(PathBuf::from),
             windows_pfx_password: env_opt("WINDOWS_SIGN_PFX_PASSWORD"),
@@ -67,7 +70,10 @@ impl SignConfig {
         if self.macos_identity.is_some() && tool_on_path("codesign") {
             return Some(MacBackend::Codesign);
         }
-        if self.p12.is_some() && self.p12_password.is_some() && tool_on_path("rcodesign") {
+        if self.p12.is_some()
+            && (self.p12_password.is_some() || self.p12_password_file.is_some())
+            && tool_on_path("rcodesign")
+        {
             return Some(MacBackend::Rcodesign);
         }
         None
@@ -89,6 +95,26 @@ impl SignConfig {
     /// Windows Authenticode signing is configured (see [`sign_windows_exe`] for the caveat).
     pub fn windows_configured(&self) -> bool {
         self.windows_pfx.is_some() && tool_on_path("osslsigncode")
+    }
+}
+
+/// Write `secret` to `path` readable by the owner only.
+fn write_secret(path: &Path, secret: &str) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        f.write_all(secret.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, secret)
     }
 }
 
@@ -190,21 +216,33 @@ fn sign_with(
         }
         MacBackend::Rcodesign => {
             let p12 = cfg.p12.as_deref().unwrap_or(Path::new(""));
-            let pw = cfg.p12_password.as_deref().unwrap_or_default();
-            run(
+            // The password goes through a file so it never shows up in the process list.
+            let password_file = match cfg.p12_password_file.as_deref() {
+                Some(f) => f.to_path_buf(),
+                None => {
+                    let f = work_dir.join("p12-password");
+                    write_secret(&f, cfg.p12_password.as_deref().unwrap_or_default())
+                        .context("writing p12 password file")?;
+                    f
+                }
+            };
+            let result = run(
                 "rcodesign",
                 &[
                     "sign",
                     "--p12-file",
                     &p12.to_string_lossy(),
-                    "--p12-password",
-                    pw,
+                    "--p12-password-file",
+                    &password_file.to_string_lossy(),
                     "--code-signature-flags",
                     "runtime",
                     &app_dir.to_string_lossy(),
                 ],
-            )
-            .context("rcodesign sign")?;
+            );
+            if cfg.p12_password_file.is_none() {
+                let _ = std::fs::remove_file(&password_file);
+            }
+            result.context("rcodesign sign")?;
             outcome.signed = true;
             if let Some(key) = cfg.api_key_json.as_deref() {
                 run(
@@ -300,6 +338,19 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.macos_backend(), None);
+    }
+
+    #[test]
+    fn secret_files_are_owner_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("pw");
+        write_secret(&f, "hunter2").unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "hunter2");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&f).unwrap().permissions().mode() & 0o777, 0o600);
+        }
     }
 
     #[test]
