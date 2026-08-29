@@ -9,7 +9,41 @@ permissions:
   packages: write
 
 jobs:
+  # ── gate: never publish an image from a tag that does not pass its own tests ────────
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: remote-console
+      - uses: actions/checkout@v4
+        with:
+          repository: ruohki/remote-agent
+          path: remote-agent
+          token: ${{ secrets.AGENT_REPO_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: remote-console
+      - name: clippy
+        working-directory: remote-console
+        run: cargo clippy --all-targets -- -D warnings
+      - name: server tests
+        working-directory: remote-console
+        run: cargo test --all-targets
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: remote-console/web/package-lock.json
+      - name: web tests
+        working-directory: remote-console/web
+        run: npm ci && npm test
+
   image:
+    needs: test
     name: build & push ghcr.io/ruohki/remote-console
     runs-on: ubuntu-latest
     steps:

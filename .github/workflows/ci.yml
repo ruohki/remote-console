@@ -40,6 +40,16 @@ jobs:
         working-directory: remote-console
         run: cargo test --all-targets
 
+      # The web app consumes committed copies of the agent's protocol bindings; a protocol
+      # change that was never synced must fail here, not at runtime.
+      - name: Protocol bindings are in sync
+        working-directory: remote-console/web
+        env:
+          AGENT_REPO: ${{ github.workspace }}/remote-agent
+        run: |
+          sh scripts/sync-protocol.sh
+          git -C .. diff --exit-code -- web/src/protocol
+
   web:
     name: web (vite)
     runs-on: ubuntu-latest
@@ -58,6 +68,10 @@ jobs:
         if: steps.detect.outputs.present == 'true'
         working-directory: web
         run: npm ci
+      - name: Test
+        if: steps.detect.outputs.present == 'true'
+        working-directory: web
+        run: npm test
       - name: Build
         if: steps.detect.outputs.present == 'true'
         working-directory: web
