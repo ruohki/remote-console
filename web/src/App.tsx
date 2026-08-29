@@ -7,6 +7,8 @@ import { Toaster } from '@/lib/toast'
 import { ApiError } from '@/lib/api'
 import { Login } from '@/pages/Login'
 import { Setup } from '@/pages/Setup'
+import { ForgotPassword } from '@/pages/ForgotPassword'
+import { ResetPassword } from '@/pages/ResetPassword'
 import { Devices } from '@/pages/Devices'
 import { DeviceDetail } from '@/pages/DeviceDetail'
 import { Viewer } from '@/pages/Viewer'
@@ -68,6 +70,8 @@ export default function App() {
             <Routes>
               <Route path="/login" element={<Login />} />
               <Route path="/setup" element={<Setup />} />
+              <Route path="/forgot-password" element={<ForgotPassword />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
               <Route element={<RequireAuth />}>
                 {/* forced second-factor enrollment (no chrome, cannot be left) */}
                 <Route path="/security/setup" element={<SecuritySetup />} />
@@ -83,6 +87,7 @@ export default function App() {
                   <Route path="/settings/branding" element={<Settings tab="branding" />} />
                   <Route path="/settings/agent" element={<Settings tab="agent" />} />
                   <Route path="/settings/auth" element={<Settings tab="auth" />} />
+                  <Route path="/settings/email" element={<Settings tab="email" />} />
                   <Route path="/security" element={<SecurityPage />} />
                   <Route element={<RequireAuth admin />}>
                     <Route path="/groups" element={<GroupsPage />} />

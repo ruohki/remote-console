@@ -1,24 +1,26 @@
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 import { useMutation } from '@tanstack/react-query'
-import { Check, Copy, Download, Fingerprint, Smartphone } from 'lucide-react'
+import { Check, Copy, Download, Fingerprint, Mail, Smartphone } from 'lucide-react'
 import { useAuth } from '@/store/auth'
-import { AuthShell } from './Login'
+import { AuthShell, useAuthProviders } from './Login'
 import { Button, Field, Input } from '@/components/ui'
-import { api, errorMessage } from '@/lib/api'
+import { api, ApiError, errorMessage } from '@/lib/api'
 import type { Passkey, TotpSetup } from '@/lib/types'
+import { maskEmail } from '@/lib/authFlow'
 import { toast } from '@/lib/toast'
 import { createCredential, friendlyWebAuthnError, platformAuthenticatorAvailable, webauthnSupported, type JsonCreationOptions } from '@/lib/webauthn'
 
-type Step = 'choose' | 'totp' | 'totp_codes' | 'passkey' | 'done'
+type Step = 'choose' | 'totp' | 'email' | 'codes' | 'passkey' | 'done'
 
 /**
  * Forced second-factor enrollment (`two_factor_required`): the router keeps users here until
- * they enabled TOTP or registered a passkey / security key.
+ * they enabled TOTP, email codes, or registered a passkey / security key.
  */
 export function SecuritySetup() {
   const { user, refresh, logout } = useAuth()
   const navigate = useNavigate()
+  const providers = useAuthProviders()
   const [step, setStep] = useState<Step>('choose')
   const [platformAvail, setPlatformAvail] = useState(false)
   useEffect(() => {
@@ -66,6 +68,15 @@ export function SecuritySetup() {
             onClick={() => setStep('passkey')}
             testId="choose-passkey"
           />
+          {providers.data?.email_2fa && (
+            <ChoiceButton
+              icon={<Mail size={18} />}
+              title="Email codes"
+              detail={`A 6-digit code sent to ${user?.email ? maskEmail(user.email) : 'your email'}.`}
+              onClick={() => setStep('email')}
+              testId="choose-email"
+            />
+          )}
           <button
             type="button"
             className="mt-2 self-start text-[12.5px] text-ink-muted hover:underline"
@@ -78,8 +89,22 @@ export function SecuritySetup() {
           </button>
         </div>
       )}
-      {step === 'totp' && <TotpEnroll onDone={() => setStep('totp_codes')} onBack={() => setStep('choose')} onCodes={(c) => setCodes(c)} />}
-      {step === 'totp_codes' && <RecoveryCodes codes={codesRef.current} onDone={finish} />}
+      {step === 'totp' && <TotpEnroll onDone={() => setStep('codes')} onBack={() => setStep('choose')} onCodes={(c) => setCodes(c)} />}
+      {step === 'email' && (
+        <EmailEnroll
+          onBack={() => setStep('choose')}
+          onDone={(codes) => {
+            // Recovery codes come only with the first second factor; otherwise enrollment is complete.
+            if (codes) {
+              setCodes(codes)
+              setStep('codes')
+            } else {
+              void finish()
+            }
+          }}
+        />
+      )}
+      {step === 'codes' && <RecoveryCodes codes={codesRef.current} onDone={finish} />}
       {step === 'passkey' && <PasskeyEnroll onDone={finish} onBack={() => setStep('choose')} />}
       {step === 'done' && <div className="text-ink-muted">Redirecting…</div>}
     </AuthShell>
@@ -206,6 +231,114 @@ export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; on
   )
 }
 
+/**
+ * Email codes: sends a code to the account's address, confirms it. Reused by the account security
+ * page. `onDone` gets the recovery codes when this is the account's first second factor, else null.
+ */
+export function EmailEnroll({ onDone, onBack }: { onDone: (recoveryCodes: string[] | null) => void; onBack?: () => void }) {
+  const [sentTo, setSentTo] = useState<string | null>(null)
+  const [sending, setSending] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [code, setCode] = useState('')
+  const started = useRef(false)
+
+  const send = useCallback(async () => {
+    try {
+      const r = await api.post<{ sent_to: string }>('/api/auth/2fa/email/start', {})
+      setSentTo(r.sent_to)
+      setError(null)
+    } catch (e) {
+      setError(
+        e instanceof ApiError && e.code === 'email_not_configured'
+          ? 'Email is not configured on this console.'
+          : e instanceof ApiError && e.status === 429
+            ? 'Too many codes were sent. Wait before requesting another one.'
+            : errorMessage(e),
+      )
+    } finally {
+      setSending(false)
+    }
+  }, [])
+
+  // One code on mount (the ref keeps strict-mode's double effect from sending two).
+  useEffect(() => {
+    if (started.current) return
+    started.current = true
+    void send()
+  }, [send])
+
+  const enable = useMutation({
+    mutationFn: () => api.post<{ recovery_codes: string[] | null }>('/api/auth/2fa/email/enable', { code: code.replace(/\s+/g, '') }),
+    onSuccess: (r) => onDone(r.recovery_codes ?? null),
+    onError: (e) => {
+      setError(
+        e instanceof ApiError && e.status === 429
+          ? 'Too many attempts. Request a new code.'
+          : e instanceof ApiError && e.code === 'invalid_code'
+            ? 'That code is not valid. Check the latest email.'
+            : errorMessage(e),
+      )
+      setCode('')
+    },
+  })
+
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    setError(null)
+    enable.mutate()
+  }
+
+  return (
+    <form onSubmit={submit} className="flex flex-col gap-3">
+      <p className="text-[12.5px] text-ink-muted" data-testid="email-enroll-status">
+        {sentTo ? `We sent a code to ${sentTo}. Enter it to confirm.` : error ? 'No code was sent.' : 'Sending a code to your email…'}
+      </p>
+      <Field label="Code from the email">
+        <Input
+          required
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          pattern="[0-9]{6}"
+          maxLength={6}
+          placeholder="123456"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          className="mono tracking-widest"
+          data-testid="email-code"
+          disabled={!sentTo}
+        />
+      </Field>
+      {error && (
+        <div role="alert" className="rounded-md bg-danger-soft px-3 py-2 text-[12.5px] text-danger">
+          {error}
+        </div>
+      )}
+      <div className="flex gap-2">
+        {onBack && (
+          <Button type="button" onClick={onBack}>
+            Back
+          </Button>
+        )}
+        <Button
+          type="button"
+          variant="ghost"
+          loading={sending}
+          onClick={() => {
+            setSending(true)
+            void send()
+          }}
+          data-testid="email-enroll-resend"
+        >
+          Resend code
+        </Button>
+        <Button type="submit" variant="primary" loading={enable.isPending} disabled={!sentTo} className="ml-auto">
+          Turn on
+        </Button>
+      </div>
+    </form>
+  )
+}
+
 /** One-time display of recovery codes with a confirmation checkbox. */
 export function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void }) {
   const [saved, setSaved] = useState(false)
@@ -221,7 +354,7 @@ export function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () =
   return (
     <div className="flex flex-col gap-3">
       <p className="text-[12.5px] text-ink-muted">
-        Save these recovery codes somewhere safe. Each works once if you lose access to your authenticator. <b>They are shown only now.</b>
+        Save these recovery codes somewhere safe. Each works once if you lose access to your second factor. <b>They are shown only now.</b>
       </p>
       <div className="mono grid grid-cols-2 gap-x-4 gap-y-1 rounded-lg border border-line bg-raised p-3 text-[13px]" data-testid="recovery-codes">
         {codes.map((c) => (

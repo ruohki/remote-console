@@ -1,5 +1,5 @@
-import { type FormEvent, useEffect, useMemo, useReducer, useState } from 'react'
-import { Navigate, useLocation, useNavigate } from 'react-router'
+import { type FormEvent, useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
+import { Link, Navigate, useLocation, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Building2, Fingerprint, KeyRound, LogIn, ShieldCheck } from 'lucide-react'
 import { envelopeUser, useAuth } from '@/store/auth'
@@ -86,6 +86,33 @@ export function Login() {
     return () => clearInterval(t)
   }, [state.lockedForS])
 
+  // Email codes: one goes out as soon as the email mode is entered (automatically when it is the
+  // only method); "Resend code" sends another one once the cooldown passed.
+  const [resending, setResending] = useState(false)
+  const emailSentFor = useRef<string | null>(null)
+  const sendEmailCode = useCallback(async (challengeId: string) => {
+    try {
+      const r = await api.post<{ sent_to: string; expires_in_s: number }>('/api/auth/2fa/email/send', { challenge_id: challengeId })
+      dispatch({ type: 'email_sent', sentTo: r.sent_to })
+    } catch (err) {
+      dispatch({ ...failedEvent(err), type: 'email_send_failed' })
+    } finally {
+      setResending(false)
+    }
+  }, [])
+  useEffect(() => {
+    if (state.step !== 'second_factor' || state.mode !== 'email' || !state.challengeId) return
+    if (emailSentFor.current === state.challengeId) return
+    emailSentFor.current = state.challengeId
+    void sendEmailCode(state.challengeId)
+  }, [state.step, state.mode, state.challengeId, sendEmailCode])
+  const resendCountdown = (state.emailResendInS ?? 0) > 0
+  useEffect(() => {
+    if (!resendCountdown) return
+    const t = setInterval(() => dispatch({ type: 'tick' }), 1000)
+    return () => clearInterval(t)
+  }, [resendCountdown])
+
   if (needsSetup) return <Navigate to="/setup" replace />
   if (user) return <Navigate to={nextRouteAfterLogin(user, from)} replace />
 
@@ -121,7 +148,11 @@ export function Login() {
     setBusy(true)
     dispatch({ type: 'submitted' })
     try {
-      const env = await api.post<LoginEnvelope>('/api/auth/2fa/verify', { challenge_id: state.challengeId, code: code.replace(/\s+/g, '') })
+      const env = await api.post<LoginEnvelope>('/api/auth/2fa/verify', {
+        challenge_id: state.challengeId,
+        code: code.replace(/\s+/g, ''),
+        ...(state.mode === 'email' ? { method: 'email' } : {}),
+      })
       dispatch({ type: 'ok', user: env.user })
       finish(env)
     } catch (err) {
@@ -180,6 +211,12 @@ export function Login() {
   const policyNote = require2faText(p.require_2fa)
 
   if (state.step === 'second_factor') {
+    const emailMode = state.mode === 'email'
+    const emailLink = state.methods.includes('email') && !emailMode && (
+      <button type="button" className="text-accent hover:underline" onClick={() => dispatch({ type: 'set_mode', mode: 'email' })} data-testid="second-factor-email">
+        Email me a code
+      </button>
+    )
     return (
       <AuthShell
         title="Verify it’s you"
@@ -188,7 +225,13 @@ export function Login() {
             ? 'Enter one of your recovery codes. Each code works once.'
             : state.mode === 'passkey'
               ? 'Confirm with your security key or passkey.'
-              : 'Enter the 6-digit code from your authenticator app.'
+              : emailMode
+                ? state.emailSentTo
+                  ? `We sent a code to ${state.emailSentTo}.`
+                  : state.error
+                    ? 'Enter the 6-digit code from the email.'
+                    : 'Sending a code to your email…'
+                : 'Enter the 6-digit code from your authenticator app.'
         }
       >
         {state.mode === 'passkey' ? (
@@ -197,22 +240,26 @@ export function Login() {
               Use security key / passkey
             </Button>
             {state.error && <ErrorBox>{state.error}</ErrorBox>}
-            {state.methods.includes('totp') && (
-              <button type="button" className="text-left text-[12.5px] text-accent hover:underline" onClick={() => dispatch({ type: 'set_mode', mode: 'code' })}>
-                Use an authenticator code instead
-              </button>
-            )}
+            <div className="flex flex-col gap-1 text-[12.5px]">
+              {state.methods.includes('totp') && (
+                <button type="button" className="text-left text-accent hover:underline" onClick={() => dispatch({ type: 'set_mode', mode: 'code' })}>
+                  Use an authenticator code instead
+                </button>
+              )}
+              {emailLink}
+            </div>
           </div>
         ) : (
           <form onSubmit={submitCode} className="flex flex-col gap-3">
-            <Field label={state.mode === 'recovery' ? 'Recovery code' : 'Authentication code'}>
+            <Field label={state.mode === 'recovery' ? 'Recovery code' : emailMode ? 'Email code' : 'Authentication code'}>
               <Input
                 autoFocus
                 required
                 inputMode={state.mode === 'recovery' ? 'text' : 'numeric'}
                 autoComplete="one-time-code"
-                placeholder={state.mode === 'recovery' ? 'xxxxx-xxxxx' : '123 456'}
-                pattern={state.mode === 'recovery' ? undefined : '[0-9 ]{6,7}'}
+                placeholder={state.mode === 'recovery' ? 'xxxxx-xxxxx' : emailMode ? '123456' : '123 456'}
+                pattern={state.mode === 'recovery' ? undefined : emailMode ? '[0-9]{6}' : '[0-9 ]{6,7}'}
+                maxLength={emailMode ? 6 : undefined}
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 className="mono tracking-widest"
@@ -226,21 +273,39 @@ export function Login() {
             <Button type="submit" variant="primary" loading={busy}>
               Verify
             </Button>
+            {emailMode && (
+              <Button
+                type="button"
+                size="sm"
+                loading={resending}
+                disabled={resendCountdown}
+                title={resendCountdown ? 'Wait before requesting another code' : undefined}
+                onClick={() => {
+                  if (!state.challengeId) return
+                  setResending(true)
+                  void sendEmailCode(state.challengeId)
+                }}
+                data-testid="email-resend"
+              >
+                {resendCountdown ? `Resend code (${state.emailResendInS} s)` : 'Resend code'}
+              </Button>
+            )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[12.5px]">
               {state.mode === 'code' ? (
                 <button type="button" className="text-accent hover:underline" onClick={() => dispatch({ type: 'set_mode', mode: 'recovery' })}>
                   Use a recovery code
                 </button>
-              ) : (
+              ) : state.methods.includes('totp') || state.mode === 'recovery' ? (
                 <button type="button" className="text-accent hover:underline" onClick={() => dispatch({ type: 'set_mode', mode: 'code' })}>
                   Use an authenticator code
                 </button>
-              )}
+              ) : null}
               {state.methods.includes('passkey') && canWebAuthn && (
                 <button type="button" className="text-accent hover:underline" onClick={() => dispatch({ type: 'set_mode', mode: 'passkey' })}>
                   Use a security key
                 </button>
               )}
+              {emailLink}
               <button type="button" className="ml-auto text-ink-muted hover:underline" onClick={() => dispatch({ type: 'back' })}>
                 Start over
               </button>
@@ -317,6 +382,13 @@ export function Login() {
             <Field label="Password">
               <Input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
             </Field>
+            {!useDirectory && p.password_reset && (
+              <div className="-mt-1 text-right text-[12px]">
+                <Link to="/forgot-password" className="text-accent hover:underline" data-testid="forgot-password">
+                  Forgot password?
+                </Link>
+              </div>
+            )}
             {state.error && <ErrorBox>{state.error}</ErrorBox>}
             <Button type="submit" variant="primary" loading={busy} disabled={!!state.lockedForS} className="mt-1" icon={useDirectory ? <Building2 size={14} /> : undefined}>
               {useDirectory ? `Sign in with ${p.ldap?.display_name || 'directory account'}` : 'Sign in'}

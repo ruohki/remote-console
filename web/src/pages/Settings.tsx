@@ -13,9 +13,10 @@ import { toast } from '@/lib/toast'
 import { useNow } from '@/hooks/useNow'
 import { BrandingTab } from './settings/BrandingTab'
 import { AuthTab } from './settings/AuthTab'
+import { EmailTab } from './settings/EmailTab'
 import { AgentDownloadMenu, AgentDownloadsPanel } from '@/components/AgentDownloads'
 
-type SettingsTab = 'info' | 'tokens' | 'branding' | 'agent' | 'auth'
+type SettingsTab = 'info' | 'tokens' | 'branding' | 'agent' | 'auth' | 'email'
 
 export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   const isAdmin = useIsAdmin()
@@ -41,10 +42,25 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
             <TabLink to="/settings/auth" active={current === 'auth'}>
               Authentication
             </TabLink>
+            <TabLink to="/settings/email" active={current === 'email'}>
+              Email
+            </TabLink>
           </>
         )}
       </div>
-      {current === 'tokens' ? <TokensTab /> : current === 'branding' ? <BrandingTab /> : current === 'agent' ? <AgentDownloadsPanel /> : current === 'auth' ? <AuthTab /> : <InfoTab />}
+      {current === 'tokens' ? (
+        <TokensTab />
+      ) : current === 'branding' ? (
+        <BrandingTab />
+      ) : current === 'agent' ? (
+        <AgentDownloadsPanel />
+      ) : current === 'auth' ? (
+        <AuthTab />
+      ) : current === 'email' ? (
+        <EmailTab />
+      ) : (
+        <InfoTab />
+      )}
     </div>
   )
 }

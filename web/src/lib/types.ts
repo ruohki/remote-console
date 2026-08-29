@@ -19,6 +19,8 @@ export interface User {
   /** true while the 2FA policy applies and enrollment is still pending */
   two_factor_required?: boolean
   passkeys?: number
+  /** email sign-in codes as a second factor; absent on older servers */
+  email_2fa_enabled?: boolean
   auth_methods?: AuthMethod[]
   break_glass?: boolean
   last_login_method?: AuthMethod
@@ -35,6 +37,37 @@ export interface AuthProviders {
   passkeys: boolean
   /** policy from `REQUIRE_2FA`; absent on older servers */
   require_2fa?: Require2fa
+  /** password reset links (local login on and SMTP configured); absent on older servers */
+  password_reset?: boolean
+  /** email sign-in codes can be enrolled (SMTP configured); absent on older servers */
+  email_2fa?: boolean
+}
+
+/** Second factors the server can offer after the password step. */
+export type SecondFactor = 'totp' | 'passkey' | 'email'
+
+/* ── outgoing email (`/api/email/config`, admin) ── */
+
+export type SmtpSecurity = 'starttls' | 'tls' | 'none'
+
+/** `GET /api/email/config`; the password is write-only. */
+export interface SmtpConfigPublic {
+  enabled: boolean
+  host: string
+  port: number
+  security: SmtpSecurity
+  username: string
+  /** read-only flag from the server */
+  password_set: boolean
+  from_address: string
+  from_name: string
+  reply_to: string
+}
+
+/** `PUT /api/email/config` and the `config` of `POST /api/email/test`. */
+export interface SmtpConfigInput extends Omit<SmtpConfigPublic, 'password_set'> {
+  /** write-only: empty or omitted keeps the stored password */
+  password?: string
 }
 
 /** LDAP simple-bind provider (`/api/auth/ldap/config`); the bind password is write-only. */
@@ -65,7 +98,7 @@ export interface LdapConfig {
 /** `202` answer of `POST /api/auth/login`. */
 export interface LoginPending {
   pending: 'two_factor'
-  methods: ('totp' | 'passkey')[]
+  methods: SecondFactor[]
   challenge_id: string
 }
 

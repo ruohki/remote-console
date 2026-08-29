@@ -1,14 +1,17 @@
 import { type FormEvent, useState } from 'react'
+import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Fingerprint, KeyRound, Pencil, Plus, RefreshCw, ShieldCheck, ShieldOff, Trash2 } from 'lucide-react'
+import { Fingerprint, KeyRound, Mail, Pencil, Plus, RefreshCw, ShieldCheck, ShieldOff, Trash2 } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import type { AuthMethod, Passkey } from '@/lib/types'
+import { maskEmail } from '@/lib/authFlow'
 import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Skeleton, Table, Td, Th } from '@/components/ui'
 import { dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { webauthnSupported } from '@/lib/webauthn'
-import { PasskeyEnroll, RecoveryCodes, TotpEnroll } from './SecuritySetup'
+import { useAuthProviders } from './Login'
+import { EmailEnroll, PasskeyEnroll, RecoveryCodes, TotpEnroll } from './SecuritySetup'
 
 const METHOD_LABEL: Record<AuthMethod, string> = { password: 'Password', passkey: 'Passkey / security key', oidc: 'Single sign-on (OIDC)', saml: 'Single sign-on (SAML)', ldap: 'Directory account (LDAP)' }
 
@@ -27,10 +30,13 @@ export function SecurityPage() {
       }
     },
   })
+  const providers = useAuthProviders()
   const [totpDialog, setTotpDialog] = useState<'closed' | 'enroll' | 'codes'>('closed')
+  const [emailDialog, setEmailDialog] = useState<'closed' | 'enroll' | 'codes'>('closed')
   const [codes, setCodes] = useState<string[]>([])
   const [disableDialog, setDisableDialog] = useState(false)
   const [regenDialog, setRegenDialog] = useState(false)
+  const [emailOffDialog, setEmailOffDialog] = useState(false)
   const [addKey, setAddKey] = useState(false)
   const [renaming, setRenaming] = useState<Passkey | null>(null)
   const [removing, setRemoving] = useState<Passkey | null>(null)
@@ -39,6 +45,17 @@ export function SecurityPage() {
     void qc.invalidateQueries({ queryKey: ['passkeys'] })
     void refresh()
   }
+
+  const disableEmail = useMutation({
+    mutationFn: () => api.post('/api/auth/2fa/email/disable'),
+    onSuccess: () => {
+      toast.success('Email codes turned off')
+      setEmailOffDialog(false)
+      invalidate()
+    },
+    onError: (e) =>
+      toast.error('Could not turn off', e instanceof ApiError && e.code === 'policy_requires_2fa' ? 'Policy requires a second factor. Add another method first.' : errorMessage(e)),
+  })
 
   const remove = useMutation({
     mutationFn: (id: string) => api.delete(`/api/auth/passkeys/${id}`),
@@ -64,7 +81,11 @@ export function SecurityPage() {
 
   if (!user) return null
   const totpOn = !!user.two_factor_enabled
-  const policyApplies = !!user.two_factor_required || (user.role === 'admin' && totpOn) // best effort: the server decides on disable
+  const emailOn = !!user.email_2fa_enabled
+  const keyCount = passkeys.data?.length ?? 0
+  const policyApplies = !!user.two_factor_required || (user.role === 'admin' && (totpOn || emailOn)) // best effort: the server decides on disable
+  // Known to be off (older server or no SMTP); while loading the button is simply disabled.
+  const emailUnavailable = !!providers.data && !providers.data.email_2fa
 
   return (
     <div className="w-full">
@@ -116,7 +137,7 @@ export function SecurityPage() {
                   <Button size="sm" icon={<RefreshCw size={13} />} onClick={() => setRegenDialog(true)}>
                     New recovery codes
                   </Button>
-                  <Button size="sm" variant="danger" icon={<ShieldOff size={13} />} onClick={() => setDisableDialog(true)} disabled={policyApplies && (passkeys.data?.length ?? 0) === 0}>
+                  <Button size="sm" variant="danger" icon={<ShieldOff size={13} />} onClick={() => setDisableDialog(true)} disabled={policyApplies && keyCount === 0 && !emailOn}>
                     Turn off
                   </Button>
                 </>
@@ -185,6 +206,64 @@ export function SecurityPage() {
           </Table>
         )}
       </section>
+
+      {/* ── email codes ── */}
+      <section className="panel p-4" data-testid="email-2fa">
+        <div className="flex items-start gap-3">
+          <span className={emailOn ? 'text-live' : 'text-ink-faint'}>
+            <Mail size={20} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="font-semibold">Email codes</h2>
+              {emailOn ? <Badge tone="live">On</Badge> : <Badge tone="warn">Off</Badge>}
+            </div>
+            <p className="mt-1 text-[12.5px] text-ink-muted" data-testid="email-2fa-status">
+              {emailOn ? `On — codes go to ${maskEmail(user.email)}` : 'Off — a 6-digit code sent to your email works as a second factor.'}
+            </p>
+            {emailUnavailable && (
+              <p className="mt-1 text-[12.5px] text-warn" data-testid="email-2fa-unavailable">
+                Not available: email is not configured.
+                {user.role === 'admin' && (
+                  <>
+                    {' '}
+                    <Link to="/settings/email" className="text-accent hover:underline">
+                      Configure email
+                    </Link>
+                  </>
+                )}
+              </p>
+            )}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {emailOn ? (
+                <Button
+                  size="sm"
+                  variant="danger"
+                  icon={<ShieldOff size={13} />}
+                  onClick={() => setEmailOffDialog(true)}
+                  disabled={policyApplies && keyCount === 0 && !totpOn}
+                  title={policyApplies && keyCount === 0 && !totpOn ? 'Policy requires a second factor. Add another method first.' : undefined}
+                  data-testid="email-2fa-off"
+                >
+                  Turn off
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="primary"
+                  icon={<Mail size={13} />}
+                  onClick={() => setEmailDialog('enroll')}
+                  disabled={!providers.data?.email_2fa}
+                  title={emailUnavailable ? 'Email is not configured' : undefined}
+                  data-testid="email-2fa-on"
+                >
+                  Turn on
+                </Button>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
       </div>
 
       {/* dialogs */}
@@ -232,6 +311,42 @@ export function SecurityPage() {
           setCodes(r.recovery_codes)
           setTotpDialog('codes')
         }}
+      />
+      <Dialog open={emailDialog !== 'closed'} onClose={() => setEmailDialog('closed')} title={emailDialog === 'codes' ? 'Recovery codes' : 'Turn on email codes'} width="max-w-md">
+        {/* Mounted only while open so every opening sends a fresh code. */}
+        {emailDialog === 'enroll' ? (
+          <EmailEnroll
+            onDone={(recovery) => {
+              toast.success('Email codes turned on')
+              if (recovery) {
+                setCodes(recovery)
+                setEmailDialog('codes')
+              } else {
+                setEmailDialog('closed')
+                invalidate()
+              }
+            }}
+          />
+        ) : emailDialog === 'codes' ? (
+          <RecoveryCodes
+            codes={codes}
+            onDone={() => {
+              setEmailDialog('closed')
+              setCodes([])
+              invalidate()
+            }}
+          />
+        ) : null}
+      </Dialog>
+      <ConfirmDialog
+        open={emailOffDialog}
+        onClose={() => setEmailOffDialog(false)}
+        onConfirm={() => disableEmail.mutate()}
+        title="Turn off email codes?"
+        body="Codes sent to your email will no longer count as a second factor."
+        confirmLabel="Turn off"
+        danger
+        loading={disableEmail.isPending}
       />
       <Dialog open={addKey} onClose={() => setAddKey(false)} title="Add a passkey or security key" width="max-w-md">
         <PasskeyEnroll

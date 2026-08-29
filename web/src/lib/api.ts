@@ -74,15 +74,22 @@ async function requestWithStatus<T>(method: string, path: string, body?: unknown
   }
 
   if (!res.ok) {
-    const err = (json as Partial<ApiErrorBody> | undefined)?.error
-    const code = err?.code ?? `http_${res.status}`
+    const { code, message } = parseErrorBody(json, res.status)
     // The 2FA policy gate: the auth store listens and routes to /security/setup.
     if (res.status === 403 && code === 'two_factor_required' && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('console:two-factor-required'))
     }
-    throw new ApiError(res.status, code, err?.message ?? res.statusText ?? 'Request failed', parseRetryAfter(res.headers.get('Retry-After')))
+    throw new ApiError(res.status, code, message ?? res.statusText ?? 'Request failed', parseRetryAfter(res.headers.get('Retry-After')))
   }
   return { status: res.status, data: json as T }
+}
+
+/** `{ error: { code, message } }` (API.md), tolerating the flat `{ error: 'code', message }` form. */
+export function parseErrorBody(json: unknown, status: number): { code: string; message?: string } {
+  const body = json as Partial<ApiErrorBody> | { error?: string; message?: string } | undefined
+  const err = body?.error
+  if (typeof err === 'string') return { code: err, message: (body as { message?: string }).message }
+  return { code: err?.code ?? `http_${status}`, message: err?.message }
 }
 
 /** `Retry-After` is either delta-seconds or an HTTP date. */
