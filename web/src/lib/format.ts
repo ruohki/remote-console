@@ -121,3 +121,15 @@ export function eta(seconds: number): string {
 export function timeOfDay(ms: number): string {
   return new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
+
+const compactSameYear = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+const compactOtherYear = new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+
+/** Short absolute time for tables ("Aug 29, 12:55 PM"; the year only when it differs). */
+export function compactDateTime(iso?: string | null, now = Date.now()): string {
+  if (!iso) return '—'
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return '—'
+  const sameYear = new Date(t).getFullYear() === new Date(now).getFullYear()
+  return (sameYear ? compactSameYear : compactOtherYear).format(t)
+}

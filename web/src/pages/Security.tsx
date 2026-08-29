@@ -67,11 +67,12 @@ export function SecurityPage() {
   const policyApplies = !!user.two_factor_required || (user.role === 'admin' && totpOn) // best effort: the server decides on disable
 
   return (
-    <div className="w-full max-w-3xl">
+    <div className="w-full">
       <PageHeader title="Account security" />
+      <div className="grid items-start gap-4 xl:grid-cols-2">
 
       {/* ── current session ── */}
-      <section className="panel mb-4 p-4">
+      <section className="panel p-4 xl:col-span-2">
         <div className="eyebrow mb-2">Signed in as</div>
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
           <span className="font-medium">{user.name}</span>
@@ -97,7 +98,7 @@ export function SecurityPage() {
       </section>
 
       {/* ── authenticator app ── */}
-      <section className="panel mb-4 p-4">
+      <section className="panel p-4">
         <div className="flex items-start gap-3">
           <span className={totpOn ? 'text-live' : 'text-ink-faint'}>{totpOn ? <ShieldCheck size={20} /> : <ShieldOff size={20} />}</span>
           <div className="min-w-0 flex-1">
@@ -130,7 +131,7 @@ export function SecurityPage() {
       </section>
 
       {/* ── passkeys / security keys ── */}
-      <section className="panel mb-4 p-4">
+      <section className="panel p-4">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <Fingerprint size={20} className={passkeys.data?.length ? 'text-live' : 'text-ink-faint'} />
           <h2 className="font-semibold">Passkeys and security keys</h2>
@@ -184,6 +185,7 @@ export function SecurityPage() {
           </Table>
         )}
       </section>
+      </div>
 
       {/* dialogs */}
       <Dialog open={totpDialog !== 'closed'} onClose={() => setTotpDialog('closed')} title={totpDialog === 'codes' ? 'Recovery codes' : 'Set up an authenticator app'} width="max-w-md">

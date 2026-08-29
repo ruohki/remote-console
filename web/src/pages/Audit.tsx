@@ -5,7 +5,8 @@ import { api, errorMessage } from '@/lib/api'
 import type { AuditEntry } from '@/lib/types'
 import { Badge, CopyButton, Dialog, EmptyState, PageHeader, Skeleton, Table, Td, Th } from '@/components/ui'
 import { Pager } from '@/components/Pager'
-import { dateTime, relativeTime } from '@/lib/format'
+import { compactDateTime, dateTime, relativeTime } from '@/lib/format'
+import { summarizeDetails } from '@/lib/auditSummary'
 import { useNow } from '@/hooks/useNow'
 import { firstPage, goNext, goPrev, idCursor, isLastPage, pageNumber, type PageState } from '@/lib/paging'
 
@@ -40,9 +41,10 @@ export function Audit() {
         <>
           <Table fixed className={q.isFetching ? 'opacity-70 transition-opacity' : 'transition-opacity'}>
             <colgroup>
-              <col className="w-[120px]" />
+              <col className="w-[170px]" />
+              <col className="w-[170px]" />
+              <col className="w-[200px]" />
               <col className="w-[180px]" />
-              <col className="w-[220px]" />
               <col />
             </colgroup>
             <thead>
@@ -51,6 +53,7 @@ export function Audit() {
                 <Th>Actor</Th>
                 <Th>Action</Th>
                 <Th>Target</Th>
+                <Th>Details</Th>
               </tr>
             </thead>
             <tbody>
@@ -67,8 +70,9 @@ export function Audit() {
                     }
                   }}
                 >
-                  <Td className="whitespace-nowrap text-ink-muted" title={dateTime(r.ts)}>
-                    {relativeTime(r.ts, now)}
+                  <Td className="whitespace-nowrap" title={dateTime(r.ts)}>
+                    <div className="tabular-nums">{compactDateTime(r.ts, now)}</div>
+                    <div className="text-[11px] text-ink-faint">{relativeTime(r.ts, now)}</div>
                   </Td>
                   <Td className="truncate">
                     <Actor entry={r} />
@@ -79,11 +83,14 @@ export function Audit() {
                   <Td className="mono max-w-0 truncate text-ink-muted" title={r.target ?? ''}>
                     {r.target ? shortTarget(r.target) : <span className="text-ink-faint">—</span>}
                   </Td>
+                  <Td className="mono max-w-0 truncate text-ink-muted" title={prettyDetails(r.details)}>
+                    {summarizeDetails(r.details) || <span className="text-ink-faint">—</span>}
+                  </Td>
                 </tr>
               ))}
               {rows.length === 0 && (
                 <tr>
-                  <Td colSpan={4} className="py-6 text-center text-ink-faint">
+                  <Td colSpan={5} className="py-6 text-center text-ink-faint">
                     No more entries.
                   </Td>
                 </tr>
