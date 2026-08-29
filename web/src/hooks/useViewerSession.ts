@@ -439,12 +439,21 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
       fastStateRef.current = 'closed'
       patch({ fastInput: 'closed' })
     }
+    // The agent may send control messages as text or binary frames (Chromium delivers binary as
+    // a Blob by default); decode all three shapes before parsing.
+    control.binaryType = 'arraybuffer'
     control.onmessage = (ev) => {
-      try {
-        handleControl(JSON.parse(ev.data) as ControlMessage)
-      } catch {
-        /* ignore malformed */
+      const data: unknown = ev.data
+      const dispatch = (text: string) => {
+        try {
+          handleControl(JSON.parse(text) as ControlMessage)
+        } catch {
+          /* ignore malformed */
+        }
       }
+      if (typeof data === 'string') dispatch(data)
+      else if (data instanceof ArrayBuffer) dispatch(new TextDecoder().decode(data))
+      else if (data instanceof Blob) void data.text().then(dispatch)
     }
     files.onopen = () => {
       transferManager.deviceId = deviceId
