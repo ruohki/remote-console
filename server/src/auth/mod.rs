@@ -64,7 +64,10 @@ pub fn two_factor_required_error() -> ApiError {
 
 /// Long-lived authentication helpers created at startup.
 pub struct AuthContext {
-    pub webauthn: webauthn_rs::Webauthn,
+    /// `None` when the public URL has no valid RP id (e.g. an IP address): passkeys are then
+    /// unavailable but the console still runs.
+    pub webauthn: Option<webauthn_rs::Webauthn>,
+
     pub oidc: oidc::OidcCache,
 }
 
@@ -72,7 +75,15 @@ impl AuthContext {
     pub async fn new(config: &crate::config::Config, db: &crate::db::Db) -> anyhow::Result<Self> {
         let branding = crate::db::settings::branding(db).await?;
         Ok(Self {
-            webauthn: passkeys::build(config, &branding.product_name)?,
+            webauthn: match passkeys::build(config, &branding.product_name) {
+                Ok(w) => Some(w),
+                Err(e) => {
+                    tracing::warn!(
+                        "passkeys disabled: {e:#} (use a DNS hostname in CONSOLE_PUBLIC_URL)"
+                    );
+                    None
+                }
+            },
             oidc: oidc::OidcCache::default(),
         })
     }
@@ -611,6 +622,19 @@ fn normalise_host(h: &str) -> String {
 impl ApiError {
     fn into_response_pub(self) -> Response {
         axum::response::IntoResponse::into_response(self)
+    }
+}
+
+impl AuthContext {
+    /// The WebAuthn context, or a 503 when passkeys are unavailable on this deployment.
+    pub fn webauthn(&self) -> Result<&webauthn_rs::Webauthn, crate::error::ApiError> {
+        self.webauthn.as_ref().ok_or_else(|| {
+            crate::error::ApiError::new(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "passkeys_unavailable",
+                "Passkeys are unavailable: the console's public URL must be a DNS hostname",
+            )
+        })
     }
 }
 

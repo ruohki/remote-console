@@ -794,7 +794,7 @@ pub async fn passkey_register_start(
         .collect();
     let (ccr, reg) = state
         .auth
-        .webauthn
+        .webauthn()?
         .start_passkey_registration(
             passkeys::user_handle(&user.id),
             &user.email,
@@ -828,7 +828,7 @@ pub async fn passkey_register_finish(
         .ok_or_else(|| ApiError::validation("corrupt registration state"))?;
     let passkey = state
         .auth
-        .webauthn
+        .webauthn()?
         .finish_passkey_registration(&cred, &reg.reg)
         .map_err(|e| {
             ApiError::new(
@@ -978,7 +978,7 @@ pub async fn passkey_login_start(
     }
     let (rcr, auth_state) = state
         .auth
-        .webauthn
+        .webauthn()?
         .start_discoverable_authentication()
         .map_err(|e| ApiError::internal(format!("webauthn: {e}")))?;
     let id = db::auth::put_state(
@@ -1036,7 +1036,7 @@ pub async fn passkey_login_finish(
     };
     if let Ok((handle, _)) = state
         .auth
-        .webauthn
+        .webauthn()?
         .identify_discoverable_authentication(&cred)
     {
         if handle != passkeys::user_handle(&user.id) {
@@ -1055,7 +1055,7 @@ pub async fn passkey_login_finish(
     let keys = [DiscoverableKey::from(&passkey)];
     let result = state
         .auth
-        .webauthn
+        .webauthn()?
         .finish_discoverable_authentication(&cred, login.auth, &keys)
         .map_err(|e| {
             state.limiter.record_failure(&login.ip);
@@ -1121,7 +1121,7 @@ pub async fn two_factor_passkey_start(
     }
     let (rcr, auth_state) = state
         .auth
-        .webauthn
+        .webauthn()?
         .start_passkey_authentication(&keys)
         .map_err(|e| ApiError::internal(format!("webauthn: {e}")))?;
     challenge.passkey_auth = Some(auth_state);
@@ -1144,7 +1144,7 @@ pub async fn two_factor_passkey_finish(
     };
     let result = match state
         .auth
-        .webauthn
+        .webauthn()?
         .finish_passkey_authentication(&cred, &auth_state)
     {
         Ok(r) => r,
@@ -1172,7 +1172,7 @@ pub async fn providers(State(state): State<AppState>) -> ApiResult<Json<serde_js
     let ldap = crate::auth::ldap::load(&state.db).await?;
     let mut out = json!({
         "local_login": state.config.local_login,
-        "passkeys": true,
+        "passkeys": state.auth.webauthn.is_some(),
         "require_2fa": state.config.require_2fa.as_str(),
     });
     if oidc.enabled {
