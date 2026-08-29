@@ -158,6 +158,15 @@ pub async fn set_totp(db: &Db, id: &str, secret_enc: Option<&str>, enabled: bool
     Ok(())
 }
 
+pub async fn set_email_2fa(db: &Db, id: &str, enabled: bool) -> Result<()> {
+    sqlx::query("UPDATE users SET email_2fa_enabled = ? WHERE id = ?")
+        .bind(enabled)
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn set_break_glass(db: &Db, id: &str, break_glass: bool) -> Result<()> {
     sqlx::query("UPDATE users SET break_glass = ? WHERE id = ?")
         .bind(break_glass)

@@ -50,11 +50,21 @@ pub struct AppState {
     pub bakery: Arc<Bakery>,
     /// WebAuthn context, OIDC discovery/JWKS caches and the SAML SP key.
     pub auth: Arc<crate::auth::AuthContext>,
+    /// Outgoing email (SMTP from the admin settings; tests swap in a recorder).
+    pub mailer: Arc<dyn crate::mail::Mailer>,
+}
+
+/// Pin rustls to the `ring` crypto provider. The dependency graph also contains `aws-lc-rs`
+/// (via reqwest), which would make the process default ambiguous and panic at the first TLS
+/// handshake. Safe to call repeatedly: a second install is ignored.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
 impl AppState {
     /// Connect to the database, reset stale state and build the shared state.
     pub async fn init(config: Config) -> Result<Self> {
+        install_crypto_provider();
         let db = crate::db::connect(&config).await?;
         // Fail fast on a wrong/missing master key instead of at the first bake.
         crate::db::settings::signing_key(&db, &config)
@@ -82,6 +92,10 @@ impl AppState {
         let auth = Arc::new(crate::auth::AuthContext::new(&config, &db).await?);
         let hub = Hub::new(Arc::clone(&config), db.clone());
         hub.spawn_background_tasks();
+        let mailer = Arc::new(crate::mail::SmtpMailer::new(
+            db.clone(),
+            Arc::clone(&config),
+        ));
         Ok(Self {
             config,
             db,
@@ -90,6 +104,7 @@ impl AppState {
             limits: Arc::new(Limits::default()),
             bakery: Bakery::new(),
             auth,
+            mailer,
         })
     }
 

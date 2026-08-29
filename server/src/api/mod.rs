@@ -5,6 +5,7 @@ pub mod audit;
 pub mod auth;
 pub mod branding;
 pub mod devices;
+pub mod email;
 pub mod enroll;
 pub mod groups;
 pub mod info;
@@ -24,8 +25,21 @@ pub fn router() -> Router<AppState> {
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/providers", get(auth::providers))
+        // password reset (local accounts, needs SMTP)
+        .route("/auth/password/forgot", post(auth::password_forgot))
+        .route("/auth/password/reset", post(auth::password_reset))
         // second factor
         .route("/auth/2fa/verify", post(auth::two_factor_verify))
+        .route("/auth/2fa/email/start", post(auth::two_factor_email_start))
+        .route(
+            "/auth/2fa/email/enable",
+            post(auth::two_factor_email_enable),
+        )
+        .route(
+            "/auth/2fa/email/disable",
+            post(auth::two_factor_email_disable),
+        )
+        .route("/auth/2fa/email/send", post(auth::two_factor_email_send))
         .route("/auth/2fa/setup", post(auth::two_factor_setup))
         .route("/auth/2fa/enable", post(auth::two_factor_enable))
         .route(
@@ -90,6 +104,12 @@ pub fn router() -> Router<AppState> {
         )
         .route("/auth/ldap/test", post(sso::ldap_test))
         .route("/auth/ldap/test-mapping", post(sso::ldap_test_mapping))
+        // outgoing email (admin)
+        .route(
+            "/email/config",
+            get(email::config_get).put(email::config_put),
+        )
+        .route("/email/test", post(email::test))
         // user security admin
         .route("/users/{id}/2fa/reset", post(users::reset_two_factor))
         .route("/users/{id}/passkeys", get(users::passkeys))

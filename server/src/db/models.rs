@@ -69,7 +69,7 @@ impl AuthMethod {
 }
 
 /// Column list used by every user query (`users u`), including the passkey count.
-pub const USER_SELECT: &str = "SELECT u.id, u.email, u.name, u.password_hash, u.role, u.disabled,     u.created_at, u.last_login_at, u.totp_secret_enc, u.totp_enabled, u.break_glass,     u.auth_methods, u.last_login_method,     (SELECT COUNT(*) FROM user_passkeys p WHERE p.user_id = u.id) AS passkeys     FROM users u";
+pub const USER_SELECT: &str = "SELECT u.id, u.email, u.name, u.password_hash, u.role, u.disabled,     u.created_at, u.last_login_at, u.totp_secret_enc, u.totp_enabled, u.break_glass,     u.auth_methods, u.last_login_method, u.email_2fa_enabled,     (SELECT COUNT(*) FROM user_passkeys p WHERE p.user_id = u.id) AS passkeys     FROM users u";
 
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct UserRow {
@@ -89,6 +89,8 @@ pub struct UserRow {
     /// JSON array of `AuthMethod`s the account can use (`["password"]` for local accounts).
     pub auth_methods: String,
     pub last_login_method: Option<String>,
+    /// One-time codes sent to `email` are accepted as a second factor.
+    pub email_2fa_enabled: bool,
     pub passkeys: i64,
 }
 
@@ -105,9 +107,9 @@ impl UserRow {
         serde_json::from_str(&self.auth_methods).unwrap_or_else(|_| vec![AuthMethod::Password])
     }
 
-    /// A second factor (TOTP or at least one passkey) is enrolled.
+    /// A second factor (TOTP, at least one passkey, or email codes) is enrolled.
     pub fn two_factor_enabled(&self) -> bool {
-        self.totp_enabled || self.passkeys > 0
+        self.totp_enabled || self.passkeys > 0 || self.email_2fa_enabled
     }
 
     pub fn public(&self) -> UserPublic {
@@ -120,6 +122,7 @@ impl UserRow {
             created_at: self.created_at.clone(),
             last_login_at: self.last_login_at.clone(),
             two_factor_enabled: self.two_factor_enabled(),
+            email_2fa_enabled: self.email_2fa_enabled,
             passkeys: self.passkeys,
             auth_methods: self.auth_methods(),
             break_glass: self.break_glass,
@@ -143,6 +146,7 @@ pub struct UserPublic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_login_at: Option<String>,
     pub two_factor_enabled: bool,
+    pub email_2fa_enabled: bool,
     pub passkeys: i64,
     pub auth_methods: Vec<AuthMethod>,
     pub break_glass: bool,

@@ -11,6 +11,7 @@ pub mod error;
 pub mod hub;
 pub mod ids;
 pub mod install;
+pub mod mail;
 pub mod static_files;
 pub mod turn;
 

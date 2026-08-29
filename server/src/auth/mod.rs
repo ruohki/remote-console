@@ -37,6 +37,8 @@ const TWO_FACTOR_ALLOWLIST: &[&str] = &[
     "/api/auth/logout",
     "/api/auth/2fa/setup",
     "/api/auth/2fa/enable",
+    "/api/auth/2fa/email/start",
+    "/api/auth/2fa/email/enable",
     "/api/auth/passkeys/register/start",
     "/api/auth/passkeys/register/finish",
     "/api/auth/passkeys",
@@ -485,6 +487,14 @@ pub struct Limits {
     pub agent_hello_ip: BackoffLimiter,
     /// Bound on concurrent argon2 verifications (agent hellos + logins).
     pub verify_slots: tokio::sync::Semaphore,
+    /// Password-reset requests per IP.
+    pub reset_ip: RateLimiter,
+    /// Password-reset requests per account (lower-cased email).
+    pub reset_account: RateLimiter,
+    /// Email second-factor enrolment codes per user.
+    pub email_2fa_setup: RateLimiter,
+    /// Minimum gap between two sign-in codes for the same challenge.
+    pub email_code_spacing: Duration,
 }
 
 impl Default for Limits {
@@ -505,6 +515,10 @@ impl Default for Limits {
                 Duration::from_secs(15 * 60),
             ),
             verify_slots: tokio::sync::Semaphore::new(4),
+            reset_ip: RateLimiter::new(5, Duration::from_secs(15 * 60)),
+            reset_account: RateLimiter::new(3, Duration::from_secs(15 * 60)),
+            email_2fa_setup: RateLimiter::new(3, Duration::from_secs(10 * 60)),
+            email_code_spacing: Duration::from_secs(30),
         }
     }
 }

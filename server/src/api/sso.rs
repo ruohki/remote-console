@@ -57,11 +57,12 @@ async fn finish_sso(
 }
 
 /// Browser flows: turn the outcome into a redirect.
-fn redirect_outcome(outcome: Outcome, return_to: &str) -> Response {
+async fn redirect_outcome(state: &AppState, outcome: Outcome, return_to: &str) -> Response {
     match outcome {
         Outcome::Session(jar, _) => (jar, Redirect::to(return_to)).into_response(),
         Outcome::Challenge(jar, user, id) => {
-            let methods = super::auth::second_factor_methods(&user).join(",");
+            let mail_ok = crate::mail::is_configured(&state.db).await;
+            let methods = super::auth::second_factor_methods(&user, mail_ok).join(",");
             let target = format!(
                 "/login?pending=two_factor&challenge_id={}&methods={}&return={}",
                 urlenc(&id),
@@ -214,7 +215,7 @@ async fn oidc_callback_inner(
     let login = sso::login(state, &identity, &policy).await?;
     let ip = client_ip(state, headers, peer);
     let outcome = finish_sso(state, jar, login, AuthMethod::Oidc, &ip, &return_to).await?;
-    Ok(redirect_outcome(outcome, &return_to))
+    Ok(redirect_outcome(state, outcome, &return_to).await)
 }
 
 pub async fn oidc_config_get(
@@ -369,7 +370,7 @@ async fn saml_acs_inner(
     let login = sso::login(state, &result.identity, &policy).await?;
     let ip = client_ip(state, headers, peer);
     let outcome = finish_sso(state, jar, login, AuthMethod::Saml, &ip, &result.return_to).await?;
-    Ok(redirect_outcome(outcome, &result.return_to))
+    Ok(redirect_outcome(state, outcome, &result.return_to).await)
 }
 
 pub async fn saml_config_get(
@@ -537,7 +538,7 @@ pub async fn ldap_login(
     let login = sso::login(&state, &identity, &cfg.effective_policy()).await?;
     match finish_sso(&state, jar, login, AuthMethod::Ldap, &ip, "/devices").await? {
         Outcome::Session(jar, envelope) => Ok((jar, Json(envelope)).into_response()),
-        Outcome::Challenge(jar, user, id) => Ok(pending_response(&state, jar, &user, id)),
+        Outcome::Challenge(jar, user, id) => Ok(pending_response(&state, jar, &user, id).await),
     }
 }
 

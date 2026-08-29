@@ -162,6 +162,11 @@ impl Hub {
                     Ok(_) => {}
                     Err(err) => tracing::warn!("purging login sessions failed: {err}"),
                 }
+                match db::auth::purge_expired_states(&hub.db).await {
+                    Ok(n) if n > 0 => tracing::debug!("purged {n} expired auth states"),
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!("purging auth states failed: {err}"),
+                }
             }
         });
     }

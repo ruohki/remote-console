@@ -10,23 +10,31 @@ use crate::db::{
     settings,
 };
 use crate::error::{ApiError, ApiResult};
+use crate::mail::{self, templates, Recipient};
 use axum::extract::{ConnectInfo, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use axum_extra::extract::CookieJar;
-use chrono::Duration;
+use chrono::{Duration, Utc};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::net::SocketAddr;
+use subtle::ConstantTimeEq;
 use webauthn_rs::prelude::*;
 
 const CHALLENGE_KIND: &str = "2fa";
 const TOTP_SETUP_KIND: &str = "totp_setup";
 const PASSKEY_REG_KIND: &str = "passkey_reg";
 const PASSKEY_LOGIN_KIND: &str = "passkey_login";
+const PASSWORD_RESET_KIND: &str = "password_reset";
+const EMAIL_SETUP_KIND: &str = "email_2fa_setup";
 const MAX_CHALLENGE_ATTEMPTS: u32 = 5;
+const PASSWORD_RESET_TTL_MINUTES: i64 = 30;
+const EMAIL_CODE_TTL_MINUTES: i64 = 10;
+const EMAIL_SETUP_MAX_ATTEMPTS: u32 = 5;
+const EMAIL_CODE_MAX_SENDS: u32 = 3;
 
 #[derive(Serialize)]
 pub struct SetupStatus {
@@ -129,10 +137,20 @@ pub struct TwoFactorChallenge {
     pub return_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub passkey_auth: Option<PasskeyAuthentication>,
+    /// SHA-256 of the emailed sign-in code, while one is outstanding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_code_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_code_expires: Option<String>,
+    #[serde(default)]
+    pub email_sends: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email_last_sent: Option<String>,
 }
 
-/// Second-factor methods the user can complete a challenge with.
-pub fn second_factor_methods(user: &UserRow) -> Vec<&'static str> {
+/// Second-factor methods the user can complete a challenge with. Email codes are only
+/// offered while outgoing mail is configured.
+pub fn second_factor_methods(user: &UserRow, mail_configured: bool) -> Vec<&'static str> {
     let mut m = Vec::new();
     if user.totp_enabled {
         m.push("totp");
@@ -140,10 +158,15 @@ pub fn second_factor_methods(user: &UserRow) -> Vec<&'static str> {
     if user.passkeys > 0 {
         m.push("passkey");
     }
+    if user.email_2fa_enabled && mail_configured {
+        m.push("email");
+    }
     m
 }
 
-/// Persist a pending second-factor challenge; returns its id.
+/// Persist a pending second-factor challenge; returns its id. `503 second_factor_unavailable`
+/// when the user's only factor is email codes and SMTP is not configured (an admin has to
+/// fix the mail settings or reset the user's second factor).
 pub async fn start_challenge(
     state: &AppState,
     user: &UserRow,
@@ -151,6 +174,29 @@ pub async fn start_challenge(
     ip: &str,
     return_to: Option<String>,
 ) -> ApiResult<String> {
+    let mail_ok = mail::is_configured(&state.db).await;
+    if second_factor_methods(user, mail_ok).is_empty() {
+        tracing::error!(
+            user = %user.email,
+            "second factor required but no method is usable (email codes enrolled, SMTP not configured)"
+        );
+        db::audit::record_lossy(
+            &state.db,
+            Some(Actor {
+                id: &user.id,
+                name: &user.name,
+            }),
+            "login_failed",
+            None,
+            json!({ "email": user.email, "ip": ip, "reason": "second_factor_unavailable" }),
+        )
+        .await;
+        return Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "second_factor_unavailable",
+            "your second factor is email codes, but the console cannot send email right now; contact your administrator",
+        ));
+    }
     let challenge = TwoFactorChallenge {
         user_id: user.id.clone(),
         attempts: 0,
@@ -158,6 +204,10 @@ pub async fn start_challenge(
         method,
         return_to,
         passkey_auth: None,
+        email_code_hash: None,
+        email_code_expires: None,
+        email_sends: 0,
+        email_last_sent: None,
     };
     Ok(db::auth::put_state(
         &state.db,
@@ -170,12 +220,13 @@ pub async fn start_challenge(
 }
 
 /// `202 { pending: "two_factor", methods, challenge_id }` plus the pre-auth cookie.
-pub fn pending_response(
+pub async fn pending_response(
     state: &AppState,
     jar: CookieJar,
     user: &UserRow,
     challenge_id: String,
 ) -> Response {
+    let mail_ok = mail::is_configured(&state.db).await;
     let jar = jar.add(auth::preauth_cookie(
         state.config.is_https(),
         challenge_id.clone(),
@@ -185,7 +236,7 @@ pub fn pending_response(
         jar,
         Json(json!({
             "pending": "two_factor",
-            "methods": second_factor_methods(user),
+            "methods": second_factor_methods(user, mail_ok),
             "challenge_id": challenge_id,
         })),
     )
@@ -351,11 +402,197 @@ pub async fn login(
     clear_login_failures(&state, &ip, &account);
     if user.two_factor_enabled() {
         let id = start_challenge(&state, &user, AuthMethod::Password, &ip, None).await?;
-        return Ok(pending_response(&state, jar, &user, id));
+        return Ok(pending_response(&state, jar, &user, id).await);
     }
     let (jar, envelope) =
         complete_login(&state, jar, &user, AuthMethod::Password, &ip, json!({})).await?;
     Ok((jar, Json(envelope)).into_response())
+}
+
+// ── password reset (local accounts only) ──────────────────────────────────────
+
+fn reset_state_id(token: &str) -> String {
+    format!("pwr_{}", crate::ids::sha256_hex(token.trim()))
+}
+
+#[derive(Serialize, Deserialize)]
+struct PasswordResetState {
+    email: String,
+}
+
+/// Whether a password reset may be sent: enabled local account with a real password.
+fn reset_eligible(state: &AppState, user: &UserRow) -> bool {
+    state.config.local_login
+        && !user.disabled
+        && user.auth_methods().contains(&AuthMethod::Password)
+}
+
+#[derive(Deserialize)]
+pub struct ForgotBody {
+    pub email: String,
+}
+
+/// Always `202 {}` — the response never reveals whether the account exists. Mail is only
+/// sent for enabled local (password) accounts while SMTP is configured.
+pub async fn password_forgot(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ForgotBody>,
+) -> ApiResult<(StatusCode, Json<serde_json::Value>)> {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    let account = body.email.trim().to_lowercase();
+    if !state.limits.reset_ip.check(&ip) {
+        let wait = state
+            .limits
+            .reset_ip
+            .blocked_for(&ip)
+            .map(|d| d.as_secs() + 1)
+            .unwrap_or(900);
+        return Err(ApiError::rate_limited(
+            "too many password reset requests, try again later",
+            wait,
+        ));
+    }
+    if !state.limits.reset_account.check(&account) {
+        let wait = state
+            .limits
+            .reset_account
+            .blocked_for(&account)
+            .map(|d| d.as_secs() + 1)
+            .unwrap_or(900);
+        return Err(ApiError::rate_limited(
+            "too many password reset requests for this account, try again later",
+            wait,
+        ));
+    }
+
+    let user = db::users::by_email(&state.db, &account)
+        .await?
+        .filter(|u| reset_eligible(&state, u));
+    let mail_ok = mail::is_configured(&state.db).await;
+    if !mail_ok {
+        tracing::warn!(
+            email = %account,
+            "password reset requested but outgoing email is not configured"
+        );
+    }
+    let mut sent = false;
+    if let (Some(user), true) = (&user, mail_ok) {
+        let token = crate::ids::secret();
+        db::auth::delete_states_for_user_kind(&state.db, &user.id, PASSWORD_RESET_KIND).await?;
+        db::auth::put_state_with_id(
+            &state.db,
+            &reset_state_id(&token),
+            PASSWORD_RESET_KIND,
+            Some(&user.id),
+            &PasswordResetState {
+                email: user.email.clone(),
+            },
+            Duration::minutes(PASSWORD_RESET_TTL_MINUTES),
+        )
+        .await?;
+        let link = format!(
+            "{}/reset-password?token={}",
+            state.config.public_url.trim_end_matches('/'),
+            token
+        );
+        let branding = settings::branding(&state.db).await?;
+        let message = templates::password_reset(
+            &branding,
+            &state.config.public_url,
+            &link,
+            PASSWORD_RESET_TTL_MINUTES,
+        )
+        .to(Recipient::new(&user.email, Some(user.name.clone())));
+        match state.mailer.send(message).await {
+            Ok(()) => sent = true,
+            Err(err) => tracing::warn!(email = %account, "password reset email failed: {err:#}"),
+        }
+    }
+    db::audit::record_lossy(
+        &state.db,
+        None,
+        "password_reset.request",
+        None,
+        json!({ "email": account, "ip": ip, "sent": sent }),
+    )
+    .await;
+    Ok((StatusCode::ACCEPTED, Json(json!({}))))
+}
+
+#[derive(Deserialize)]
+pub struct ResetBody {
+    pub token: String,
+    pub password: String,
+}
+
+fn invalid_reset_token() -> ApiError {
+    ApiError::new(
+        StatusCode::BAD_REQUEST,
+        "invalid_token",
+        "this password reset link is invalid or has expired; request a new one",
+    )
+}
+
+/// Consume a reset token: set the password, sign out everywhere, notify the user.
+pub async fn password_reset(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ResetBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    if body.token.trim().is_empty() || body.token.len() > 128 {
+        return Err(invalid_reset_token());
+    }
+    let id = reset_state_id(&body.token);
+    let row = db::auth::get_state(&state.db, &id, PASSWORD_RESET_KIND)
+        .await?
+        .ok_or_else(invalid_reset_token)?;
+    let user = match row.user_id.as_deref() {
+        Some(uid) => db::users::by_id(&state.db, uid).await?,
+        None => None,
+    }
+    .filter(|u| reset_eligible(&state, u))
+    .ok_or_else(invalid_reset_token)?;
+    auth::validate_password(&body.password)?;
+    let hash = auth::hash_password(&body.password)?;
+    db::users::update(
+        &state.db,
+        &user.id,
+        db::users::UserUpdate {
+            name: None,
+            role: None,
+            password_hash: Some(&hash),
+            disabled: None,
+        },
+    )
+    .await?;
+    db::users::delete_login_sessions_for_user(&state.db, &user.id).await?;
+    db::auth::delete_state(&state.db, &id).await?;
+    clear_login_failures(&state, &ip, &user.email.to_lowercase());
+    db::audit::record(
+        &state.db,
+        Some(Actor {
+            id: &user.id,
+            name: &user.name,
+        }),
+        "password_reset.complete",
+        Some(&user.id),
+        json!({ "email": user.email, "ip": ip }),
+    )
+    .await?;
+    // Best effort: the reset succeeded even if the notice cannot be delivered.
+    if let Ok(branding) = settings::branding(&state.db).await {
+        let when = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+        let message = templates::password_changed(&branding, &state.config.public_url, &when)
+            .to(Recipient::new(&user.email, Some(user.name.clone())));
+        if let Err(err) = state.mailer.send(message).await {
+            tracing::warn!(email = %user.email, "password changed notice failed: {err:#}");
+        }
+    }
+    Ok(Json(json!({})))
 }
 
 /// A valid argon2id hash of a random string, used to equalize timing for unknown users.
@@ -493,16 +730,53 @@ async fn finish_challenge(
 pub struct VerifyBody {
     pub challenge_id: String,
     pub code: String,
+    /// `"totp"` (default) or `"email"`; without it an emailed code is assumed when one is
+    /// outstanding and the user has no authenticator app.
+    #[serde(default)]
+    pub method: Option<String>,
 }
 
-/// TOTP or recovery code for a pending challenge.
+/// Whether an outstanding emailed code matches (constant-time) and has not expired.
+fn email_code_matches(challenge: &TwoFactorChallenge, code: &str) -> bool {
+    let (Some(hash), Some(expires)) = (&challenge.email_code_hash, &challenge.email_code_expires)
+    else {
+        return false;
+    };
+    let unexpired = db::parse_ts(expires).is_some_and(|t| t > Utc::now());
+    let given = crate::ids::sha256_hex(code);
+    unexpired && bool::from(given.as_bytes().ct_eq(hash.as_bytes()))
+}
+
+/// TOTP, recovery code or emailed code for a pending challenge.
 pub async fn two_factor_verify(
     State(state): State<AppState>,
     jar: CookieJar,
     Json(body): Json<VerifyBody>,
 ) -> ApiResult<Response> {
-    let (challenge, user) = load_challenge(&state, &jar, &body.challenge_id).await?;
+    let (mut challenge, user) = load_challenge(&state, &jar, &body.challenge_id).await?;
     let code = body.code.trim().to_string();
+    let use_email = match body.method.as_deref() {
+        Some("email") => true,
+        Some(_) => false,
+        None => {
+            challenge.email_code_hash.is_some()
+                && !user.totp_enabled
+                && !totp::looks_like_recovery_code(&code)
+        }
+    };
+    if use_email {
+        if !user.email_2fa_enabled {
+            return Err(ApiError::validation("email codes are not enabled"));
+        }
+        if email_code_matches(&challenge, &code) {
+            // Single use: the code is gone even before the challenge is deleted.
+            challenge.email_code_hash = None;
+            challenge.email_code_expires = None;
+            return finish_challenge(&state, jar, &body.challenge_id, &challenge, &user, "email")
+                .await;
+        }
+        return Err(challenge_failed(&state, &body.challenge_id, challenge, &user).await);
+    }
     let _slot = state.limits.verify_slots.acquire().await;
     let used = if totp::looks_like_recovery_code(&code) {
         match consume_recovery_code(&state, &user, &code).await? {
@@ -732,6 +1006,242 @@ pub async fn two_factor_disable(
     )
     .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+// ── email codes as a second factor ────────────────────────────────────────────
+
+fn email_setup_id(user_id: &str) -> String {
+    format!("email_setup:{user_id}")
+}
+
+#[derive(Serialize, Deserialize)]
+struct EmailSetup {
+    code_hash: String,
+    attempts: u32,
+}
+
+/// Six random decimal digits, zero-padded.
+fn generate_email_code() -> String {
+    format!("{:06}", rand::random_range(0..1_000_000u32))
+}
+
+fn email_not_configured() -> ApiError {
+    ApiError::conflict(
+        "email_not_configured",
+        "outgoing email is not configured; an administrator has to set up SMTP first",
+    )
+}
+
+fn smtp_failed(err: anyhow::Error) -> ApiError {
+    tracing::warn!("sending email failed: {err:#}");
+    ApiError::new(
+        StatusCode::BAD_GATEWAY,
+        "smtp_failed",
+        "the email could not be sent; try again later or contact your administrator",
+    )
+}
+
+/// Start enrolment: email a verification code to the account's address.
+pub async fn two_factor_email_start(
+    State(state): State<AppState>,
+    AnyAuthUser(user): AnyAuthUser,
+) -> ApiResult<Json<serde_json::Value>> {
+    if !mail::is_configured(&state.db).await {
+        return Err(email_not_configured());
+    }
+    if !state.limits.email_2fa_setup.check(&user.id) {
+        let wait = state
+            .limits
+            .email_2fa_setup
+            .blocked_for(&user.id)
+            .map(|d| d.as_secs() + 1)
+            .unwrap_or(600);
+        return Err(ApiError::rate_limited(
+            "too many verification codes requested; wait before trying again",
+            wait,
+        ));
+    }
+    let code = generate_email_code();
+    db::auth::put_state_with_id(
+        &state.db,
+        &email_setup_id(&user.id),
+        EMAIL_SETUP_KIND,
+        Some(&user.id),
+        &EmailSetup {
+            code_hash: crate::ids::sha256_hex(&code),
+            attempts: 0,
+        },
+        Duration::minutes(EMAIL_CODE_TTL_MINUTES),
+    )
+    .await?;
+    let branding = settings::branding(&state.db).await?;
+    let message = templates::two_factor_code(
+        &branding,
+        &code,
+        EMAIL_CODE_TTL_MINUTES,
+        templates::CodePurpose::Enrol,
+    )
+    .to(Recipient::new(&user.email, Some(user.name.clone())));
+    state.mailer.send(message).await.map_err(smtp_failed)?;
+    Ok(Json(json!({ "sent_to": mail::mask_email(&user.email) })))
+}
+
+/// Confirm the emailed code; turns email codes on and hands out recovery codes when the
+/// user has none yet.
+pub async fn two_factor_email_enable(
+    State(state): State<AppState>,
+    AnyAuthUser(user): AnyAuthUser,
+    Json(body): Json<CodeBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let id = email_setup_id(&user.id);
+    let row = db::auth::get_state(&state.db, &id, EMAIL_SETUP_KIND)
+        .await?
+        .ok_or_else(|| {
+            ApiError::validation("request a verification code first (it expires after 10 minutes)")
+        })?;
+    let mut setup: EmailSetup =
+        db::auth::decode_state(&row).ok_or_else(|| ApiError::validation("corrupt setup state"))?;
+    let given = crate::ids::sha256_hex(body.code.trim());
+    if !bool::from(given.as_bytes().ct_eq(setup.code_hash.as_bytes())) {
+        setup.attempts += 1;
+        if setup.attempts >= EMAIL_SETUP_MAX_ATTEMPTS {
+            db::auth::delete_state(&state.db, &id).await?;
+            return Err(ApiError::rate_limited(
+                "too many incorrect codes; request a new one",
+                60,
+            ));
+        }
+        db::auth::update_state(&state.db, &id, &setup).await?;
+        return Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "invalid_code",
+            "incorrect code",
+        ));
+    }
+    db::users::set_email_2fa(&state.db, &user.id, true).await?;
+    db::auth::delete_state(&state.db, &id).await?;
+    let recovery_codes = if db::auth::unused_recovery_codes(&state.db, &user.id)
+        .await?
+        .is_empty()
+    {
+        Some(issue_recovery_codes(&state, &user.id).await?)
+    } else {
+        None
+    };
+    db::audit::record(
+        &state.db,
+        Some(Actor {
+            id: &user.id,
+            name: &user.name,
+        }),
+        "2fa.enable",
+        Some(&user.id),
+        json!({ "method": "email" }),
+    )
+    .await?;
+    Ok(Json(json!({ "recovery_codes": recovery_codes })))
+}
+
+pub async fn two_factor_email_disable(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+) -> ApiResult<StatusCode> {
+    if !user.email_2fa_enabled {
+        return Err(ApiError::validation("email codes are not enabled"));
+    }
+    let last_factor = !user.totp_enabled && user.passkeys == 0;
+    if state.config.require_2fa.applies_to(user.is_admin()) && last_factor {
+        return Err(ApiError::conflict(
+            "policy_requires_2fa",
+            "the second-factor policy applies to your account; add an authenticator app or a passkey before disabling email codes",
+        ));
+    }
+    db::users::set_email_2fa(&state.db, &user.id, false).await?;
+    if last_factor {
+        db::auth::delete_recovery_codes(&state.db, &user.id).await?;
+    }
+    db::audit::record(
+        &state.db,
+        Some(Actor {
+            id: &user.id,
+            name: &user.name,
+        }),
+        "2fa.disable",
+        Some(&user.id),
+        json!({ "method": "email" }),
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Email a sign-in code for a pending challenge (at most three per challenge, spaced out).
+pub async fn two_factor_email_send(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Json(body): Json<ChallengeBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    let (mut challenge, user) = load_challenge(&state, &jar, &body.challenge_id).await?;
+    if !user.email_2fa_enabled {
+        return Err(ApiError::validation(
+            "email codes are not enabled for this account",
+        ));
+    }
+    if !mail::is_configured(&state.db).await {
+        return Err(email_not_configured());
+    }
+    if challenge.email_sends >= EMAIL_CODE_MAX_SENDS {
+        return Err(ApiError::rate_limited(
+            "no more codes can be sent for this sign-in; enter the last code or sign in again",
+            auth::PREAUTH_TTL_MINUTES as u64 * 60,
+        ));
+    }
+    let now = Utc::now();
+    let spacing = state.limits.email_code_spacing;
+    if let Some(last) = challenge.email_last_sent.as_deref().and_then(db::parse_ts) {
+        let since = (now - last).to_std().unwrap_or_default();
+        if since < spacing {
+            let wait = spacing.saturating_sub(since).as_secs() + 1;
+            return Err(ApiError::rate_limited(
+                "a code was just sent; wait a moment before requesting another",
+                wait,
+            ));
+        }
+    }
+    let code = generate_email_code();
+    challenge.email_code_hash = Some(crate::ids::sha256_hex(&code));
+    challenge.email_code_expires = Some(db::format_ts(
+        now + Duration::minutes(EMAIL_CODE_TTL_MINUTES),
+    ));
+    challenge.email_sends += 1;
+    challenge.email_last_sent = Some(db::format_ts(now));
+    db::auth::update_state(&state.db, &body.challenge_id, &challenge).await?;
+    let branding = settings::branding(&state.db).await?;
+    let message = templates::two_factor_code(
+        &branding,
+        &code,
+        EMAIL_CODE_TTL_MINUTES,
+        templates::CodePurpose::Login,
+    )
+    .to(Recipient::new(&user.email, Some(user.name.clone())));
+    state.mailer.send(message).await.map_err(smtp_failed)?;
+    db::audit::record_lossy(
+        &state.db,
+        Some(Actor {
+            id: &user.id,
+            name: &user.name,
+        }),
+        "2fa.email_sent",
+        Some(&user.id),
+        json!({ "ip": ip, "sends": challenge.email_sends }),
+    )
+    .await;
+    Ok(Json(json!({
+        "sent_to": mail::mask_email(&user.email),
+        "expires_in_s": EMAIL_CODE_TTL_MINUTES * 60,
+    })))
 }
 
 // ── passkeys ──────────────────────────────────────────────────────────────────
@@ -1170,10 +1680,13 @@ pub async fn providers(State(state): State<AppState>) -> ApiResult<Json<serde_js
     let oidc = crate::auth::oidc::load(&state.db).await?;
     let saml = crate::auth::saml::load(&state.db).await?;
     let ldap = crate::auth::ldap::load(&state.db).await?;
+    let mail_ok = mail::is_configured(&state.db).await;
     let mut out = json!({
         "local_login": state.config.local_login,
         "passkeys": state.auth.webauthn.is_some(),
         "require_2fa": state.config.require_2fa.as_str(),
+        "password_reset": state.config.local_login && mail_ok,
+        "email_2fa": mail_ok,
     });
     if oidc.enabled {
         out["oidc"] = json!({ "display_name": oidc.display_name });

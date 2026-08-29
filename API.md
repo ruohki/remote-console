@@ -44,20 +44,33 @@ disabled except for users flagged `break_glass`. Passkeys with user verification
 `trust_idp_mfa` and the assertion carries an MFA `amr`/`AuthnContext`, else TOTP is still asked.
 
 ```ts
-type AuthMethod = "password" | "passkey" | "oidc" | "saml";
-interface User { …; two_factor_enabled: boolean; passkeys: number; auth_methods: AuthMethod[]; break_glass: boolean; last_login_method?: AuthMethod }
+type AuthMethod = "password" | "passkey" | "oidc" | "saml" | "ldap";
+interface User { …; two_factor_enabled: boolean; email_2fa_enabled: boolean; passkeys: number; auth_methods: AuthMethod[]; break_glass: boolean; last_login_method?: AuthMethod }
 ```
+
+`two_factor_enabled` is derived: TOTP enrolled **or** at least one passkey **or** `email_2fa_enabled`.
 
 ### Login flow (password)
 | Method | Path | Body → Response |
 |--------|------|-----------------|
-| POST | `/api/auth/login` | `{ email, password }` → `200 { user }` (no 2FA) **or** `202 { pending: "two_factor", methods: ["totp","passkey"], challenge_id }` — a 5-minute pre-auth cookie `console_preauth` is set, no session yet |
-| POST | `/api/auth/2fa/verify` | `{ challenge_id, code }` (6-digit TOTP **or** a recovery code) → `{ user }` + session cookie; 5 attempts then the challenge is voided (`429`) |
+| POST | `/api/auth/login` | `{ email, password }` → `200 { user }` (no 2FA) **or** `202 { pending: "two_factor", methods: ("totp" \| "passkey" \| "email")[], challenge_id }` — a 5-minute pre-auth cookie `console_preauth` is set, no session yet. `503 second_factor_unavailable` when the user's only second factor is email codes and outgoing email is not configured (an admin must fix SMTP or reset the user's 2FA). |
+| POST | `/api/auth/2fa/verify` | `{ challenge_id, code, method?: "totp" \| "email" }` → `{ user }` + session cookie; 5 attempts then the challenge is voided (`429`). Without `method`: a recovery code is recognised by its shape, otherwise TOTP — unless the challenge carries an outstanding emailed code and the user has no authenticator app, in which case the emailed code is checked. `method: "email"` forces the emailed code. |
+| POST | `/api/auth/2fa/email/send` | `{ challenge_id }` (pre-auth cookie) → `{ sent_to: "a***@example.com", expires_in_s: 600 }`. User must have `email_2fa_enabled`; at most 3 codes per challenge with ≥ 30 s between them (`429` + `Retry-After`); `409 email_not_configured`; `502 smtp_failed`. Audited `2fa.email_sent`. |
 | POST | `/api/auth/2fa/setup` | (logged in, or in `two_factor_required` state) → `{ secret, otpauth_url, qr_svg }` |
 | POST | `/api/auth/2fa/enable` | `{ code }` → `{ recovery_codes: string[] }` (shown once; 10 codes, hashed at rest) |
 | POST | `/api/auth/2fa/recovery-codes` | `{ code }` → regenerates |
 | POST | `/api/auth/2fa/disable` | `{ code }` → 204 · `409 policy_requires_2fa` when the policy applies to this user |
-| POST | `/api/users/:id/2fa/reset` | admin → 204 (user must re-enroll at next login; audited `user.2fa_reset`) |
+| POST | `/api/auth/2fa/email/start` | (logged in, or in `two_factor_required` state) → `{ sent_to }` — emails a 6-digit verification code to the account address (valid 10 min); `409 email_not_configured`; 3 codes per 10 min per user (`429`) |
+| POST | `/api/auth/2fa/email/enable` | `{ code }` → `{ recovery_codes: string[] \| null }` — codes are only issued when the user has none yet; 5 wrong codes void the setup (`429`) · audited `2fa.enable { method: "email" }` |
+| POST | `/api/auth/2fa/email/disable` | (no body) → 204 · `409 policy_requires_2fa` when the policy applies and this is the last factor · audited `2fa.disable { method: "email" }` |
+| POST | `/api/users/:id/2fa/reset` | admin → 204 (clears TOTP, passkeys, email codes and recovery codes; user must re-enroll at next login; audited `user.2fa_reset`) |
+
+### Password reset (local accounts only)
+Requires `LOCAL_LOGIN=1` **and** outgoing email configured (`GET /api/auth/providers` → `password_reset: true`). Only enabled accounts whose `auth_methods` contain `"password"` are mailed — SSO/LDAP-provisioned users get the same `202` and nothing else (they reset at their identity provider).
+| Method | Path | Body → Response |
+|--------|------|-----------------|
+| POST | `/api/auth/password/forgot` | `{ email }` → always `202 {}` (no account enumeration; also 202 when SMTP is unconfigured, logged as a warning). Rate limited: 5 / 15 min per IP, 3 / 15 min per account. Sends a link `{public_url}/reset-password?token=…` valid 30 minutes; a new request invalidates earlier tokens. Audited `password_reset.request { email, ip, sent }` (no actor). |
+| POST | `/api/auth/password/reset` | `{ token, password }` → `200 {}`; `400 invalid_token` (unknown, expired or already used); `422 validation` for a weak password. Sets the password, signs the user out everywhere, deletes the token, sends a "password changed" notice (best effort). Audited `password_reset.complete` (actor = the user). |
 
 ### Passkeys (WebAuthn)
 | Method | Path | Body → Response |
@@ -77,7 +90,7 @@ RP id = host of `CONSOLE_PUBLIC_URL`; origins = the public URL; counters/backup 
 Config in `settings` (admin UI) — `{ enabled, display_name, issuer, client_id, client_secret (encrypted), scopes (default "openid email profile"), auto_provision: bool, default_role, admin_claim?: { name, value }, groups_claim?, trust_idp_mfa: bool, allowed_domains?: string[] }`.
 | Method | Path | Notes |
 |--------|------|-------|
-| GET | `/api/auth/providers` | public → `{ local_login: bool, oidc?: { display_name }, saml?: { display_name }, passkeys: true }` |
+| GET | `/api/auth/providers` | public → `{ local_login: bool, oidc?: { display_name }, saml?: { display_name }, ldap?: { display_name }, passkeys: bool, require_2fa, password_reset: bool, email_2fa: bool }` — `password_reset` = local login **and** SMTP configured; `email_2fa` = SMTP configured (email codes can be enrolled / used) |
 | GET | `/api/auth/oidc/start?return=/devices` | redirect to the IdP (PKCE + state + nonce in a short-lived cookie) |
 | GET | `/api/auth/oidc/callback` | validates ID token (issuer, aud, nonce, exp, signature via JWKS), links by verified email or provisions; sets session; redirects to `return` |
 | GET/PUT | `/api/auth/oidc/config` | admin; `POST /api/auth/oidc/test` performs discovery and reports the endpoints |
@@ -125,7 +138,25 @@ Config: `{ enabled, display_name, idp_metadata_xml | idp_metadata_url, sp_entity
 | POST | `/api/auth/saml/acs` | Assertion Consumer Service (POST binding); validates signature, audience, conditions, InResponseTo (IdP-initiated allowed when enabled) |
 | GET/PUT | `/api/auth/saml/config` · `POST /api/auth/saml/test` | admin |
 
-Sessions record `auth_method`; `GET /api/auth/me` returns it plus `two_factor_enabled` and `two_factor_required` (true while enrollment is pending). Audit: `login` (method), `login_failed`, `2fa.enable|disable|reset|recovery`, `passkey.register|remove`, `sso.link|provision`, `auth.config`.
+Sessions record `auth_method`; `GET /api/auth/me` returns it plus `two_factor_enabled` and `two_factor_required` (true while enrollment is pending). Audit: `login` (method, `second_factor: "totp" | "passkey" | "email" | "recovery"`), `login_failed`, `2fa.enable|disable|reset|recovery|email_sent`, `passkey.register|remove`, `sso.link|provision`, `auth.config`, `email.config|test`, `password_reset.request|complete`.
+
+## Email (admin)
+
+Outgoing mail is configured in the admin UI (Settings → Email), not via environment variables. The SMTP password is write-only and sealed with `CONSOLE_MASTER_KEY` like the SSO secrets; changes apply immediately (the configuration is read on every send). Every message uses the branding (product name, accent colour, logo inline as `cid:logo`, organisation and support text) and carries a plain-text alternative.
+
+```ts
+type SmtpSecurity = "starttls" | "tls" | "none";        // STARTTLS (587) · implicit TLS (465) · plain
+interface SmtpConfig { enabled: boolean; host: string; port: number; security: SmtpSecurity; username: string; password_set: boolean; from_address: string; from_name: string /* "" = product name */; reply_to: string }
+interface SmtpConfigInput { enabled: boolean; host: string; port: number; security: SmtpSecurity; username: string; password?: string /* absent/empty = keep stored */; from_address: string; from_name: string; reply_to: string }
+```
+
+| Method | Path | Body → Response |
+|--------|------|-----------------|
+| GET | `/api/email/config` | → `SmtpConfig` |
+| PUT | `/api/email/config` | `SmtpConfigInput` → `SmtpConfig` · 422: `host` required when enabled, `port` 1–65535, `from_address` must be an address, `reply_to` empty or an address · audited `email.config` (password stripped) |
+| POST | `/api/email/test` | `{ config?: SmtpConfigInput, to?: string }` → `200 { ok: true, detail: "Sent to a@b" }` · sends the branded test message with the given (unsaved) values merged over the stored ones — `enabled` is ignored so a draft can be tested — to `to` or the admin's own address · `400 { error: { code: "smtp_failed", message } }` with the relay's error · 422 when no host / sender is configured |
+
+Mail-dependent features: password reset (`/api/auth/password/*`, local accounts only) and email codes as a second factor (`/api/auth/2fa/email/*`). Both are advertised in `GET /api/auth/providers` (`password_reset`, `email_2fa`) only while SMTP is enabled with a host and sender address.
 
 ## Users (admin)
 
@@ -133,8 +164,10 @@ Sessions record `auth_method`; `GET /api/auth/me` returns it plus `two_factor_en
 |--------|------|-----------------|
 | GET | `/api/users` | → `User[]` |
 | POST | `/api/users` | `{ email, name, password, role }` → `User` |
-| PATCH | `/api/users/:id` | `{ name?, role?, password?, disabled? }` → `User` (cannot disable/demote the last admin → 409) |
+| PATCH | `/api/users/:id` | `{ name?, role?, password?, disabled?, break_glass? }` → `User` (cannot disable/demote the last admin → 409) |
 | DELETE | `/api/users/:id` | → 204 (cannot delete yourself / last admin → 409) |
+
+`User` carries `email_2fa_enabled` (email codes enrolled) next to `two_factor_enabled` and `passkeys`, so the security pages can show each factor separately.
 
 ## Enrollment tokens (admin)
 

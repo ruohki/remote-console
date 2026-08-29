@@ -160,6 +160,7 @@ pub async fn reset_two_factor(
         .await?
         .ok_or_else(|| ApiError::not_found("user"))?;
     db::users::set_totp(&state.db, &id, None, false).await?;
+    db::users::set_email_2fa(&state.db, &id, false).await?;
     db::auth::delete_recovery_codes(&state.db, &id).await?;
     db::auth::delete_passkeys_for_user(&state.db, &id).await?;
     db::users::delete_login_sessions_for_user(&state.db, &id).await?;
@@ -168,7 +169,12 @@ pub async fn reset_two_factor(
         Some(admin.actor()),
         "user.2fa_reset",
         Some(&id),
-        json!({ "email": existing.email, "had_totp": existing.totp_enabled, "passkeys": existing.passkeys }),
+        json!({
+            "email": existing.email,
+            "had_totp": existing.totp_enabled,
+            "had_email": existing.email_2fa_enabled,
+            "passkeys": existing.passkeys
+        }),
     )
     .await?;
     db::audit::record(

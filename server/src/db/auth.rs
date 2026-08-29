@@ -302,6 +302,17 @@ pub async fn state_exists(db: &Db, id: &str, kind: &str) -> Result<bool> {
     Ok(n > 0)
 }
 
+/// Drop every state of one kind belonging to a user (e.g. earlier password-reset tokens
+/// when a new one is issued).
+pub async fn delete_states_for_user_kind(db: &Db, user_id: &str, kind: &str) -> Result<u64> {
+    let res = sqlx::query("DELETE FROM auth_states WHERE user_id = ? AND kind = ?")
+        .bind(user_id)
+        .bind(kind)
+        .execute(db)
+        .await?;
+    Ok(res.rows_affected())
+}
+
 pub async fn purge_expired_states(db: &Db) -> Result<u64> {
     let res = sqlx::query("DELETE FROM auth_states WHERE expires_at <= ?")
         .bind(now())
