@@ -2,57 +2,51 @@ import { describe, expect, it } from 'vitest'
 import type { PrivacyScreenReason } from '@/protocol'
 import { LIFTED_MESSAGE, changeMessage, denialMessage, initialPrivacyScreen, privacyScreenDisabledReason, privacyScreenEventLabel, reducePrivacyScreen } from './privacyScreen'
 
-const REASONS: PrivacyScreenReason[] = ['operator', 'device_user', 'policy', 'permission', 'unsupported', 'locked', 'timeout', 'watchdog', 'displays_changed', 'control_paused', 'session_ended', 'failed']
+const REASONS: PrivacyScreenReason[] = ['operator', 'device_user', 'policy', 'permission', 'unsupported', 'timeout', 'watchdog', 'displays_changed', 'control_paused', 'session_ended', 'failed']
 
 describe('reducePrivacyScreen', () => {
   it('follows the agent echo for the operator without a notice', () => {
-    const on = reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen', active: true, reason: 'operator', locked: false })
-    expect(on.state).toEqual({ active: true, locked: false, reason: 'operator' })
+    const on = reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen', active: true, reason: 'operator' })
+    expect(on.state).toEqual({ active: true, reason: 'operator' })
     expect(on.notice).toBeNull()
-    const off = reducePrivacyScreen(on.state, { t: 'privacy_screen', active: false, reason: 'operator', locked: false })
-    expect(off.state).toEqual({ active: false, locked: false, reason: 'operator' })
+    const off = reducePrivacyScreen(on.state, { t: 'privacy_screen', active: false, reason: 'operator' })
+    expect(off.state).toEqual({ active: false, reason: 'operator' })
     expect(off.notice).toBeNull()
   })
 
-  it('locks and tells the operator when the device user lifts it', () => {
-    const on = reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen', active: true, reason: 'operator', locked: false })
-    const lifted = reducePrivacyScreen(on.state, { t: 'privacy_screen', active: false, reason: 'device_user', locked: true })
-    expect(lifted.state).toEqual({ active: false, locked: true, reason: 'device_user' })
+  it('tells the operator when the device user lifts it, and stays available', () => {
+    const on = reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen', active: true, reason: 'operator' })
+    const lifted = reducePrivacyScreen(on.state, { t: 'privacy_screen', active: false, reason: 'device_user' })
+    expect(lifted.state).toEqual({ active: false, reason: 'device_user' })
     expect(lifted.notice).toEqual({ kind: 'info', text: LIFTED_MESSAGE })
-  })
-
-  it('stays locked for the rest of the session', () => {
-    const locked = { active: false, locked: true, reason: 'device_user' as const }
-    const next = reducePrivacyScreen(locked, { t: 'privacy_screen', active: false, reason: 'operator', locked: false })
-    expect(next.state.locked).toBe(true)
-    expect(next.notice).toBeNull()
+    // Nothing in the state keeps the button from engaging it again.
+    const again = reducePrivacyScreen(lifted.state, { t: 'privacy_screen', active: true, reason: 'operator' })
+    expect(again.state).toEqual({ active: true, reason: 'operator' })
   })
 
   it('ignores a repeated state', () => {
-    const on = { active: true, locked: false, reason: 'operator' as const }
-    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: true, reason: 'operator', locked: false }).notice).toBeNull()
-    expect(reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen', active: false, reason: 'session_ended', locked: false }).notice).toBeNull()
+    const on = { active: true, reason: 'operator' as const }
+    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: true, reason: 'operator' }).notice).toBeNull()
+    expect(reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen', active: false, reason: 'session_ended' }).notice).toBeNull()
   })
 
   it('explains an involuntary release', () => {
-    const on = { active: true, locked: false, reason: 'operator' as const }
-    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: false, reason: 'displays_changed', locked: false }).notice).toEqual({ kind: 'info', text: 'Privacy screen turned off because the displays changed' })
-    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: false, reason: 'failed', locked: false }).notice).toEqual({ kind: 'error', text: 'Privacy screen could not be shown' })
-    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: false, reason: 'session_ended', locked: false }).notice).toBeNull()
+    const on = { active: true, reason: 'operator' as const }
+    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: false, reason: 'displays_changed' }).notice).toEqual({ kind: 'info', text: 'Privacy screen turned off because the displays changed' })
+    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: false, reason: 'failed' }).notice).toEqual({ kind: 'error', text: 'Privacy screen could not be shown' })
+    expect(reducePrivacyScreen(on, { t: 'privacy_screen', active: false, reason: 'session_ended' }).notice).toBeNull()
   })
 
-  it('keeps the shown state on a refusal and only remembers the lock', () => {
-    const denied = reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen_denied', reason: 'permission' })
-    expect(denied.state).toEqual({ active: false, locked: false, reason: 'permission' })
+  it('keeps the shown state on a refusal', () => {
+    const on = { active: true, reason: 'operator' as const }
+    const denied = reducePrivacyScreen(on, { t: 'privacy_screen_denied', reason: 'permission' })
+    expect(denied.state).toEqual({ active: true, reason: 'permission' })
     expect(denied.notice).toEqual({ kind: 'error', text: 'Privacy screen requires manage permission' })
-    const locked = reducePrivacyScreen(initialPrivacyScreen, { t: 'privacy_screen_denied', reason: 'locked' })
-    expect(locked.state.locked).toBe(true)
-    expect(locked.notice?.text).toBe(LIFTED_MESSAGE)
   })
 })
 
 describe('privacyScreenDisabledReason', () => {
-  const ok = { support: 'standard' as const, allowed: true, permission: 'manage' as const, locked: false }
+  const ok = { support: 'standard' as const, allowed: true, permission: 'manage' as const }
 
   it('is available when every gate passes', () => {
     expect(privacyScreenDisabledReason(ok)).toBeNull()
@@ -64,12 +58,11 @@ describe('privacyScreenDisabledReason', () => {
     expect(privacyScreenDisabledReason({ ...ok, allowed: false })).toBe('Not allowed on this device')
     expect(privacyScreenDisabledReason({ ...ok, permission: 'connect' })).toBe('Requires manage permission')
     expect(privacyScreenDisabledReason({ ...ok, permission: undefined })).toBe('Requires manage permission')
-    expect(privacyScreenDisabledReason({ ...ok, locked: true })).toBe('Lifted by the device user — off for this session')
   })
 
   it('reports device support before policy and permission', () => {
-    expect(privacyScreenDisabledReason({ support: 'unsupported', allowed: false, permission: 'view', locked: true })).toBe('Not supported by this agent')
-    expect(privacyScreenDisabledReason({ support: 'standard', allowed: false, permission: 'view', locked: true })).toBe('Not allowed on this device')
+    expect(privacyScreenDisabledReason({ support: 'unsupported', allowed: false, permission: 'view' })).toBe('Not supported by this agent')
+    expect(privacyScreenDisabledReason({ support: 'standard', allowed: false, permission: 'view' })).toBe('Not allowed on this device')
   })
 })
 
@@ -80,7 +73,7 @@ describe('denialMessage', () => {
     expect(denialMessage('unsupported')).toBe('Privacy screen is not supported by this agent')
     expect(denialMessage('failed')).toBe('Privacy screen could not be shown')
     expect(denialMessage('operator')).toBe('Another session holds the privacy screen')
-    expect(denialMessage('locked')).toBe(LIFTED_MESSAGE)
+    expect(denialMessage('control_paused')).toBe('Privacy screen is unavailable while control is paused at the device')
   })
 
   it('has terse copy for every reason', () => {

@@ -317,14 +317,15 @@ An operator can hide the device's own displays behind a branded notice while wor
 3. The device user's local override (`LocalOverrides.allow_privacy_screen = false`) vetoes.
 4. Device support: `DeviceSummary.privacy_screen` must not be `unsupported`.
 
-The person at the device can always lift the screen; once they do, the operator cannot re-engage
-it for the rest of that session (`reason: locked`).
+The person at the device can always lift the screen (*Show screen* / `Esc`, `reason: device_user`);
+the operator may engage it again afterwards. Pausing control at the device releases it and refuses
+every engagement while the pause lasts (`reason: control_paused`).
 
 Engaging / releasing happens **browser ↔ agent over the WebRTC control channel**, the console
 never sees these messages: `set_privacy_screen { enabled }` (browser → agent),
-`privacy_screen { active, reason, locked }` (agent → browser, current state) and
+`privacy_screen { active, reason }` (agent → browser, current state) and
 `privacy_screen_denied { reason }` (agent → browser; `protocol.PrivacyScreenReason`:
-`policy` | `permission` | `unsupported` | `locked` | …). The agent reports every state change to the
+`policy` | `permission` | `unsupported` | `control_paused` | …). The agent reports every state change to the
 console as session event `privacy_screen { active, reason }` (timeline, pushed live) and the
 console audits each one as `session.privacy_screen { device_id, active, reason }`.
 

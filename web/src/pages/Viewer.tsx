@@ -157,7 +157,6 @@ export function Viewer() {
     support: device?.privacy_screen ?? 'unsupported',
     allowed: allowPrivacyScreen,
     permission: device?.permission,
-    locked: state.privacyScreen.locked,
   })
   const privacyAvailable = connected && privacyDisabledReason === null
 
