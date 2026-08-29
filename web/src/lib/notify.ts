@@ -19,7 +19,7 @@ export interface ChatNotifyInput {
 }
 
 export interface ChatNotifyDecision {
-  /** Show the in-viewer toast with an "Open chat" action. */
+  /** Show the in-viewer bubble at the Chat button (with the unread badge and pulse). */
   toast: boolean
   /** Fire a system (OS) notification. */
   system: boolean
@@ -32,9 +32,9 @@ const NONE: ChatNotifyDecision = { toast: false, system: false, sound: false }
 /**
  * - Operator's own lines never notify.
  * - Drawer open and the tab visible + focused: the operator is looking at it → nothing.
- * - Drawer open but the tab hidden/unfocused: system notification only (no toast — it would
+ * - Drawer open but the tab hidden/unfocused: system notification only (no bubble — it would
  *   sit under the drawer), when permission was granted.
- * - Drawer closed: toast (+ sound); additionally a system notification when the tab is
+ * - Drawer closed: bubble (+ sound); additionally a system notification when the tab is
  *   hidden/unfocused and permission was granted.
  */
 export function decideChatNotification(i: ChatNotifyInput): ChatNotifyDecision {

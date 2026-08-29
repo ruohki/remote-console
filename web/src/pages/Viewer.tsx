@@ -90,9 +90,9 @@ export function Viewer() {
       const d = decideChatNotification({ from: line.from, drawerOpen, tabVisible: document.visibilityState === 'visible', tabFocused: document.hasFocus(), permission: notificationPermission() })
       const body = previewText(line.text)
       if (d.toast) {
-        toast.custom({ kind: 'info', title: `${deviceName} says`, detail: body, ttlMs: 8000, group: 'chat', action: { label: 'Open chat', onClick: () => setDrawer('chat') } })
+        // One in-surface bubble next to the Chat button (no corner toast): visible in
+        // fullscreen and over any overlay, and it points at where to reply.
         setChatPulse((n) => n + 1)
-        // In-surface bubble next to the Chat button: visible in fullscreen and over any overlay.
         setChatBubble({ id: Date.now(), text: body })
         if (chatBubbleTimer.current) clearTimeout(chatBubbleTimer.current)
         chatBubbleTimer.current = setTimeout(() => setChatBubble(null), 8000)
@@ -217,7 +217,6 @@ export function Viewer() {
 
   useEffect(() => {
     setChatOpen(drawer === 'chat')
-    if (drawer === 'chat') toast.dismissGroup('chat')
   }, [drawer, setChatOpen])
 
   // Unread chat lines prefix the tab title until the drawer is opened.
