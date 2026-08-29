@@ -63,20 +63,21 @@ export interface CursorPlacement {
 
 /**
  * CSS placement of the remote cursor image inside a tile. `pos` is the cursor's hotspot in
- * physical pixels of the remote picture (`video`), `box` the tile size in CSS pixels.
+ * physical pixels of the remote *display* (`source` — its full physical size, not the encoded
+ * picture, which may be downscaled by the viewport hint), `box` the tile size in CSS pixels.
  * The image is scaled with the picture so a 32-px cursor on a 5K display stays proportional.
- * Returns `null` when the cursor is outside the picture.
+ * Returns `null` when the cursor is outside the display.
  */
 export function cursorPlacement(
   pos: { x: number; y: number },
   shape: CursorShapeInfo,
   box: { width: number; height: number },
-  video: { width: number; height: number },
+  source: { width: number; height: number },
 ): CursorPlacement | null {
-  const rect = containRect(box, video)
+  const rect = containRect(box, source)
   if (rect.width === 0 || rect.height === 0) return null
-  if (pos.x < 0 || pos.y < 0 || pos.x > video.width || pos.y > video.height) return null
-  const s = rect.width / video.width
+  if (pos.x < 0 || pos.y < 0 || pos.x > source.width || pos.y > source.height) return null
+  const s = rect.width / source.width
   return {
     left: rect.left + (pos.x - shape.hotspotX) * s,
     top: rect.top + (pos.y - shape.hotspotY) * s,

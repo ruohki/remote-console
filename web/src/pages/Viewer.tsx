@@ -1004,6 +1004,14 @@ function DisplayTile({
     const r = v.getBoundingClientRect()
     return { box: { width: r.width, height: r.height }, video: { width: v.videoWidth, height: v.videoHeight } }
   }, [])
+  // Cursor positions are physical pixels of the display, not of the (possibly downscaled)
+  // encoded picture, so the cursor layer maps against the display size.
+  const cursorGeometry = useCallback(() => {
+    const geo = tileGeometry()
+    if (!geo) return null
+    if (display.width > 0 && display.height > 0) return { box: geo.box, video: { width: display.width, height: display.height } }
+    return geo
+  }, [tileGeometry, display.width, display.height])
 
   const flushMove = useCallback(() => {
     moveRaf.current = null
@@ -1142,7 +1150,7 @@ function DisplayTile({
       }}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={tileGeometry} suppressed={controlling && hovering} enabled={showRemoteCursor} />
+      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} suppressed={controlling && hovering} enabled={showRemoteCursor} />
       <AnnotateCanvas display={display.index} getGeometry={tileGeometry} />
       {!stream && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12.5px] text-[#6b7381]">

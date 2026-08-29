@@ -28,6 +28,12 @@ describe('cursorPlacement', () => {
     const p = cursorPlacement({ x: 100, y: 50 }, shape, { width: 960, height: 600 }, { width: 1920, height: 1080 })
     expect(p).toEqual({ left: (100 - 4) * 0.5, top: 30 + (50 - 2) * 0.5, width: 16, height: 16 })
   })
+  it('maps against the display size, not a downscaled encoded picture', () => {
+    // 2880×1800 display encoded at 1440×900 and shown in a 1440×900 box: the cursor at the
+    // display's centre lands in the box's centre at half size.
+    const p = cursorPlacement({ x: 1440, y: 900 }, { ...shape, hotspotX: 0, hotspotY: 0 }, { width: 1440, height: 900 }, { width: 2880, height: 1800 })
+    expect(p).toEqual({ left: 720, top: 450, width: 16, height: 16 })
+  })
   it('returns null outside the picture or without geometry', () => {
     expect(cursorPlacement({ x: -1, y: 0 }, shape, { width: 960, height: 600 }, { width: 1920, height: 1080 })).toBeNull()
     expect(cursorPlacement({ x: 10, y: 10 }, shape, { width: 0, height: 0 }, { width: 1920, height: 1080 })).toBeNull()
