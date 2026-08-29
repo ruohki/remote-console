@@ -163,7 +163,7 @@ pub async fn devices(
             rows.push(row);
         }
     }
-    rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    rows.sort_by_key(|r| r.name.to_lowercase());
     Ok(Json(summaries_for(&state, &access, &rows).await?))
 }
 
