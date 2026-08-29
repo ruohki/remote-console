@@ -1,15 +1,19 @@
-name: Release image
+name: Image
 
+# Every commit on main publishes `:main` and `:sha-<short>` so a server can track the branch;
+# a v* tag additionally publishes the semver tags and moves `:latest`.
 on:
   push:
+    branches: [main]
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
 
 jobs:
-  # ── gate: never publish an image from a tag that does not pass its own tests ────────
+  # ── gate: never publish an image that does not pass its own tests ───────────────────
   test:
     runs-on: ubuntu-latest
     steps:
@@ -71,7 +75,9 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=ref,event=branch
+            type=sha,format=short
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
       - uses: docker/build-push-action@v6
         with:
           context: .
