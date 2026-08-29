@@ -2,15 +2,15 @@ import { type FormEvent, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Circle, ImagePlus, Info, MessageSquare, MonitorSmartphone, Trash2 } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
-import { DEFAULT_BRANDING, accentVariables, isHexColor, logoUrl, readLogo, useBranding } from '@/lib/branding'
+import { DEFAULT_BRANDING, accentInk, accentVariables, isHexColor, logoUrl, readLogo, useBranding } from '@/lib/branding'
 import type { Branding } from '@/protocol'
 import { Button, Field, Input, Skeleton, Textarea, Toggle, cx } from '@/components/ui'
 import { toast } from '@/lib/toast'
 
-/** Settings → Branding: what the person at the device sees (agent app, banner, approval prompt) and, optionally, the console. */
+/** Settings → Branding: what the person at the device sees (privacy screen, agent app, banner, approval prompt) and, optionally, the console. */
 export function BrandingTab() {
   const branding = useBranding()
-  if (branding.isPending && !branding.data) return <Skeleton className="h-64 w-full max-w-3xl" />
+  if (branding.isPending && !branding.data) return <Skeleton className="h-64 w-full" />
   return <BrandingForm key={JSON.stringify(branding.data ?? DEFAULT_BRANDING)} initial={{ ...DEFAULT_BRANDING, ...(branding.data ?? {}) }} />
 }
 
@@ -58,7 +58,7 @@ function BrandingForm({ initial }: { initial: Branding }) {
   const name = form.product_name.trim() || DEFAULT_BRANDING.product_name
 
   return (
-    <form onSubmit={submit} className="grid max-w-6xl gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
+    <form onSubmit={submit} className="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_520px]">
       <div className="panel flex flex-col gap-4 p-4">
         <Field label="Product name">
           <Input value={form.product_name} maxLength={60} onChange={(e) => setForm({ ...form, product_name: e.target.value })} placeholder="Acme Remote Support" required />
@@ -138,23 +138,149 @@ function BrandingPreview({ branding }: { branding: Branding }) {
         <div className="eyebrow">Preview</div>
       </div>
 
+      <Captioned caption="Privacy screen" hint="Shown on the device's displays while an operator hides the desktop. At the device a heavily blurred snapshot of the desktop sits behind the notice.">
+        <PrivacyScreenMock branding={branding} accent={accent} logo={logo} />
+      </Captioned>
+
       <Captioned caption="Agent app window">
         <AgentWindowMock branding={branding} logo={logo} />
       </Captioned>
 
-      <Captioned caption="Session banner">
-        <BannerMock branding={branding} logo={logo} />
-      </Captioned>
-
-      <Captioned caption="Approval prompt">
-        <ApprovalMock branding={branding} logo={logo} />
-      </Captioned>
-
-      {branding.apply_to_console && (
-        <Captioned caption="Console header">
-          <ConsoleHeaderMock branding={branding} logo={logo} />
+      {/* The small surfaces share a row. */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <Captioned caption="Session banner">
+          <BannerMock branding={branding} logo={logo} />
         </Captioned>
-      )}
+
+        <Captioned caption="Approval prompt">
+          <ApprovalMock branding={branding} logo={logo} />
+        </Captioned>
+
+        {branding.apply_to_console && (
+          <Captioned caption="Console header">
+            <ConsoleHeaderMock branding={branding} logo={logo} />
+          </Captioned>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * The device-side "Screen hidden" page (`crates/agent/src/app/assets/privacy.html`), scaled to
+ * the preview's width with container units. Always dark, like the real surface; the accent-tinted
+ * field stands in for the blurred desktop snapshot the agent puts behind the notice.
+ */
+function PrivacyScreenMock({ branding, accent, logo }: { branding: Branding; accent: string; logo: string | null }) {
+  const ink = accentInk(accent)
+  const initial = (branding.product_name.trim().slice(0, 1) || 'R').toUpperCase()
+  const style = {
+    '--pa': accent,
+    '--pa-ink': ink,
+    // The real page uses 1.1vw (10–19 px); the preview is a fraction of that width.
+    '--u': 'clamp(4px, 1.9cqw, 19px)',
+    containerType: 'inline-size',
+  } as React.CSSProperties
+  const mono = { fontFamily: 'ui-monospace, "SF Mono", Menlo, Consolas, monospace' }
+  return (
+    <div
+      className="relative aspect-[16/10] w-full overflow-hidden rounded-lg border border-line-strong bg-[#0a0f15] text-[#eef2f6] shadow-pop select-none"
+      style={style}
+      aria-label="Privacy screen preview"
+    >
+      {/* ground: accent blooms on graphite (the device shows a blurred desktop snapshot here) */}
+      <div
+        className="absolute -inset-[6%] scale-[1.06]"
+        style={{
+          backgroundImage:
+            'radial-gradient(58% 78% at 24% 22%, color-mix(in srgb, var(--pa) 34%, transparent), transparent 62%),' +
+            'radial-gradient(52% 66% at 78% 72%, color-mix(in srgb, var(--pa) 22%, transparent), transparent 60%),' +
+            'linear-gradient(150deg, #0d131b, #0a0f15 60%)',
+        }}
+      />
+      <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 120% at 50% 40%, transparent 30%, rgba(0,0,0,.45))' }} />
+
+      {/* plate */}
+      <div
+        className="absolute top-1/2 left-1/2 w-[min(calc(var(--u)*48),92%)] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[calc(var(--u)*0.7)] border border-white/12 bg-[rgba(13,18,25,0.78)] shadow-[0_24px_60px_-24px_rgba(0,0,0,0.8)]"
+        style={{ padding: 'calc(var(--u)*1.3) calc(var(--u)*1.5) calc(var(--u)*1.2)', fontSize: 'calc(var(--u)*0.95)', lineHeight: 1.45 }}
+      >
+        <div className="absolute inset-x-0 top-0 h-[3px]" style={{ background: 'linear-gradient(90deg, var(--pa), transparent)' }} />
+        <div className="flex items-center" style={{ gap: 'calc(var(--u)*0.7)', marginBottom: 'calc(var(--u)*1)' }}>
+          {logo ? (
+            <img src={logo} alt="" className="shrink-0 rounded-[calc(var(--u)*0.45)] object-contain" style={{ width: 'calc(var(--u)*2.2)', height: 'calc(var(--u)*2.2)' }} />
+          ) : (
+            <span
+              className="grid shrink-0 place-items-center rounded-[calc(var(--u)*0.45)] font-bold"
+              style={{ width: 'calc(var(--u)*2.2)', height: 'calc(var(--u)*2.2)', background: 'var(--pa)', color: 'var(--pa-ink)', fontSize: 'calc(var(--u)*1.05)' }}
+            >
+              {initial}
+            </span>
+          )}
+          <div className="min-w-0">
+            <div className="truncate leading-tight font-semibold" style={{ fontSize: 'calc(var(--u)*1.05)' }}>
+              {branding.product_name}
+            </div>
+            {branding.organization.trim() && (
+              <div className="truncate leading-tight text-[#a9b8c6]" style={{ fontSize: 'calc(var(--u)*0.82)' }}>
+                {branding.organization}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="leading-[1.1] font-semibold tracking-[-0.02em]" style={{ fontSize: 'calc(var(--u)*2.4)', marginBottom: 'calc(var(--u)*0.3)' }}>
+          Screen hidden
+        </div>
+        <div className="text-[#a9b8c6]" style={{ marginBottom: 'calc(var(--u)*1)' }}>
+          Your desktop is hidden on this monitor while the session runs.
+        </div>
+        <div
+          className="grid grid-cols-3 border-y border-white/12"
+          style={{ gap: 'calc(var(--u)*0.8)', padding: 'calc(var(--u)*0.8) 0', marginBottom: 'calc(var(--u)*0.9)' }}
+        >
+          {[
+            ['Technician', 'Alice'],
+            ['Started', '14:02'],
+            ['Elapsed', '6:41'],
+          ].map(([k, v]) => (
+            <div key={k} className="min-w-0">
+              <div className="text-[#8b9bab] uppercase" style={{ ...mono, fontSize: 'calc(var(--u)*0.68)', letterSpacing: '0.1em', marginBottom: 2 }}>
+                {k}
+              </div>
+              <div className="truncate font-medium tabular-nums">{v}</div>
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center text-[#c3d0dc]" style={{ gap: 7, fontSize: 'calc(var(--u)*0.88)', marginBottom: 'calc(var(--u)*1)' }}>
+          <span className="size-2 shrink-0 rounded-full bg-[#4ea87c] shadow-[0_0_0_3px_rgba(78,168,124,0.22)]" />
+          Connected
+        </div>
+        <div className="flex flex-wrap" style={{ gap: 'calc(var(--u)*0.6)', marginBottom: 'calc(var(--u)*0.7)' }}>
+          <span
+            className="inline-flex items-center rounded-[calc(var(--u)*0.35)] font-medium"
+            style={{ gap: 8, padding: 'calc(var(--u)*0.5) calc(var(--u)*0.9)', fontSize: 'calc(var(--u)*0.92)', background: 'var(--pa)', color: 'var(--pa-ink)' }}
+          >
+            Show screen
+            <span className="rounded-[3px] border border-current/40 opacity-75" style={{ ...mono, fontSize: 'calc(var(--u)*0.7)', padding: '1px 5px' }}>
+              Esc
+            </span>
+          </span>
+          <span
+            className="inline-flex items-center rounded-[calc(var(--u)*0.35)] border border-[#e5695b] font-medium text-[#e5695b]"
+            style={{ padding: 'calc(var(--u)*0.5) calc(var(--u)*0.9)', fontSize: 'calc(var(--u)*0.92)' }}
+          >
+            End session
+          </span>
+        </div>
+        <div className="text-[#8b9bab]" style={{ fontSize: 'calc(var(--u)*0.82)' }}>
+          Only you can lift this screen. The technician cannot.
+        </div>
+        {branding.support_text.trim() && (
+          <div className="border-t border-white/9 whitespace-pre-wrap text-[#8b9bab]" style={{ fontSize: 'calc(var(--u)*0.82)', marginTop: 'calc(var(--u)*0.5)', paddingTop: 'calc(var(--u)*0.55)' }}>
+            {branding.support_text}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -254,7 +380,7 @@ function BannerMock({ branding, logo }: { branding: Branding; logo: string | nul
     <div className="flex items-center gap-2.5 overflow-hidden rounded-lg border border-line-strong bg-surface py-2 pr-2 pl-0 shadow-pop" aria-label="Session banner preview">
       <span className="h-9 w-1 shrink-0 rounded-r bg-accent" />
       <Logo logo={logo} size={22} />
-      <div className="min-w-0 flex-1 text-[12px]">
+      <div className="min-w-0 flex-1 truncate text-[12px]">
         <span className="font-semibold">{branding.product_name}</span>
         <span className="text-ink-faint"> · </span>
         <span className="text-ink-muted">Alice is controlling this computer</span>
@@ -266,7 +392,7 @@ function BannerMock({ branding, logo }: { branding: Branding; logo: string | nul
 
 function ApprovalMock({ branding, logo }: { branding: Branding; logo: string | null }) {
   return (
-    <div className="mx-auto w-[300px] rounded-xl border border-line-strong bg-surface p-4 text-center shadow-pop" aria-label="Approval prompt preview">
+    <div className="rounded-xl border border-line-strong bg-surface p-4 text-center shadow-pop" aria-label="Approval prompt preview">
       <div className="mx-auto mb-2 w-fit">
         <Logo logo={logo} size={44} className="rounded-xl" />
       </div>

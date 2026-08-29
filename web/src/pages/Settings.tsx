@@ -62,10 +62,10 @@ function TabLink({ to, active, children }: { to: string; active: boolean; childr
 
 function InfoTab() {
   const info = useQuery({ queryKey: ['info'], queryFn: () => api.get<ServerInfo>('/api/info') })
-  if (info.isPending) return <Skeleton className="h-40 w-full max-w-xl" />
+  if (info.isPending) return <Skeleton className="h-40 w-full" />
   if (info.isError)
     return (
-      <div className="panel max-w-xl">
+      <div className="panel">
         <EmptyState title="Could not load console info" detail={errorMessage(info.error)} />
       </div>
     )
@@ -106,7 +106,7 @@ function InfoTab() {
     ['This browser', <span className="text-ink-muted">{navigator.userAgent}</span>],
   ]
   return (
-    <div className="panel max-w-3xl divide-y divide-line">
+    <div className="panel divide-y divide-line">
       {rows.map(([k, v]) => (
         <div key={k} className="grid grid-cols-[160px_1fr] gap-3 px-4 py-2.5">
           <div className="text-ink-muted">{k}</div>
