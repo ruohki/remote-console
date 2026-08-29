@@ -4,7 +4,7 @@ import { Download, ExternalLink, FlaskConical, Save } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import type { AuthProviders, Group, LdapConfig, MappedRole, OidcConfig, SamlConfig, SyncMode } from '@/lib/types'
 import { fromRows, reduceMappings, toRows, validateRows } from '@/lib/mappings'
-import { Badge, Button, EmptyState, Field, Input, Select, Skeleton, Textarea, Toggle, cx } from '@/components/ui'
+import { InfoTip, Badge, Button, EmptyState, Field, Input, Select, Skeleton, Textarea, Toggle, cx } from '@/components/ui'
 import { MappingEditor } from '@/components/MappingEditor'
 import { toast } from '@/lib/toast'
 
@@ -77,7 +77,7 @@ export function AuthTab() {
   if (providers.data === null)
     return (
       <div className="panel">
-        <EmptyState title="This console version has no authentication settings" detail="Update the console server to configure two-factor policy, passkeys and single sign-on." />
+        <EmptyState title="This console version has no authentication settings" detail="Update the console server." />
       </div>
     )
 
@@ -112,23 +112,23 @@ function PolicySummary({ providers }: { providers?: AuthProviders }) {
       <dl className="grid gap-x-6 gap-y-2 text-[13px] sm:grid-cols-[12rem_1fr]">
         <dt className="text-ink-muted">Two-factor requirement</dt>
         <dd>
-          Set by the server environment <span className="mono">REQUIRE_2FA</span> (<span className="mono">admins</span> by default, <span className="mono">all</span> or <span className="mono">off</span>). Affected users must enroll an authenticator app or a passkey / security key before they can use the console.
+          <span className="mono">REQUIRE_2FA</span> = <span className="mono">admins</span> (default), <span className="mono">all</span> or <span className="mono">off</span>
         </dd>
         <dt className="text-ink-muted">Password sign-in</dt>
         <dd>
           {providers?.local_login === false ? (
             <>
-              <Badge tone="warn">Disabled</Badge> <span className="text-ink-muted">(<span className="mono">LOCAL_LOGIN=0</span>) — only break-glass accounts may use a password.</span>
+              <Badge tone="warn">Disabled</Badge> <span className="text-ink-muted"><span className="mono">LOCAL_LOGIN=0</span> — break-glass accounts only</span>
             </>
           ) : (
             <>
-              <Badge tone="live">Enabled</Badge> <span className="text-ink-muted">Disable it with <span className="mono">LOCAL_LOGIN=0</span> once single sign-on works; mark at least one admin as break-glass first.</span>
+              <Badge tone="live">Enabled</Badge> <span className="text-ink-muted"><span className="mono">LOCAL_LOGIN=0</span> disables it — keep one break-glass admin</span>
             </>
           )}
         </dd>
         <dt className="text-ink-muted">Passkeys &amp; security keys</dt>
         <dd>
-          <Badge tone="live">Enabled</Badge> <span className="text-ink-muted">Bound to the console’s public URL host; platform passkeys and FIDO2 keys (YubiKey…) both work.</span>
+          <Badge tone="live">Enabled</Badge> <span className="text-ink-muted">Bound to the console’s public URL host</span>
         </dd>
       </dl>
     </section>
@@ -188,7 +188,7 @@ function OidcFormInner({ initial, groups }: { initial: OidcConfig; groups: Group
         <Field label="Button label" hint="Shown on the sign-in page">
           <Input value={form.display_name} onChange={(e) => set('display_name', e.target.value)} placeholder="Acme SSO" />
         </Field>
-        <Field label="Issuer URL" hint="Discovery is read from <issuer>/.well-known/openid-configuration">
+        <Field label="Issuer URL" tip="Discovery: <issuer>/.well-known/openid-configuration">
           <Input value={form.issuer} onChange={(e) => set('issuer', e.target.value)} placeholder="https://login.example.com/realms/acme" className="mono" />
         </Field>
         <Field label="Client ID">
@@ -200,21 +200,21 @@ function OidcFormInner({ initial, groups }: { initial: OidcConfig; groups: Group
         <Field label="Scopes">
           <Input value={form.scopes} onChange={(e) => set('scopes', e.target.value)} className="mono" />
         </Field>
-        <Field label="Groups claim" hint="Claim (ID token or UserInfo) that lists the user's groups">
+        <Field label="Groups claim">
           <Input value={form.groups_claim ?? ''} onChange={(e) => set('groups_claim', e.target.value)} className="mono" placeholder="groups" />
         </Field>
-        <Field label="Allowed email domains" hint="Comma separated; empty = any verified email">
+        <Field label="Allowed email domains" tip="Comma separated; empty allows any verified email">
           <Input value={domains} onChange={(e) => setDomains(e.target.value)} placeholder="example.com, corp.example" className="mono" />
         </Field>
-        <Field label="Admin claim (optional)" hint="Users whose claim equals the value become admins">
+        <Field label="Admin claim (optional)">
           <div className="flex gap-2">
             <Input value={adminClaim.name} onChange={(e) => setAdminClaim((a) => ({ ...a, name: e.target.value }))} placeholder="roles" className="mono" />
             <Input value={adminClaim.value} onChange={(e) => setAdminClaim((a) => ({ ...a, value: e.target.value }))} placeholder="console-admin" className="mono" />
           </div>
         </Field>
         <div className="sm:col-span-2 grid gap-2 sm:grid-cols-3">
-          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Create accounts automatically" />
-          <Toggle checked={form.trust_idp_mfa} onChange={(v) => set('trust_idp_mfa', v)} label="Trust the IdP's MFA (amr/acr) for the 2FA policy" />
+          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Auto-create accounts" />
+          <Toggle checked={form.trust_idp_mfa} onChange={(v) => set('trust_idp_mfa', v)} label="Trust IdP MFA" tip="amr/acr from the IdP satisfies the two-factor policy" />
           <div>
             <div className="eyebrow mb-1">Default role</div>
             <DefaultRole value={form.default_role} onChange={(v) => set('default_role', v)} />
@@ -237,8 +237,10 @@ function OidcFormInner({ initial, groups }: { initial: OidcConfig; groups: Group
       </section>
 
       <section className="panel p-4">
-        <h2 className="mb-1 font-semibold">Group mapping</h2>
-        <p className="mb-3 text-[12.5px] text-ink-muted">Map IdP groups to a console role and device-group grants. Rules are evaluated top to bottom; every matching rule applies.</p>
+        <h2 className="mb-3 flex items-center gap-1.5 font-semibold">
+          Group mapping
+          <InfoTip text="Rules run top to bottom; every matching rule applies" />
+        </h2>
         <MappingEditor rows={rows} dispatch={dispatch} syncMode={form.sync_mode} onSyncMode={(m: SyncMode) => set('sync_mode', m)} groups={groups} defaultRole={form.default_role} provider="oidc" />
       </section>
 
@@ -299,7 +301,7 @@ function SamlFormInner({ initial, groups }: { initial: SamlConfig; groups: Group
         <Field label="Button label">
           <Input value={form.display_name} onChange={(e) => set('display_name', e.target.value)} />
         </Field>
-        <Field label="SP entity ID" hint="Default: console URL + /saml">
+        <Field label="SP entity ID">
           <Input value={form.sp_entity_id ?? ''} onChange={(e) => set('sp_entity_id', e.target.value)} className="mono" placeholder={`${window.location.origin}/saml`} />
         </Field>
         <div className="sm:col-span-2">
@@ -335,23 +337,23 @@ function SamlFormInner({ initial, groups }: { initial: SamlConfig; groups: Group
         <Field label="Name attribute">
           <Input value={form.attribute_map.name} onChange={(e) => set('attribute_map', { ...form.attribute_map, name: e.target.value })} className="mono" />
         </Field>
-        <Field label="Groups attribute" hint="Multi-valued attribute with the user's groups">
+        <Field label="Groups attribute">
           <Input value={form.attribute_map.groups} onChange={(e) => set('attribute_map', { ...form.attribute_map, groups: e.target.value })} className="mono" />
         </Field>
-        <Field label="Admin group (optional)" hint="Members of this IdP group become admins">
+        <Field label="Admin group (optional)">
           <Input value={form.admin_group ?? ''} onChange={(e) => set('admin_group', e.target.value)} className="mono" />
         </Field>
         <div className="sm:col-span-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Create accounts automatically" />
+          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Auto-create accounts" />
           <Toggle checked={form.sign_requests} onChange={(v) => set('sign_requests', v)} label="Sign AuthnRequests" />
-          <Toggle checked={form.trust_idp_mfa} onChange={(v) => set('trust_idp_mfa', v)} label="Trust the IdP's MFA for the 2FA policy" />
+          <Toggle checked={form.trust_idp_mfa} onChange={(v) => set('trust_idp_mfa', v)} label="Trust IdP MFA" tip="IdP MFA satisfies the two-factor policy" />
           <div>
             <div className="eyebrow mb-1">Default role</div>
             <DefaultRole value={form.default_role} onChange={(v) => set('default_role', v)} />
           </div>
         </div>
         <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
-          <Button size="sm" icon={<FlaskConical size={13} />} onClick={() => test.mutate()} loading={test.isPending} title="Validates the saved IdP metadata">
+          <Button size="sm" icon={<FlaskConical size={13} />} onClick={() => test.mutate()} loading={test.isPending} title="Uses the saved metadata">
             Test IdP metadata
           </Button>
           {test.data && (
@@ -370,8 +372,10 @@ function SamlFormInner({ initial, groups }: { initial: SamlConfig; groups: Group
       </section>
 
       <section className="panel p-4">
-        <h2 className="mb-1 font-semibold">Group mapping</h2>
-        <p className="mb-3 text-[12.5px] text-ink-muted">Values of the groups attribute are matched against the rules below.</p>
+        <h2 className="mb-3 flex items-center gap-1.5 font-semibold">
+          Group mapping
+          <InfoTip text="Rules run top to bottom; every matching rule applies" />
+        </h2>
         <MappingEditor rows={rows} dispatch={dispatch} syncMode={form.sync_mode} onSyncMode={(m: SyncMode) => set('sync_mode', m)} groups={groups} defaultRole={form.default_role} provider="saml" />
       </section>
 
@@ -400,7 +404,7 @@ function LdapForm({ groups }: { groups: Group[] }) {
   })
   if (cfg.isPending) return <Skeleton className="h-60 w-full" />
   if (cfg.isError) return <EmptyState title="LDAP settings unavailable" detail={errorMessage(cfg.error)} />
-  if (cfg.data === null) return <EmptyState title="This console version has no LDAP support" detail="Update the console server to sign users in against a directory." />
+  if (cfg.data === null) return <EmptyState title="This console version has no LDAP support" detail="Update the console server." />
   return <LdapFormInner key={cfg.dataUpdatedAt} initial={cfg.data} groups={groups} />
 }
 
@@ -445,10 +449,10 @@ function LdapFormInner({ initial, groups }: { initial: LdapConfig; groups: Group
         <Field label="Button label" hint="Shown on the sign-in page">
           <Input value={form.display_name} onChange={(e) => set('display_name', e.target.value)} placeholder="Company directory" />
         </Field>
-        <Field label="Server URL" hint="ldaps:// is strongly recommended; ldap:// only with StartTLS">
+        <Field label="Server URL" tip="Use ldaps://, or ldap:// with StartTLS">
           <Input value={form.url} onChange={(e) => set('url', e.target.value)} placeholder="ldaps://ldap.example.com:636" className="mono" />
         </Field>
-        <Field label="Bind DN" hint="Service account used to look up users">
+        <Field label="Bind DN">
           <Input value={form.bind_dn} onChange={(e) => set('bind_dn', e.target.value)} placeholder="cn=console,ou=service,dc=example,dc=com" className="mono" />
         </Field>
         <Field label="Bind password" hint={initial.bind_password_set ? 'Leave empty to keep the stored password' : undefined}>
@@ -457,30 +461,30 @@ function LdapFormInner({ initial, groups }: { initial: LdapConfig; groups: Group
         <Field label="Base DN">
           <Input value={form.base_dn} onChange={(e) => set('base_dn', e.target.value)} placeholder="ou=people,dc=example,dc=com" className="mono" />
         </Field>
-        <Field label="User filter" hint="{login} is replaced by what the user typed">
+        <Field label="User filter" tip="{login} is replaced by the typed login">
           <Input value={form.user_filter} onChange={(e) => set('user_filter', e.target.value)} className="mono" />
         </Field>
-        <Field label="Attributes" hint="email · display name · groups">
+        <Field label="Attributes" tip="Email, display name, groups">
           <div className="flex gap-2">
             <Input value={form.attribute_map.email} onChange={(e) => setAttr('email', e.target.value)} placeholder="mail" className="mono" />
             <Input value={form.attribute_map.name} onChange={(e) => setAttr('name', e.target.value)} placeholder="displayName" className="mono" />
             <Input value={form.attribute_map.groups} onChange={(e) => setAttr('groups', e.target.value)} placeholder="memberOf" className="mono" />
           </div>
         </Field>
-        <Field label="Allowed email domains" hint="Comma separated; empty = any">
+        <Field label="Allowed email domains" tip="Comma separated; empty allows any">
           <Input value={domains} onChange={(e) => setDomains(e.target.value)} placeholder="example.com" className="mono" />
         </Field>
         <div className="sm:col-span-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           <Toggle checked={form.starttls} onChange={(v) => set('starttls', v)} label="StartTLS (ldap:// only)" />
-          <Toggle checked={form.group_short_names} onChange={(v) => set('group_short_names', v)} label="Match groups by CN, not full DN" />
-          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Create accounts automatically" />
+          <Toggle checked={form.group_short_names} onChange={(v) => set('group_short_names', v)} label="Match groups by CN" />
+          <Toggle checked={form.auto_provision} onChange={(v) => set('auto_provision', v)} label="Auto-create accounts" />
           <div>
             <div className="eyebrow mb-1">Default role</div>
             <DefaultRole value={form.default_role} onChange={(v) => set('default_role', v)} />
           </div>
         </div>
         <div className="sm:col-span-2 flex flex-wrap items-center gap-2">
-          <Button size="sm" icon={<FlaskConical size={13} />} onClick={() => test.mutate()} loading={test.isPending} disabled={!form.url.trim()} title="Binds with the service account and runs the user filter once">
+          <Button size="sm" icon={<FlaskConical size={13} />} onClick={() => test.mutate()} loading={test.isPending} disabled={!form.url.trim()} title="Binds and runs the user filter once">
             Test connection
           </Button>
           {test.data && (
@@ -489,13 +493,14 @@ function LdapFormInner({ initial, groups }: { initial: LdapConfig; groups: Group
             </span>
           )}
           {test.isError && <span className="text-[12px] text-danger">{errorMessage(test.error)}</span>}
-          <span className="ml-auto text-[12px] text-ink-faint">Directory sign-ins still go through the console’s two-factor policy.</span>
         </div>
       </section>
 
       <section className="panel p-4">
-        <h2 className="mb-1 font-semibold">Group mapping</h2>
-        <p className="mb-3 text-[12.5px] text-ink-muted">Map directory groups (memberOf) to a console role and device-group grants. Rules are evaluated top to bottom; every matching rule applies.</p>
+        <h2 className="mb-3 flex items-center gap-1.5 font-semibold">
+          Group mapping
+          <InfoTip text="memberOf groups; rules run top to bottom, every match applies" />
+        </h2>
         <MappingEditor rows={rows} dispatch={dispatch} syncMode={form.sync_mode} onSyncMode={(m: SyncMode) => set('sync_mode', m)} groups={groups} defaultRole={form.default_role} provider="ldap" />
       </section>
 

@@ -60,14 +60,10 @@ function BrandingForm({ initial }: { initial: Branding }) {
   return (
     <form onSubmit={submit} className="grid max-w-6xl gap-4 xl:grid-cols-[minmax(0,1fr)_420px]">
       <div className="panel flex flex-col gap-4 p-4">
-        <div className="text-ink-muted">
-          This branding is baked into every agent you download: the person at the device sees it in the agent app, the session banner and the
-          approval prompt.
-        </div>
-        <Field label="Product name" hint="The name of your remote support tool as the person at the device sees it.">
+        <Field label="Product name">
           <Input value={form.product_name} maxLength={60} onChange={(e) => setForm({ ...form, product_name: e.target.value })} placeholder="Acme Remote Support" required />
         </Field>
-        <Field label="Accent colour" hint="Buttons, the active item in the agent's sidebar and the banner stripe.">
+        <Field label="Accent colour">
           <div className="flex items-center gap-2">
             <input
               type="color"
@@ -82,7 +78,7 @@ function BrandingForm({ initial }: { initial: Branding }) {
             </Button>
           </div>
         </Field>
-        <Field label="Logo" hint="PNG, up to 512 KiB. Shown at 24–48 px in the agent app and banner; also used as the macOS app icon.">
+        <Field label="Logo" tip="PNG up to 512 KiB; shown at 24–48 px and as the macOS app icon">
           <div className="flex items-center gap-3">
             <div className="grid size-14 shrink-0 place-items-center overflow-hidden rounded-md border border-line bg-raised">
               {logoUrl(form) ? <img src={logoUrl(form)!} alt="Logo preview" className="max-h-full max-w-full object-contain" /> : <MonitorSmartphone size={20} className="text-ink-faint" />}
@@ -98,17 +94,14 @@ function BrandingForm({ initial }: { initial: Branding }) {
             )}
           </div>
         </Field>
-        <Field label="Organisation" hint="Shown in the agent's About section.">
+        <Field label="Organisation">
           <Input value={form.organization} onChange={(e) => setForm({ ...form, organization: e.target.value })} placeholder="Acme IT" />
         </Field>
-        <Field label="Support text" hint="Shown on the agent's start screen, e.g. how to reach you.">
+        <Field label="Support text">
           <Textarea rows={3} value={form.support_text} onChange={(e) => setForm({ ...form, support_text: e.target.value })} placeholder="Support by Acme IT · +49 123 456 · help@acme.example" />
         </Field>
         <div className="rounded-md border border-line bg-raised px-3 py-2.5">
-          <Toggle checked={form.apply_to_console} onChange={(v) => setForm({ ...form, apply_to_console: v })} label="Also use this branding in the web console" />
-          <p className="mt-1 pl-11 text-[12px] text-ink-faint">
-            Title, logo and accent of this console follow the branding. Off keeps the console as it is; agents still get the branding.
-          </p>
+          <Toggle checked={form.apply_to_console} onChange={(v) => setForm({ ...form, apply_to_console: v })} label="Apply to web console" tip="Console title, logo and accent follow the branding" />
         </div>
         <div className="flex items-center justify-end gap-2 border-t border-line pt-3">
           {dirty && (
@@ -142,24 +135,23 @@ function BrandingPreview({ branding }: { branding: Branding }) {
   return (
     <div className="flex flex-col gap-4" style={vars} data-brand-accent={accent}>
       <div>
-        <div className="eyebrow">What the person at the device sees</div>
-        <div className="text-[12px] text-ink-faint">Live preview · updates as you type</div>
+        <div className="eyebrow">Preview</div>
       </div>
 
-      <Captioned caption="Agent app window" hint="Opens when the agent is started by hand or from the menu bar / tray.">
+      <Captioned caption="Agent app window">
         <AgentWindowMock branding={branding} logo={logo} />
       </Captioned>
 
-      <Captioned caption="Session banner" hint="Always shown on the device while an operator is connected.">
+      <Captioned caption="Session banner">
         <BannerMock branding={branding} logo={logo} />
       </Captioned>
 
-      <Captioned caption="Approval prompt" hint="Shown in “Help me” mode before an operator may connect.">
+      <Captioned caption="Approval prompt">
         <ApprovalMock branding={branding} logo={logo} />
       </Captioned>
 
       {branding.apply_to_console && (
-        <Captioned caption="Console header" hint="Because “Also use this branding in the web console” is on.">
+        <Captioned caption="Console header">
           <ConsoleHeaderMock branding={branding} logo={logo} />
         </Captioned>
       )}

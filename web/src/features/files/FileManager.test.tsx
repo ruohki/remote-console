@@ -126,7 +126,7 @@ describe('FileManager', () => {
     expect(screen.getByTestId('local-pane')).toBeInTheDocument()
     expect(screen.getByTestId('remote-pane')).toHaveTextContent('Office PC')
     expect(screen.getByTestId('transfer-queue')).toHaveTextContent('Transfers')
-    expect(screen.getByText('No transfers yet')).toBeInTheDocument()
+    expect(screen.getByText('No transfers')).toBeInTheDocument()
     expect(ch.last('list')).toEqual({ t: 'list' })
     listHome(ch)
     await settle()
@@ -136,7 +136,7 @@ describe('FileManager', () => {
     expect(ch.last('list')).toEqual({ t: 'list', path: '/home/u/photos' })
     // The destination follows the folder on screen.
     expect(localStorage.getItem('remote.destDir.dev1')).toBe('/home/u')
-    expect(screen.getByTestId('transfer-queue')).toHaveTextContent('/home/u')
+    expect(screen.getByTestId('transfer-queue')).toHaveTextContent('Compression')
   })
 
   it('opens a remembered device folder first instead of the roots', () => {

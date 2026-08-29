@@ -6,7 +6,7 @@ import { api, ApiError, errorMessage } from '@/lib/api'
 import type { Group, GroupGrant, User } from '@/lib/types'
 import type { DeviceSummary } from '@/protocol'
 import { useLive } from '@/store/live'
-import { Badge, Button, ConfirmDialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, cx } from '@/components/ui'
+import { InfoTip, Badge, Button, ConfirmDialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, cx } from '@/components/ui'
 import { OsIcon, StatusLed } from '@/components/badges'
 import { NotFound } from './NotFound'
 import { toast } from '@/lib/toast'
@@ -98,11 +98,6 @@ export function GroupDetail() {
         </div>
         <div className="flex flex-col gap-4">
           <MetaForm key={`${g.id}|${g.name}|${g.description}`} group={g} onSaved={invalidateAll} />
-          <section className="panel px-4 py-3 text-[12.5px] text-ink-muted">
-            <div className="mb-1 font-medium text-ink">How access works</div>
-            Operators only see devices in groups they are granted. <b>View</b> shows status and history; <b>Connect</b> also allows opening
-            sessions, renaming and tagging. Admins are never restricted. A device in several groups gets the strongest grant.
-          </section>
         </div>
       </div>
 
@@ -219,7 +214,7 @@ function DevicesPanel({ groupId, members, loading, onSaved }: { groupId: string;
       {loading ? (
         <Skeleton className="m-4 h-24" />
       ) : devices.length === 0 ? (
-        <EmptyState title="No devices enrolled yet" detail="Enroll devices first, then add them here." />
+        <EmptyState title="No devices enrolled yet" />
       ) : filtered.length === 0 ? (
         <EmptyState title="Nothing matches" />
       ) : (
@@ -265,7 +260,7 @@ function AccessPanel({ groupId, grants, users, loading, onSaved }: { groupId: st
   const save = useMutation({
     mutationFn: () => api.put<GroupGrant[]>(`/api/groups/${groupId}/grants`, buildGrantsPayload(choices)),
     onSuccess: () => {
-      toast.success('Access updated', `${diff.length} change${diff.length === 1 ? '' : 's'} applied. Operators see the difference immediately.`)
+      toast.success('Access updated', `${diff.length} change${diff.length === 1 ? '' : 's'} applied`)
       setEdited(null)
       onSaved()
     },
@@ -278,7 +273,10 @@ function AccessPanel({ groupId, grants, users, loading, onSaved }: { groupId: st
   return (
     <section className="panel">
       <div className="flex items-center justify-between gap-2 border-b border-line px-4 py-2.5">
-        <span className="font-medium">Access</span>
+        <span className="flex items-center gap-1 font-medium">
+          Access
+          <InfoTip text="View shows status and history; Connect also opens sessions. Admins are never restricted" />
+        </span>
         <Button size="sm" variant="primary" icon={<Save size={13} />} disabled={!dirty} loading={save.isPending} onClick={() => save.mutate()}>
           Save
         </Button>
@@ -288,7 +286,6 @@ function AccessPanel({ groupId, grants, users, loading, onSaved }: { groupId: st
       ) : operators.length === 0 ? (
         <EmptyState
           title="No operators yet"
-          detail="Create operator users first; admins always have full access."
           action={
             <Link to="/users">
               <Button size="sm">Manage users</Button>

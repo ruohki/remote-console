@@ -31,7 +31,7 @@ export function UsersPage() {
   const twoFactorReset = useMutation({
     mutationFn: (id: string) => api.post(`/api/users/${id}/2fa/reset`),
     onSuccess: () => {
-      toast.success('Two-factor reset', 'The user must enroll again at their next sign-in.')
+      toast.success('Two-factor reset', 'Enrollment required at next sign-in')
       setReset2fa(null)
       invalidate()
     },
@@ -51,7 +51,6 @@ export function UsersPage() {
     <div className="w-full">
       <PageHeader
         title="Users"
-        subtitle="Operators only see the device groups they are granted (view or connect). Admins see everything and manage users, groups, tokens and device settings."
         actions={
           <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
             Add user
@@ -126,7 +125,7 @@ export function UsersPage() {
                       size="sm"
                       variant="ghost"
                       icon={<ShieldOff size={13} />}
-                      title="Reset two-factor (user must enroll again)"
+                      title="Reset two-factor"
                       disabled={!u.two_factor_enabled && !u.passkeys}
                       onClick={() => setReset2fa(u)}
                     />
@@ -199,7 +198,7 @@ function UserAccessDialog({ user, onClose }: { user: User | null; onClose: () =>
   })
   return (
     <Dialog open={!!user} onClose={onClose} title={`Device access for ${user?.name ?? ''}`} width="max-w-md">
-      <p className="-mt-1 mb-3 text-ink-muted">Operators only see devices in groups listed here. Grants are edited on the group page.</p>
+      <p className="-mt-1 mb-3 text-ink-muted">Edit grants on the group page.</p>
       {grants.isPending ? (
         <Skeleton className="h-20 w-full" />
       ) : grants.isError ? (
@@ -207,7 +206,7 @@ function UserAccessDialog({ user, onClose }: { user: User | null; onClose: () =>
       ) : grants.data.length === 0 ? (
         <EmptyState
           title="No access yet"
-          detail="This operator cannot see any device. Grant them a group."
+          detail="No device groups granted."
           action={
             <Link to="/groups" onClick={onClose}>
               <Button size="sm">Go to groups</Button>
@@ -265,7 +264,7 @@ function CreateUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
         <Field label="Email">
           <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
         </Field>
-        <Field label="Password" hint="At least 10 characters. Share it with the user; they can't reset it themselves.">
+        <Field label="Password" hint="At least 10 characters.">
           <Input type="password" required minLength={10} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
         <Field label="Role" hint={role === 'operator' ? 'Operators see nothing until you grant them a device group.' : undefined}>

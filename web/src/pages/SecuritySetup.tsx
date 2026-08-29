@@ -48,7 +48,7 @@ export function SecuritySetup() {
           <ChoiceButton
             icon={<Smartphone size={18} />}
             title="Authenticator app"
-            detail="Time-based codes from 1Password, Google Authenticator, Microsoft Authenticator, Authy, …"
+            detail="Time-based codes from any authenticator app."
             onClick={() => setStep('totp')}
             testId="choose-totp"
           />
@@ -150,8 +150,8 @@ export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; on
   return (
     <form onSubmit={submit} className="flex flex-col gap-3">
       <ol className="list-decimal space-y-1 pl-4 text-[12.5px] text-ink-muted">
-        <li>Open your authenticator app and scan the code (or enter the key manually).</li>
-        <li>Enter the 6-digit code the app shows to confirm.</li>
+        <li>Scan the code with your authenticator app.</li>
+        <li>Enter the 6-digit code to confirm.</li>
       </ol>
       <div className="flex items-center justify-center rounded-lg border border-line bg-white p-3" data-testid="totp-qr">
         {setup ? (

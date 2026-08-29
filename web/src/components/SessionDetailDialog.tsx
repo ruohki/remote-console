@@ -31,7 +31,7 @@ export function SessionDetailDialog({ session, open, onClose }: { session: Sessi
             {isPending ? (
               <Skeleton className="h-24 w-full" />
             ) : rows.length === 0 ? (
-              <EmptyState title="Nothing happened yet" detail="Chat lines, file transfers and clipboard syncs show up here." />
+              <EmptyState title="Nothing happened yet" detail="Chat, file and clipboard events appear here." />
             ) : (
               <>
                 {hiddenEarlier > 0 && (

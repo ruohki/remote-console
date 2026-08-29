@@ -298,7 +298,7 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal, dragSource, onInt
 
       {/* location bar */}
       <div className="flex items-center gap-1 border-b border-white/10 px-2 py-1.5">
-        <button onClick={() => requestListing(null)} className={cx('rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white', atRoots && 'text-white')} title="Roots (home, volumes, transfer folder)">
+        <button onClick={() => requestListing(null)} className={cx('rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white', atRoots && 'text-white')} title="Roots">
           <HardDrive size={13} />
         </button>
         <button onClick={goUp} disabled={!canGoUp} className="rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white disabled:opacity-30" title="Up one level (Backspace)">
@@ -620,7 +620,7 @@ export function BrowseTab({ pickMode, onSetUploadDest, reveal, dragSource, onInt
             {selectedEntries.some((e) => !e.is_dir) && <span className="mono ml-1 text-[#6b7381]">({bytes(selectedEntries.filter((e) => !e.is_dir).reduce((a, e) => a + Number(e.size), 0))})</span>}
           </span>
           {selectedEntries.some((e) => !e.is_dir) && (
-            <Button size="sm" icon={<ArrowDownToLine size={12} />} onClick={() => void download(selectedEntries)} title={`${fetchLabel} the selected files`}>
+            <Button size="sm" icon={<ArrowDownToLine size={12} />} onClick={() => void download(selectedEntries)} title={`${fetchLabel} selected`}>
               {fetchLabel}
             </Button>
           )}

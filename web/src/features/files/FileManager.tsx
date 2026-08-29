@@ -179,13 +179,13 @@ export function FileManager({ deviceId, deviceName, enabled, connected, onClose 
           <MonitorSmartphone size={12} /> {deviceName}
         </span>
         {!connected && enabled && <span className="ml-2 rounded bg-[#fbbf24]/15 px-1.5 py-0.5 text-[11px] text-[#fbbf24]">Not connected</span>}
-        <button onClick={onClose} className="ml-auto rounded-md p-1.5 text-[#9aa3b2] hover:bg-white/10 hover:text-white" aria-label="Close file manager" title="Close (the session keeps running)">
+        <button onClick={onClose} className="ml-auto rounded-md p-1.5 text-[#9aa3b2] hover:bg-white/10 hover:text-white" aria-label="Close file manager" title="Close">
           <X size={15} />
         </button>
       </div>
 
       {!enabled ? (
-        <div className="flex flex-1 items-center justify-center p-6 text-center text-[#9aa3b2]">File transfer is disabled for this device. An admin can enable it in the device settings.</div>
+        <div className="flex flex-1 items-center justify-center p-6 text-center text-[#9aa3b2]">File transfer is disabled for this device.</div>
       ) : (
         <div className="@container min-h-0 flex-1">
           <div className="flex h-full min-h-0 flex-col @min-[1100px]:flex-row">
@@ -222,7 +222,7 @@ export function FileManager({ deviceId, deviceName, enabled, connected, onClose 
               >
                 Fetch
               </Button>
-              <span className="hidden max-w-[88px] text-center text-[10.5px] leading-tight text-[#6b7381] @min-[1100px]:block">Drag between the panes or use the buttons</span>
+              <span className="hidden max-w-[88px] text-center text-[10.5px] leading-tight text-[#6b7381] @min-[1100px]:block">Drag between panes</span>
             </div>
 
             {/* device */}
@@ -241,13 +241,7 @@ export function FileManager({ deviceId, deviceName, enabled, connected, onClose 
           open={queueOpen}
           onToggle={() => setQueueOpen(!queueOpen)}
           deviceId={deviceId}
-          destDir={destDir}
           compression={compression}
-          onChangeDest={() => toast.info('Sends go to the device folder you are viewing', 'Open a folder in the device pane to change it.')}
-          onResetDest={() => {
-            setManualDest(null)
-            if (remoteDir) toast.info('Sends go to the device folder you are viewing', 'Go to the roots view to use the device default folder.')
-          }}
           onChangeCompression={setCompression}
           onReveal={revealFolder}
         />

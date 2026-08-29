@@ -549,20 +549,20 @@ export function Viewer() {
         <PhasePill state={state} />
         <div className="ml-1 hidden items-center gap-1 md:flex">
           {displays.length > 1 && (
-            <div className="flex items-center gap-0.5 rounded-md border border-white/10 px-1 py-0.5" title="Displays: click to focus, toggle the box to stream several at once">
+            <div className="flex items-center gap-0.5 rounded-md border border-white/10 px-1 py-0.5" title="Displays">
               <MonitorSmartphone size={13} className="mx-1 text-[#9aa3b2]" />
               {displays.map((d) => (
                 <span key={d.index} className={cx('flex items-center rounded', active.includes(d.index) ? 'bg-[#6cb6ff]/20 text-[#6cb6ff]' : 'text-[#9aa3b2]')}>
                   <button onClick={() => focusDisplay(d.index)} className={cx('px-1.5 py-0.5 text-[11.5px] hover:text-white', state.currentDisplay === d.index && 'font-semibold')} title={`${d.name} · ${d.width}×${d.height}`}>
                     {d.index + 1}
                   </button>
-                  <button onClick={() => toggleDisplay(d.index)} className="pr-1 hover:text-white" title={active.includes(d.index) ? 'Stop streaming this display' : 'Also stream this display'} disabled={!connected}>
+                  <button onClick={() => toggleDisplay(d.index)} className="pr-1 hover:text-white" title={active.includes(d.index) ? 'Stop streaming' : 'Also stream'} disabled={!connected}>
                     <Square size={10} className={active.includes(d.index) ? 'fill-current' : ''} />
                   </button>
                 </span>
               ))}
               {active.length > 1 && (
-                <HudButton active={layout === 'grid'} onClick={() => setLayout((l) => (l === 'grid' ? 'single' : 'grid'))} title={layout === 'grid' ? 'Show one display' : 'Show all streaming displays'}>
+                <HudButton active={layout === 'grid'} onClick={() => setLayout((l) => (l === 'grid' ? 'single' : 'grid'))} title={layout === 'grid' ? 'Single display' : 'All displays'}>
                   <LayoutGrid size={13} />
                 </HudButton>
               )}
@@ -577,7 +577,7 @@ export function Viewer() {
             onClick={toggleAnnotate}
             title={
               !connected
-                ? 'Annotate (available while connected)'
+                ? 'Annotate'
                 : !allowAnnotations
                   ? 'Annotations are disabled for this device'
                   : annotateDisabledByDevice
@@ -609,7 +609,7 @@ export function Viewer() {
                 return !v
               })
             }}
-            title={showRemoteCursor ? 'Remote cursor: shown (drawn locally, never lags the video)' : 'Remote cursor: hidden'}
+            title={showRemoteCursor ? 'Hide remote cursor' : 'Show remote cursor'}
           >
             <MousePointer2 size={14} />
           </HudButton>
@@ -618,7 +618,7 @@ export function Viewer() {
               active={state.audioEnabled}
               onClick={toggleAudio}
               disabled={!connected || !allowAudio || !state.audioAvailable}
-              title={!allowAudio ? 'Audio is disabled for this device' : !state.audioAvailable ? 'Audio unavailable on this session' : state.audioEnabled ? 'Mute device audio' : 'Listen to device audio'}
+              title={!allowAudio ? 'Audio disabled' : !state.audioAvailable ? 'Audio unavailable' : state.audioEnabled ? 'Mute device audio' : 'Listen to device audio'}
             >
               {state.audioEnabled ? <Volume2 size={14} /> : <VolumeX size={14} />}
             </HudButton>
@@ -636,15 +636,15 @@ export function Viewer() {
             )}
           </span>
           {device?.os === 'windows' && (
-            <HudButton onClick={() => sendControl({ t: 'secure_attention' })} disabled={!connected} title="Send Ctrl+Alt+Del (secure attention)">
+            <HudButton onClick={() => sendControl({ t: 'secure_attention' })} disabled={!connected} title="Ctrl+Alt+Del">
               <CadIcon />
             </HudButton>
           )}
-          <HudButton onClick={pasteToRemote} disabled={!connected || !allowClipboard} title="Send my clipboard text to the device (Ctrl/Cmd+V on the screen also sends images and files)">
+          <HudButton onClick={pasteToRemote} disabled={!connected || !allowClipboard} title="Paste clipboard to device">
             <ClipboardPaste size={14} />
           </HudButton>
           {state.remoteClipboard !== null && (
-            <HudButton onClick={() => navigator.clipboard.writeText(state.remoteClipboard ?? '').then(() => toast.success('Copied the device clipboard'))} title="Copy the device clipboard text">
+            <HudButton onClick={() => navigator.clipboard.writeText(state.remoteClipboard ?? '').then(() => toast.success('Copied the device clipboard'))} title="Copy device clipboard">
               <ClipboardCopy size={14} />
             </HudButton>
           )}
@@ -654,7 +654,7 @@ export function Viewer() {
               refreshDestDir()
               setDrawer((d) => (d === 'files' ? null : 'files'))
             }}
-            title="Files: side-by-side file manager"
+            title="Files"
             badge={activeTransfers || undefined}
           >
             <FolderOpen size={14} />
@@ -665,7 +665,7 @@ export function Viewer() {
               setChatBubble(null)
               setDrawer((d) => (d === 'chat' ? null : 'chat'))
             }}
-            title="Chat with the person at the device"
+            title="Chat"
             badge={state.unreadChat || undefined}
             pulseKey={chatPulse}
           >
@@ -677,14 +677,14 @@ export function Viewer() {
               setChatSoundEnabled(next)
               setChatSound(next)
             }}
-            title={chatSound ? 'Chat sound on — click to mute' : 'Chat sound muted — click to enable'}
+            title={chatSound ? 'Mute chat sound' : 'Unmute chat sound'}
           >
             {chatSound ? <Bell size={14} /> : <BellOff size={14} />}
           </HudButton>
-          <HudButton onClick={() => sendControl({ t: 'request_keyframe' })} disabled={!connected} title="Refresh the picture">
+          <HudButton onClick={() => sendControl({ t: 'request_keyframe' })} disabled={!connected} title="Refresh picture">
             <RefreshCw size={14} />
           </HudButton>
-          <HudButton active={showStats} onClick={() => setShowStats((v) => !v)} title="Statistics (S while not controlling)">
+          <HudButton active={showStats} onClick={() => setShowStats((v) => !v)} title="Statistics (S)">
             <Activity size={14} />
           </HudButton>
           <HudButton onClick={toggleFullscreen} title={fullscreen ? 'Exit full screen' : 'Full screen'}>
@@ -804,7 +804,7 @@ export function Viewer() {
 
           {displaysChanged && connected && (
             <div className="pointer-events-none absolute inset-x-0 bottom-3 z-10 flex justify-center">
-              <div className="rounded-md bg-[#3a2c10] px-3 py-1 text-[12px] text-[#f5b942]">The device's displays changed — reconnect to pick up the new layout.</div>
+              <div className="rounded-md bg-[#3a2c10] px-3 py-1 text-[12px] text-[#f5b942]">Displays changed — reconnect.</div>
             </div>
           )}
 
@@ -1162,7 +1162,7 @@ function DisplayTile({
       {needsGesture && stream && (
         <button type="button" onClick={playAfterGesture} className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-2 bg-black/70 text-white">
           <span className="text-lg font-semibold">Click to start the video</span>
-          <span className="text-sm opacity-80">Your browser blocked autoplay for this site (check the autoplay / Shields settings to avoid this).</span>
+          <span className="text-sm opacity-80">Autoplay blocked by the browser.</span>
         </button>
       )}
       {showStats && <StatsOverlay display={display} stats={stats} rtc={rtc} latency={latency} />}
@@ -1354,7 +1354,7 @@ function StateOverlay({ state, deviceName, deviceId, onRetry, onLeave, onCancel 
     if (state.phase === 'connected' && state.iceState === 'disconnected') {
       return (
         <div className="pointer-events-none absolute inset-x-0 top-2 z-10 flex justify-center">
-          <div className="rounded-md bg-[#3a2c10] px-3 py-1 text-[12px] text-[#f5b942]">Connection interrupted — trying to recover…</div>
+          <div className="rounded-md bg-[#3a2c10] px-3 py-1 text-[12px] text-[#f5b942]">Reconnecting…</div>
         </div>
       )
     }

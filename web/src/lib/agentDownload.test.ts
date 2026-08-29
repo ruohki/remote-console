@@ -40,7 +40,7 @@ describe('phase copy', () => {
     expect(phaseLabel(baking, true, t0 + 500)).toBe('Baking…')
     expect(phaseLabel(baking, true, t0 + 5000)).toBe('Signing & notarizing…')
     expect(phaseLabel(baking, false, t0 + 5000)).toBe('Baking…')
-    expect(phaseHint(baking, true, t0 + 5000)).toMatch(/under a minute/)
+    expect(phaseHint(baking, true, t0 + 5000)).toMatch(/up to a minute/)
     expect(phaseLabel({ ...IDLE, phase: 'receiving', receivedBytes: 2 * 1_048_576, totalBytes: 10 * 1_048_576 }, false)).toBe('Receiving 2.0 / 10.0 MB')
     expect(isInFlight('baking')).toBe(true)
     expect(isInFlight('done')).toBe(false)
@@ -115,6 +115,6 @@ describe('startAgentDownload', () => {
   it('falls back to a generic message for non-JSON failures', async () => {
     const fetchImpl = vi.fn(async () => new Response('nope', { status: 404 })) as unknown as typeof fetch
     await startAgentDownload('windows-x86_64', { fetchImpl, save: () => undefined })
-    expect(useAgentDownloadStore.getState().byPlatform['windows-x86_64']?.error).toMatch(/No base binary/)
+    expect(useAgentDownloadStore.getState().byPlatform['windows-x86_64']?.error).toMatch(/Not available/)
   })
 })

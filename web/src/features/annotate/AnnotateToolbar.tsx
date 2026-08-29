@@ -18,7 +18,7 @@ export function AnnotateToolbar({ onUndo, onClear, onExit }: { onUndo: () => voi
   return (
     <div className="pointer-events-auto flex items-center gap-1 rounded-lg border border-white/10 bg-[#0e1116]/95 px-1.5 py-1 text-[#e6e9ef] shadow-pop backdrop-blur" role="toolbar" aria-label="Annotation tools" data-testid="annotate-toolbar">
       <span className="mono px-1.5 text-[10.5px] tracking-wide text-[#9aa3b2] uppercase">Annotate</span>
-      <ToolButton active={tool === 'pen'} onClick={() => setTool('pen')} title="Pen (draw on the remote screen)">
+      <ToolButton active={tool === 'pen'} onClick={() => setTool('pen')} title="Pen">
         <Pencil size={14} />
       </ToolButton>
       <ToolButton active={tool === 'laser'} onClick={() => setTool('laser')} title="Laser pointer">
@@ -57,7 +57,7 @@ export function AnnotateToolbar({ onUndo, onClear, onExit }: { onUndo: () => voi
         ))}
       </div>
       <span className="mx-1 h-5 w-px bg-white/10" />
-      <ToolButton onClick={onUndo} title="Undo the last stroke (clears and redraws the rest on the device)">
+      <ToolButton onClick={onUndo} title="Undo">
         <Undo2 size={14} />
       </ToolButton>
       <ToolButton onClick={onClear} title="Clear all annotations">

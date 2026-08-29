@@ -125,10 +125,10 @@ export function phaseLabel(state: DownloadState, signingConfigured: boolean, now
 /** Longer explanation shown under the spinner while the console works. */
 export function phaseHint(state: DownloadState, signingConfigured: boolean, now: number = Date.now()): string | null {
   if (state.phase !== 'baking') return null
-  if (!signingConfigured) return 'Embedding the console URL and branding into the binary.'
+  if (!signingConfigured) return ''
   return now - state.startedAt > 2500
-    ? 'Usually under a minute the first time — Apple has to check the app. Later downloads of the same build are instant.'
-    : 'Embedding the console URL and branding into the binary.'
+    ? 'Signing and notarizing — up to a minute the first time.'
+    : 'Baking…'
 }
 
 // Module-level guard: one in-flight request per platform, survives unmounts / route changes.
@@ -168,7 +168,7 @@ async function performDownload(platform: AgentPlatform, opts: StartOptions): Pro
   try {
     res = await fetchImpl(agentDownloadUrl(platform, opts), { credentials: 'same-origin', headers: { Accept: 'application/octet-stream, application/zip, application/json' } })
   } catch {
-    return fail(platform, 'The console could not be reached. Check your connection and try again.', opts)
+    return fail(platform, 'Console unreachable.', opts)
   }
 
   if (!res.ok) {
@@ -184,14 +184,14 @@ async function performDownload(platform: AgentPlatform, opts: StartOptions): Pro
   try {
     blob = await readWithProgress(res, (received) => store.set(platform, { receivedBytes: received }))
   } catch {
-    return fail(platform, 'The download was interrupted before the file was complete.', opts)
+    return fail(platform, 'Download interrupted.', opts)
   }
 
   store.set(platform, { phase: 'saving' })
   try {
     save(blob, filename)
   } catch {
-    return fail(platform, 'The browser refused to save the file.', opts)
+    return fail(platform, 'Could not save the file.', opts)
   }
   store.set(platform, { phase: 'done', receivedBytes: blob.size, totalBytes: blob.size })
   opts.onDone?.(outcome, filename)
@@ -204,9 +204,9 @@ function fail(platform: AgentPlatform, message: string, opts: StartOptions) {
 
 async function errorFromResponse(res: Response): Promise<string> {
   const generic: Record<number, string> = {
-    401: 'You need to be signed in as an admin (or use a valid enrollment token) to download the agent.',
-    404: 'No base binary is available for this platform on the console.',
-    410: 'This enrollment token has no uses left or has expired — create a new one.',
+    401: 'Admin sign-in or a valid enrollment token required.',
+    404: 'Not available for this platform.',
+    410: 'Enrollment token exhausted or expired.',
   }
   try {
     const text = await res.text()

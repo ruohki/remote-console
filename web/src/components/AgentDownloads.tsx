@@ -11,9 +11,9 @@ import { Badge, Button, EmptyState, Skeleton, Table, Td, Th, Toggle, cx } from '
 export { agentDownloadUrl }
 
 export const PLATFORMS: { id: AgentPlatform; label: string; short: string; ext: string; icon: typeof Apple }[] = [
-  { id: 'macos-universal', label: 'macOS (Apple silicon + Intel)', short: 'macOS', ext: '.zip (app bundle)', icon: Apple },
+  { id: 'macos-universal', label: 'macOS', short: 'macOS', ext: '.zip', icon: Apple },
   { id: 'windows-x86_64', label: 'Windows x64', short: 'Windows x64', ext: '.exe', icon: Monitor },
-  { id: 'windows-aarch64', label: 'Windows ARM64', short: 'Windows ARM64', ext: '.exe', icon: Monitor },
+  { id: 'windows-aarch64', label: 'Windows arm64', short: 'Windows arm64', ext: '.exe', icon: Monitor },
 ]
 
 export function useAgentDownloads(enabled = true) {
@@ -46,10 +46,10 @@ function useStartDownload() {
 }
 
 function outcomeText(platform: AgentPlatform, o: DownloadOutcome): string {
-  if (platform !== 'macos-universal') return o.signed ? 'Signed.' : 'Unsigned build.'
-  if (o.notarized) return 'Signed and notarized — opens like any other app.'
-  if (o.signed) return 'Signed but not notarized — other Macs may ask for “Open Anyway”.'
-  return 'Unsigned — macOS will ask for “Open Anyway” on first launch.'
+  if (platform !== 'macos-universal') return o.signed ? 'Signed' : 'Unsigned'
+  if (o.notarized) return 'Signed · Notarized'
+  if (o.signed) return 'Signed · Not notarized'
+  return 'Unsigned'
 }
 
 function OutcomeBadges({ platform, outcome }: { platform: AgentPlatform; outcome: DownloadOutcome }) {
@@ -142,7 +142,7 @@ export function AgentDownloadButton({
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button size="sm" icon={<Download size={13} />} loading={busy} disabled={unavailable} onClick={trigger} aria-busy={busy} title={unavailable ? 'No base binary available for this platform' : undefined}>
+      <Button size="sm" icon={<Download size={13} />} loading={busy} disabled={unavailable} onClick={trigger} aria-busy={busy} title={unavailable ? 'Not available' : undefined}>
         {busy ? label : 'Download'}
       </Button>
       {busy && hint && (
@@ -210,11 +210,9 @@ export function AgentDownloadMenu({ token, label = 'Download agent', size = 'md'
             <AgentDownloadButton key={p.id} platform={p.id} token={token} quick={quick} download={byPlatform.get(p.id)} listingPending={downloads.isPending} compact />
           ))}
           {downloads.isError && <div className="px-2.5 py-1.5 text-[12px] text-danger">{errorMessage(downloads.error)}</div>}
-          <p className="px-2.5 pt-1.5 pb-1 text-[11px] text-ink-faint">The first download of a build takes up to a minute when the console signs and notarizes it; later ones are instant.</p>
           {token && (
             <div className="mt-1 border-t border-line px-2.5 pt-2 pb-1">
-              <Toggle checked={quick} onChange={setQuick} label="Quick support build" />
-              <p className="mt-1 text-[11.5px] text-ink-faint">Runs in the foreground and offers “Install as a service” instead of installing right away.</p>
+              <Toggle checked={quick} onChange={setQuick} label="Quick support build" title="Runs in the foreground; the user chooses whether to install" />
             </div>
           )}
         </div>
@@ -226,9 +224,9 @@ export function AgentDownloadMenu({ token, label = 'Download agent', size = 'md'
 function SigningBadge({ d, platform }: { d: AgentDownload | undefined; platform: AgentPlatform }) {
   if (!d || !d.available) return <span className="text-ink-faint">—</span>
   const isMac = platform === 'macos-universal'
-  if (d.notarized) return <Badge tone="live">Signed &amp; notarized</Badge>
-  if (d.signed) return <Badge tone={isMac ? 'warn' : 'live'}>{isMac ? 'Signed, not notarized' : 'Signed'}</Badge>
-  if (d.signing_configured) return <Badge tone="warn">Signing configured · not baked yet</Badge>
+  if (d.notarized) return <Badge tone="live">Signed · Notarized</Badge>
+  if (d.signed) return <Badge tone={isMac ? 'warn' : 'live'}>{isMac ? 'Signed · Not notarized' : 'Signed'}</Badge>
+  if (d.signing_configured) return <Badge tone="warn">Not baked yet</Badge>
   return (
     <Badge tone="warn" className="whitespace-nowrap">
       Unsigned
@@ -236,32 +234,19 @@ function SigningBadge({ d, platform }: { d: AgentDownload | undefined; platform:
   )
 }
 
-/** Settings → Agent downloads: availability per platform plus an explanation of baking. */
+/** Settings → Agent downloads: availability per platform. */
 export function AgentDownloadsPanel() {
   const downloads = useAgentDownloads()
   return (
     <div className="flex flex-col gap-4">
-      <div className="panel p-4 text-ink-muted">
-        <div className="mb-1 font-medium text-ink">What a branded agent is</div>
-        <p>
-          The console takes the released agent binary and appends a signed configuration: its own URL, the product name, colour and logo from{' '}
-          <b>Branding</b>, and — when downloaded for an enrollment token — that token. The signature (ed25519, key shown on the Console tab) means a
-          baked binary only ever talks to this console and cannot be pointed elsewhere.
-        </p>
-        <p className="mt-2">
-          Install one-liners download the baked binary automatically; a baked agent that is started by double-clicking opens its application window
-          and enrolls itself with the embedded token.
-        </p>
-      </div>
-      <div className="flex items-center justify-between">
-        <div className="text-ink-muted">Downloads use the branding as it is saved right now.</div>
-        <AgentDownloadMenu label="Download branded agent" variant="primary" />
+      <div className="flex items-center justify-end">
+        <AgentDownloadMenu label="Download agent" variant="primary" />
       </div>
       {downloads.isPending ? (
         <Skeleton className="h-32 w-full" />
       ) : downloads.isError ? (
         <div className="panel">
-          <EmptyState title="Could not load the agent downloads" detail={errorMessage(downloads.error)} />
+          <EmptyState title="Could not load downloads" detail={errorMessage(downloads.error)} />
         </div>
       ) : (
         <>
@@ -271,7 +256,6 @@ export function AgentDownloadsPanel() {
                 <Th>Platform</Th>
                 <Th>Status</Th>
                 <Th>Signing</Th>
-                <Th>Source</Th>
                 <Th className="text-right">Size</Th>
                 <Th className="w-44" />
               </tr>
@@ -286,17 +270,12 @@ export function AgentDownloadsPanel() {
                       <div className="flex items-center gap-2">
                         <p.icon size={14} className="text-ink-muted" />
                         <span className="font-medium">{p.label}</span>
-                        <span className="mono text-ink-faint">
-                          {p.id}
-                          {p.ext}
-                        </span>
                       </div>
                     </Td>
                     <Td>{ok ? <Badge tone="live">Available</Badge> : <Badge tone="warn">Not available</Badge>}</Td>
                     <Td>
                       <SigningBadge d={d} platform={p.id} />
                     </Td>
-                    <Td className="text-ink-muted">{d ? (d.source === 'local' ? 'AGENT_BINARY_DIR' : 'GitHub release') : '—'}</Td>
                     <Td className="mono text-right text-ink-muted">{d?.size !== undefined ? bytes(d.size) : '—'}</Td>
                     <Td className="text-right">
                       <AgentDownloadButton platform={p.id} download={d} />
@@ -306,29 +285,11 @@ export function AgentDownloadsPanel() {
               })}
             </tbody>
           </Table>
-          <p className="-mt-2 text-[12px] text-ink-faint">
-            The first download of a build is baked on demand — with signing and notarization configured that takes up to a minute; the result is cached, so
-            later downloads are instant. macOS downloads are a <span className="mono">&lt;Product&gt;.zip</span> containing <span className="mono">&lt;Product&gt;.app</span>:
-            when notarized it opens directly, otherwise macOS asks for “Open Anyway” once.
-          </p>
         </>
       )}
-      <div className="panel p-4 text-[12.5px] text-ink-muted">
-        <div className="mb-1 font-medium text-ink">macOS downloads and Gatekeeper</div>
-        <p>
-          macOS downloads are a <span className="mono">&lt;Product&gt;.zip</span> containing a double-clickable <span className="mono">&lt;Product&gt;.app</span>. When a
-          Developer ID identity and notarization are configured on the console (<span className="mono">MACOS_SIGN_IDENTITY</span>,{' '}
-          <span className="mono">MACOS_NOTARY_PROFILE</span>), the app is signed and notarized and opens like any other app.
-        </p>
-        <p className="mt-1.5">
-          Without signing, macOS shows “Apple could not verify … is free of malware”. The person at the device then has to allow it once: System Settings →
-          Privacy &amp; Security → <b>Open Anyway</b> (or remove the quarantine flag with <span className="mono">xattr -d com.apple.quarantine</span>).
-        </p>
-      </div>
       {downloads.isSuccess && downloads.data.every((d) => !d.available) && (
         <div className="rounded-md bg-warn-soft px-3 py-2 text-[12.5px]">
-          No base binaries are available. Put release builds into <span className="mono">AGENT_BINARY_DIR</span> (files named like the release assets) or make sure
-          the console can reach <span className="mono">AGENT_DOWNLOAD_BASE</span>.
+          No agent binaries found (<span className="mono">AGENT_BINARY_DIR</span> / <span className="mono">AGENT_DOWNLOAD_BASE</span>).
         </div>
       )}
     </div>

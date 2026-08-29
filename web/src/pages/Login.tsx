@@ -323,7 +323,7 @@ export function Login() {
             </Button>
           </form>
         ) : (
-          !showSso && !showPasskey && <ErrorBox>No sign-in method is available. An administrator needs to enable single sign-on or password login.</ErrorBox>
+          !showSso && !showPasskey && <ErrorBox>No sign-in method available.</ErrorBox>
         )}
         {policyNote && (
           <p className="text-[12px] text-ink-faint" data-testid="require-2fa-note">

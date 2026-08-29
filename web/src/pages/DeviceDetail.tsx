@@ -9,7 +9,7 @@ import { canConnect } from '@/lib/access'
 import type { AgentConfig, SessionSummary } from '@/protocol'
 import { useLive } from '@/store/live'
 import { useAuth, useIsAdmin } from '@/store/auth'
-import { Badge, Button, DangerConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
+import { InfoTip, Badge, Button, DangerConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
 import { CodecBadge, GroupChips, ModeBadge, OsIcon, OverrideBadge, SessionStateBadge, StatusLed } from '@/components/badges'
 import { RECENT_SESSIONS, allSessionsHref, truncateRecent } from '@/lib/sessionsList'
 import { hasOverrides, overrideLabels } from '@/lib/overrides'
@@ -264,9 +264,9 @@ export function DeviceDetail() {
               )}
             </div>
             <ul className="list-disc pl-5 text-[12.5px]">
-              <li>The agent receives a goodbye and stops; any running session ends.</li>
-              <li>Its enrollment is deleted — the device must be enrolled again with a new token to come back.</li>
-              <li>Session history and audit entries for this device are removed with it.</li>
+              <li>Stops the agent and ends any session.</li>
+              <li>Removes its enrollment — re-enroll with a new token.</li>
+              <li>Deletes its session history and audit entries.</li>
             </ul>
           </div>
         }
@@ -374,7 +374,7 @@ function MetaForm({ device, editable, onSaved }: { device: Detail; editable: boo
     <section className="panel">
       <div className="flex items-center justify-between border-b border-line px-4 py-2.5">
         <span className="font-medium">Details</span>
-        {!editable && <span className="text-[11.5px] text-ink-faint">Connect permission needed to edit</span>}
+        {!editable && <span className="text-[11.5px] text-ink-faint" title="Connect permission needed to edit">Read only</span>}
       </div>
       <form
         className="grid gap-3 px-4 py-3 sm:grid-cols-2"
@@ -387,8 +387,8 @@ function MetaForm({ device, editable, onSaved }: { device: Detail; editable: boo
           <Field label="Name">
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="Tags" hint="Comma separated.">
-            <Input value={tags} onChange={(e) => setTags(e.target.value)} />
+          <Field label="Tags">
+            <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="office, laptop" />
           </Field>
           <Field label="Notes" className="sm:col-span-2">
             <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Location, owner, quirks…" />
@@ -413,7 +413,7 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
   const save = useMutation({
     mutationFn: () => api.patch<Detail>(`/api/devices/${device.id}/config`, cfg),
     onSuccess: () => {
-      toast.success('Settings saved', device.online ? 'The agent applies them right away.' : 'The agent picks them up when it reconnects.')
+      toast.success('Settings saved', device.online ? 'Applied now' : 'Applied when the device reconnects')
       onSaved()
     },
     onError: (e) => toast.error('Could not save settings', errorMessage(e)),
@@ -461,14 +461,14 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
           )}
           <div className="eyebrow pt-2">Permissions</div>
           <div className="flex flex-col gap-2">
-            <Toggle checked={cfg.allow_input} onChange={(v) => set('allow_input', v)} label="Allow mouse and keyboard control" />
+            <Toggle checked={cfg.allow_input} onChange={(v) => set('allow_input', v)} label="Allow mouse & keyboard" />
             <Toggle checked={cfg.allow_clipboard} onChange={(v) => set('allow_clipboard', v)} label="Allow clipboard sync" />
-            <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer and remote file browsing" />
-            <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow streaming the device's audio" />
-            <Toggle checked={cfg.allow_annotations ?? true} onChange={(v) => set('allow_annotations', v)} label="Allow on-screen annotations (guidance drawings, independent of input control)" />
+            <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer" />
+            <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow audio" />
+            <Toggle checked={cfg.allow_annotations ?? true} onChange={(v) => set('allow_annotations', v)} label="Allow on-screen annotations" tip="Works even while input control is off" />
           </div>
           {cfg.allow_file_transfer && (
-            <Field label="Upload folder on the device" hint="Leave empty for Downloads/RemoteAgent in the user's home.">
+            <Field label="Upload folder">
               <Input value={cfg.transfer_dir ?? ''} placeholder="~/Downloads/RemoteAgent" onChange={(e) => set('transfer_dir', e.target.value.trim() ? e.target.value : undefined)} />
             </Field>
           )}
@@ -485,7 +485,7 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
               />
             </Field>
           </div>
-          <Field label="Preferred codec" hint="H.265 needs hardware support on both ends; H.264 is the fallback.">
+          <Field label="Preferred codec" tip="H.265 needs hardware support on both ends; H.264 is the fallback">
             <Select
               value={cfg.preferred_codec}
               onChange={(v) => set('preferred_codec', v)}
@@ -496,10 +496,10 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
             />
           </Field>
           <div className="eyebrow pt-2">Agent</div>
-          <Field label="Heartbeat interval (seconds)">
+          <Field label="Heartbeat (seconds)">
             <Input type="number" min={5} max={300} value={cfg.heartbeat_interval_s} onChange={(e) => set('heartbeat_interval_s', Number(e.target.value))} />
           </Field>
-          <Field label="Display name shown on the device">
+          <Field label="Display name" tip="Shown on the device">
             <Input value={cfg.display_name} onChange={(e) => set('display_name', e.target.value)} />
           </Field>
         </fieldset>
@@ -524,22 +524,11 @@ function RestrictionsPanel({ device }: { device: Detail }) {
       <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
         <ShieldAlert size={14} className={active ? 'text-warn' : 'text-ink-faint'} />
         <span className="font-medium">Device-side restrictions</span>
+        <InfoTip text="Set in the agent app on the device; they only tighten the settings below" />
         {active && <Badge tone="warn" className="ml-auto">Active</Badge>}
       </div>
-      <div className="px-4 py-3 text-[12.5px]">
-        {active ? (
-          <ul className="flex flex-col gap-1">
-            {labels.map((l) => (
-              <li key={l} className="flex items-center gap-2">
-                <span className="size-1.5 shrink-0 rounded-full bg-warn" />
-                {l}
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <div className="text-ink-muted">The person at the device has not restricted anything; the settings below apply as-is.</div>
-        )}
-        <p className="mt-2 text-ink-faint">Set in the agent app on the device. Restrictions only tighten the console settings and cannot be changed from here.</p>
+      <div className="flex flex-wrap gap-1.5 px-4 py-3 text-[12.5px]">
+        {active ? labels.map((l) => <Badge key={l} tone="warn">{l}</Badge>) : <span className="text-ink-muted">None</span>}
       </div>
     </section>
   )

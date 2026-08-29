@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, FlaskConical, GripVertical, Plus, Trash2 } from 'lu
 import { api, errorMessage } from '@/lib/api'
 import type { Group, GroupPermission, MappedRole, MappingTestResult, SyncMode } from '@/lib/types'
 import { previewMapping, reduceMappings, validateRows, type MappingAction, type MappingRow } from '@/lib/mappings'
-import { Badge, Button, Input, Select, cx } from '@/components/ui'
+import { InfoTip, Badge, Button, Input, Select, cx } from '@/components/ui'
 
 /**
  * Editor for `Mapping[]` + `sync_mode` of an SSO provider. Rows are evaluated top to bottom on
@@ -54,28 +54,26 @@ export function MappingEditor({
     <div className="flex flex-col gap-3" data-testid="mapping-editor">
       <div className="flex flex-wrap items-center gap-3">
         <div>
-          <div className="eyebrow mb-1">Sync mode</div>
+          <div className="eyebrow mb-1 flex items-center gap-1">
+            Sync mode
+            <InfoTip text="Authoritative re-evaluates SSO-created grants on every login; manual grants are kept" />
+          </div>
           <Select<SyncMode>
             value={syncMode}
             onChange={onSyncMode}
             className="w-56"
             aria-label="Sync mode"
             options={[
-              { value: 'additive', label: 'Additive', description: 'Logins only ever add roles and grants.' },
-              { value: 'authoritative', label: 'Authoritative', description: 'SSO is the source of truth: grants it created are removed when they stop matching.' },
+              { value: 'additive', label: 'Additive', description: 'Only adds roles and grants' },
+              { value: 'authoritative', label: 'Authoritative', description: 'Removes SSO grants that stop matching' },
             ]}
           />
         </div>
-        <p className="max-w-md text-[12px] text-ink-muted">
-          {syncMode === 'authoritative'
-            ? 'Grants created by SSO are re-evaluated on every login; grants an admin created by hand are kept. A user is never demoted below the last admin.'
-            : 'Nothing is ever taken away on login. Use this while rolling out, switch to authoritative once the IdP groups are the source of truth.'}
-        </p>
       </div>
 
       {rows.length === 0 ? (
         <div className="rounded-lg border border-dashed border-line-strong p-4 text-center text-[12.5px] text-ink-muted">
-          No rules yet — users get the default role ({defaultRole === 'none' ? 'no access' : defaultRole}) and no device groups.
+          No rules — default role: {defaultRole === 'none' ? 'no access' : defaultRole}
         </div>
       ) : (
         <ol className="flex flex-col gap-2">
@@ -102,7 +100,7 @@ export function MappingEditor({
                   <div>
                     <Input
                       value={r.idp_group}
-                      placeholder="IdP group, e.g. it-support-* "
+                      placeholder="it-support-*"
                       onChange={(e) => dispatch({ type: 'set_group', key: r.key, idp_group: e.target.value })}
                       className={cx('mono', errors[r.key] && 'border-danger')}
                       aria-label="IdP group pattern"
@@ -113,9 +111,9 @@ export function MappingEditor({
                     onChange={(v) => dispatch({ type: 'set_role', key: r.key, role: v === 'keep' ? undefined : v })}
                     aria-label="Role"
                     options={[
-                      { value: 'keep', label: 'No role change', description: 'Only grants below apply' },
+                      { value: 'keep', label: 'No role change' },
                       { value: 'operator', label: 'Operator' },
-                      { value: 'admin', label: 'Admin', description: 'Full access — use with care' },
+                      { value: 'admin', label: 'Admin' },
                     ]}
                   />
                 </div>
@@ -127,7 +125,7 @@ export function MappingEditor({
               </div>
               <div className="ml-11 flex flex-wrap gap-1.5">
                 {groups.length === 0 ? (
-                  <span className="text-[12px] text-ink-faint">No device groups exist yet.</span>
+                  <span className="text-[12px] text-ink-faint">No device groups yet</span>
                 ) : (
                   groups.map((g) => {
                     const cur = r.groups?.find((x) => x.group_id === g.id)?.permission ?? null
@@ -186,11 +184,10 @@ function TestMapping({ rows, groups, defaultRole, provider }: { rows: MappingRow
       <div className="mb-2 flex items-center gap-2">
         <FlaskConical size={14} className="text-ink-muted" />
         <span className="font-medium">Test mapping</span>
-        <span className="text-[12px] text-ink-muted">— what a user with these IdP groups would get</span>
       </div>
       <div className="flex flex-col gap-2 sm:flex-row">
         <Input value={input} onChange={(e) => setInput(e.target.value)} placeholder="it-support-emea, auditors" className="mono flex-1" aria-label="IdP groups to test" data-testid="mapping-test-input" />
-        <Button size="sm" onClick={() => server.mutate()} loading={server.isPending} disabled={idpGroups.length === 0} title="Evaluate on the server with the saved configuration">
+        <Button size="sm" onClick={() => server.mutate()} loading={server.isPending} disabled={idpGroups.length === 0} title="Uses the saved configuration">
           Test on server
         </Button>
       </div>

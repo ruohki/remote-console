@@ -10,17 +10,14 @@ export interface TransferQueueProps {
   open: boolean
   onToggle: () => void
   deviceId: string
-  destDir: string | null
   compression: CompressionPref
-  onChangeDest: () => void
-  onResetDest: () => void
   onChangeCompression: (p: CompressionPref) => void
   onReveal: (dir: string) => void
 }
 
 /**
  * Bottom strip of the file manager: a one-line summary that stays visible, and the full
- * transfer list (progress, resume rows, compression, destination) when expanded.
+ * transfer list (progress, resume rows, compression) when expanded.
  */
 export function TransferQueue({ open, onToggle, ...tab }: TransferQueueProps) {
   const transfers = useFiles((s) => s.transfers)
@@ -67,7 +64,7 @@ export function TransferQueue({ open, onToggle, ...tab }: TransferQueueProps) {
         )}
       </button>
       <div id="transfer-queue-body" className={cx('flex flex-col border-t border-white/10', open ? 'h-[260px]' : 'hidden')}>
-        <TransfersTab {...tab} hint="or drop files onto the device pane" />
+        <TransfersTab {...tab} />
       </div>
     </div>
   )

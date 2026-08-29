@@ -68,7 +68,7 @@ export function SecurityPage() {
 
   return (
     <div className="w-full max-w-3xl">
-      <PageHeader title="Account security" subtitle="Second factors, passkeys and how you sign in." />
+      <PageHeader title="Account security" />
 
       {/* ── current session ── */}
       <section className="panel mb-4 p-4">
@@ -79,7 +79,7 @@ export function SecurityPage() {
           <Badge tone="neutral">{user.role}</Badge>
           {user.auth_method && <span className="text-[12.5px] text-ink-muted">via {METHOD_LABEL[user.auth_method]}</span>}
           {user.break_glass && (
-            <span title="Password sign-in stays available for this account even when local login is disabled">
+            <span title="Password sign-in always allowed">
               <Badge tone="warn">Break-glass account</Badge>
             </span>
           )}
@@ -148,7 +148,7 @@ export function SecurityPage() {
         ) : passkeys.isError ? (
           <EmptyState title="Could not load passkeys" detail={errorMessage(passkeys.error)} />
         ) : passkeys.data.length === 0 ? (
-          <EmptyState title="No passkeys yet" detail="Add one to sign in without a password, or as a second factor." />
+          <EmptyState title="No passkeys yet" detail="Passwordless sign-in or second factor." />
         ) : (
           <Table>
             <thead>
@@ -165,7 +165,7 @@ export function SecurityPage() {
                   <Td>
                     <span className="font-medium">{p.name}</span>
                     {p.backup_eligible && (
-                      <span className="ml-2" title="Synced passkey (backed up to your platform account)">
+                      <span className="ml-2" title="Synced passkey">
                         <Badge>Synced</Badge>
                       </span>
                     )}

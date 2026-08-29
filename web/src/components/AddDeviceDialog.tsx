@@ -63,7 +63,7 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
             Create an enrollment token, then run the installer on the machine. It downloads the agent, enrolls it here and starts the
             service.
           </p>
-          <Field label="Label" hint="What this token is for, e.g. “Front desk PCs”.">
+          <Field label="Label">
             <Input autoFocus value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Front desk PCs" />
           </Field>
           <div className="grid grid-cols-2 gap-3">
@@ -105,7 +105,7 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
             <Field label="Default tags" hint="Comma separated.">
               <Input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="office, windows" />
             </Field>
-            <Field label="Default group" hint="Operators only see devices in groups they are granted." className="col-span-2">
+            <Field label="Default group" className="col-span-2">
               <Select
                 value={groupId}
                 onChange={setGroupId}
@@ -138,11 +138,11 @@ export function AddDeviceDialog({ open, onClose }: { open: boolean; onClose: () 
           <div className="rounded-md border border-warn/40 bg-warn-soft px-3 py-2 text-[12.5px]">
             The token is shown only once. Copy an installer command now.
           </div>
-          <Installer title="macOS" hint="Terminal, will ask for your password (sudo)." command={created.install.macos} />
-          <Installer title="Windows" hint="PowerShell, run as administrator." command={created.install.windows} />
+          <Installer title="macOS" hint="Terminal (sudo)" command={created.install.macos} />
+          <Installer title="Windows" hint="PowerShell (admin)" command={created.install.windows} />
           <div className="flex items-center justify-between gap-3 rounded-md border border-line bg-raised px-3 py-2">
             <div className="text-[12.5px] text-ink-muted">
-              <div className="font-medium text-ink">Or hand over a ready-made agent</div>
+              <div className="font-medium text-ink">Or download the agent</div>
               A download with this token baked in: it carries the console address and branding, enrolls itself and needs no command line.
             </div>
             <AgentDownloadMenu token={created.token} label="Download agent" align="right" />

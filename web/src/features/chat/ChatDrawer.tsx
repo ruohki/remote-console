@@ -35,7 +35,7 @@ export function ChatDrawer({ lines, deviceName, connected, onSend, onClose }: { 
         </button>
       </div>
       <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto px-3 py-2">
-        {lines.length === 0 && <div className="m-auto text-center text-[12.5px] text-[#6b7381]">Messages appear on the device in a small window. Keep it short and friendly.</div>}
+        {lines.length === 0 && <div className="m-auto text-center text-[12.5px] text-[#6b7381]">No messages yet</div>}
         {lines.map((l) => (
           <div key={l.id} className={cx('flex flex-col', l.from === 'operator' ? 'items-end' : 'items-start')}>
             <div className={cx('max-w-[85%] rounded-2xl px-3 py-1.5 break-words whitespace-pre-wrap', l.from === 'operator' ? 'rounded-br-sm bg-[#3d7edb] text-white' : 'rounded-bl-sm bg-white/10 text-[#e6e9ef]')}>{l.text}</div>

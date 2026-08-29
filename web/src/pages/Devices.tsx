@@ -165,7 +165,7 @@ export function Devices() {
           {isAdmin ? (
             <EmptyState
               title="No devices yet"
-              detail="Create an enrollment token and run the one-line installer on a Windows or macOS machine."
+              detail="Add a device to get started."
               action={
                 <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
                   Add device
@@ -173,12 +173,12 @@ export function Devices() {
               }
             />
           ) : (
-            <EmptyState title="No devices available to you" detail="An admin has to grant you access to a device group before devices show up here." />
+            <EmptyState title="No devices available to you" detail="No device-group access yet." />
           )}
         </div>
       ) : list.length === 0 ? (
         <div className="panel">
-          <EmptyState title="Nothing matches" detail="Try another search or clear the filters." />
+          <EmptyState title="Nothing matches" detail="No matches." />
         </div>
       ) : (
         <Table>
@@ -240,7 +240,7 @@ export function Devices() {
                       </Button>
                     </Link>
                   ) : (
-                    <span className="inline-flex items-center gap-1 text-[11.5px] text-ink-faint" title="You can see this device but not connect to it">
+                    <span className="inline-flex items-center gap-1 text-[11.5px] text-ink-faint" title="View only">
                       <Eye size={12} /> View only
                     </span>
                   )}

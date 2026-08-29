@@ -78,7 +78,6 @@ export function Sessions() {
     <div className="w-full">
       <PageHeader
         title="Sessions"
-        subtitle={`Every remote control session, live and past · ${PAGE} per page.`}
         actions={
           <>
             {deviceId && (

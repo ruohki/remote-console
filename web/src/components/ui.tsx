@@ -1,6 +1,6 @@
 import { confirmAllowed } from '@/lib/confirm'
 import { type ButtonHTMLAttributes, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes, forwardRef, useEffect, useRef, useState } from 'react'
-import { Check, Copy, Loader2, X } from 'lucide-react'
+import { Check, CircleHelp, Copy, Loader2, X } from 'lucide-react'
 import { cx } from './cx'
 
 export { cx }
@@ -64,25 +64,39 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
   return <textarea ref={ref} className={cx(FIELD, 'h-auto min-h-20 py-1.5 leading-normal', className)} {...rest} />
 })
 
-export function Field({ label, hint, children, className }: { label: string; hint?: string; children: ReactNode; className?: string }) {
+/** Small “(?)” icon whose tooltip carries a one-sentence explanation. */
+export function InfoTip({ text, className }: { text: string; className?: string }) {
+  return (
+    <span role="img" aria-label={text} title={text} className={cx('inline-flex shrink-0 cursor-help align-middle text-ink-faint hover:text-ink-muted', className)}>
+      <CircleHelp size={13} aria-hidden />
+    </span>
+  )
+}
+
+export function Field({ label, hint, tip, children, className }: { label: string; hint?: string; tip?: string; children: ReactNode; className?: string }) {
   return (
     <label className={cx('block', className)}>
-      <span className="mb-1 block text-[12px] font-medium text-ink-muted">{label}</span>
+      <span className="mb-1 flex items-center gap-1 text-[12px] font-medium text-ink-muted">
+        {label}
+        {tip && <InfoTip text={tip} />}
+      </span>
       {children}
       {hint && <span className="mt-1 block text-[11.5px] text-ink-faint">{hint}</span>}
     </label>
   )
 }
 
-export function Toggle({ checked, onChange, label, disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: string; disabled?: boolean }) {
+export function Toggle({ checked, onChange, label, tip, title, disabled }: { checked: boolean; onChange: (v: boolean) => void; label?: string; tip?: string; title?: string; disabled?: boolean }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label ? undefined : title}
+      title={title}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className="group inline-flex cursor-pointer items-center gap-2.5 disabled:cursor-not-allowed disabled:opacity-50"
+      className="group inline-flex cursor-pointer items-start gap-2.5 text-left disabled:cursor-not-allowed disabled:opacity-50"
     >
       {/* Fixed 36×20 track (no border, so the padding box is exactly 36×20); the 16px knob is
           centred with a 2px inset and slides 2px→18px. Exact pixels keep the layout immune to
@@ -95,7 +109,13 @@ export function Toggle({ checked, onChange, label, disabled }: { checked: boolea
       >
         <span className="absolute block h-4 w-4 rounded-full bg-white shadow transition-all" style={{ top: 2, left: checked ? 18 : 2 }} />
       </span>
-      {label && <span className="text-[13px] leading-tight">{label}</span>}
+      {/* 20px line height = track height, so the switch sits on the label's first line. */}
+      {label && (
+        <span className="inline-flex items-center gap-1 text-[13px] leading-5">
+          {label}
+          {tip && <InfoTip text={tip} />}
+        </span>
+      )}
     </button>
   )
 }

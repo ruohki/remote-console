@@ -25,7 +25,6 @@ export function GroupsPage() {
     <div className="w-full">
       <PageHeader
         title="Groups"
-        subtitle="Group devices, then decide per group which operators may view or connect. Admins always have full access."
         actions={
           <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
             New group
@@ -49,7 +48,7 @@ export function GroupsPage() {
         <div className="panel">
           <EmptyState
             title="No groups yet"
-            detail="Operators only see devices in groups they have been granted. Create a group, add devices, then grant access."
+            detail="Create a group, add devices, then grant access."
             action={
               <Button variant="primary" icon={<Plus size={14} />} onClick={() => setCreating(true)}>
                 New group
@@ -130,7 +129,7 @@ export function CreateGroupDialog({ open, onClose, onCreated }: { open: boolean;
         <Field label="Name">
           <Input autoFocus required value={name} onChange={(e) => setName(e.target.value)} placeholder="Berlin office" />
         </Field>
-        <Field label="Description" hint="Optional.">
+        <Field label="Description">
           <Textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Front desk and meeting room PCs" />
         </Field>
         <div className="mt-2 flex justify-end gap-2">

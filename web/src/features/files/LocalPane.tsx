@@ -114,7 +114,7 @@ export function LocalPane({ folder, deviceName, canSend, onSend, onDropRemote }:
           <>
             <ShieldAlert size={28} className="text-[#fbbf24]" />
             <div className="text-[14px] font-medium text-white">{state.rootName}</div>
-            <div className="max-w-[300px] text-[12.5px] text-[#9aa3b2]">The browser needs your permission again before it can read and write this folder.</div>
+            <div className="max-w-[300px] text-[12.5px] text-[#9aa3b2]">Allow access again to use this folder.</div>
             <div className="flex gap-2">
               <Button size="sm" variant="primary" onClick={() => void folder.grant()}>
                 Allow access
@@ -127,12 +127,10 @@ export function LocalPane({ folder, deviceName, canSend, onSend, onDropRemote }:
         ) : (
           <>
             <Laptop size={28} className="text-[#3b4250]" />
-            <div className="text-[14px] font-medium text-white">Open a folder on this computer</div>
-            <div className="max-w-[320px] text-[12.5px] text-[#9aa3b2]">Drag files from it onto {deviceName}, and drop files from {deviceName} into it. The folder is remembered for next time.</div>
+            <div className="text-[14px] font-medium text-white">Open a local folder</div>
             <Button size="sm" variant="primary" icon={<FolderOpen size={13} />} onClick={() => void folder.open()} data-testid="local-open">
               Open folder…
             </Button>
-            <div className="text-[11.5px] text-[#6b7381]">Files from your desktop can be dropped straight onto the device pane, too.</div>
           </>
         )}
       </div>
@@ -277,7 +275,7 @@ export function LocalPane({ folder, deviceName, canSend, onSend, onDropRemote }:
               onClick={(ev) => dispatch({ type: 'select', name: e.name, mode: ev.shiftKey ? 'range' : ev.metaKey || ev.ctrlKey ? 'toggle' : 'single' })}
               onDoubleClick={() => activate(e)}
               onContextMenu={(ev) => openMenu(ev, e)}
-              title={e.isDir ? 'Double-click to open · drag onto the device to send' : `Double-click or drag onto ${deviceName} to send`}
+              title={e.isDir ? 'Double-click to open · drag to send' : `Drag to ${deviceName} to send`}
               onDragStart={(ev) => {
                 const group = isSel ? selectedEntries : [e]
                 setDragPayload({ kind: 'local', names: group.map((x) => x.name) })
@@ -351,7 +349,7 @@ export function LocalPane({ folder, deviceName, canSend, onSend, onDropRemote }:
             {state.selected.size} selected
             {selectedEntries.some((e) => !e.isDir) && <span className="mono ml-1 text-[#6b7381]">({bytes(selectedEntries.filter((e) => !e.isDir).reduce((a, e) => a + e.size, 0))})</span>}
           </span>
-          <Button size="sm" variant="primary" icon={<Upload size={12} />} disabled={!canSend} onClick={() => onSend(selectedEntries.map((e) => e.name))} title={`Send the selection to ${deviceName}`}>
+          <Button size="sm" variant="primary" icon={<Upload size={12} />} disabled={!canSend} onClick={() => onSend(selectedEntries.map((e) => e.name))} title={`Send to ${deviceName}`}>
             Send
           </Button>
           <button onClick={() => dispatch({ type: 'clear' })} className="rounded p-1 text-[#9aa3b2] hover:bg-white/10 hover:text-white" title="Clear selection (Esc)" aria-label="Clear selection">
@@ -408,8 +406,8 @@ export function LocalPickPane({ deviceName, canSend, onSendFiles }: { deviceName
         {files.length === 0 && (
           <div className="flex flex-col items-center gap-2 px-6 py-10 text-center text-[#6b7381]">
             <Laptop size={26} className="text-[#3b4250]" />
-            <div className="text-[13px] text-[#9aa3b2]">This browser cannot open folders</div>
-            <div className="text-[12px]">Pick or drop files to send them to {deviceName}. Files fetched from the device are saved through the browser's downloads.</div>
+            <div className="text-[13px] text-[#9aa3b2]">Folder access unsupported here</div>
+            <div className="text-[12px]">Pick or drop files to send to {deviceName}.</div>
           </div>
         )}
         {files.map((f, i) => {

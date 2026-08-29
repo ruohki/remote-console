@@ -22,7 +22,7 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   const current: SettingsTab = isAdmin || tab === 'info' ? tab : 'info'
   return (
     <div className="w-full">
-      <PageHeader title="Settings" subtitle="Console information, enrollment tokens, branding, agent downloads and authentication." />
+      <PageHeader title="Settings" />
       <div className="mb-4 flex flex-wrap gap-1 border-b border-line">
         <TabLink to="/settings" active={current === 'info'}>
           Console
@@ -89,14 +89,14 @@ function InfoTab() {
       ) : (
         <span>
           <Badge tone="warn">Not configured</Badge>
-          <span className="ml-2 text-ink-muted">Sessions through strict NATs will fail. Set TURN_URLS and TURN_SECRET.</span>
+          <span className="ml-2 text-ink-muted">Set TURN_URLS and TURN_SECRET.</span>
         </span>
       ),
     ],
     [
       'Signing key',
       i.console_public_key ? (
-        <span className="mono break-all" title="ed25519 public key that signs baked agent binaries">
+        <span className="mono break-all" title="Signs baked agents">
           {i.console_public_key}
         </span>
       ) : (
@@ -143,7 +143,6 @@ function TokensTab() {
   return (
     <>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <div className="text-ink-muted">Each token can also be downloaded as a pre-configured agent that enrolls itself.</div>
         <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
           New token
         </Button>
@@ -156,7 +155,7 @@ function TokensTab() {
         </div>
       ) : tokens.data.length === 0 ? (
         <div className="panel">
-          <EmptyState title="No enrollment tokens" detail="A token lets a machine enroll with the one-line installer." />
+          <EmptyState title="No enrollment tokens" detail="Create one to enroll devices." />
         </div>
       ) : (
         <Table>
@@ -235,7 +234,7 @@ function TokenDownload({ token }: { token: EnrollToken }) {
   const plain = readPlainToken(token.id)
   if (!plain) {
     return (
-      <span className="text-[11.5px] text-ink-faint" title="The token value was only shown once; create a new token to download a pre-configured agent.">
+      <span className="text-[11.5px] text-ink-faint" title="Token shown only at creation">
         token not on hand
       </span>
     )

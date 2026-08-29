@@ -25,7 +25,7 @@ export function Audit() {
 
   return (
     <div className="w-full">
-      <PageHeader title="Audit log" subtitle={`Who did what, newest first · ${PAGE} entries per page · click an entry for the full record.`} />
+      <PageHeader title="Audit log" />
       {q.isPending ? (
         <Skeleton className="h-40 w-full" />
       ) : q.isError ? (

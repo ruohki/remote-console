@@ -85,7 +85,7 @@ export function TransferRow({ t, now, onReveal }: { t: Transfer; now: number; on
             </IconButton>
           )}
           {canRetry && (
-            <IconButton onClick={() => transferManager.retry(t.token)} title="Retry (resumes where it stopped)">
+            <IconButton onClick={() => transferManager.retry(t.token)} title="Retry">
               <RotateCcw size={13} />
             </IconButton>
           )}
@@ -102,7 +102,7 @@ export function TransferRow({ t, now, onReveal }: { t: Transfer; now: number; on
       </div>
 
       <div className="relative mt-1.5 h-1 overflow-hidden rounded bg-white/10" role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}>
-        {resumedPct > 0 && <div className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${resumedPct}%` }} title="Already on the other side from a previous attempt" />}
+        {resumedPct > 0 && <div className="absolute inset-y-0 left-0 bg-white/20" style={{ width: `${resumedPct}%` }} title="Already present" />}
         <div className={cx('relative h-full transition-[width] duration-150', tone, t.status === 'offered' && 'animate-pulse')} style={{ width: `${pct}%` }} />
       </div>
 
@@ -120,12 +120,12 @@ export function TransferRow({ t, now, onReveal }: { t: Transfer; now: number; on
         {t.status === 'transferring' && t.speedBps > 0 && <span>{throughput(t.speedBps)}</span>}
         {t.status === 'transferring' && t.etaS !== null && <span>ETA {eta(t.etaS)}</span>}
         {ratio !== null && (
-          <span className="inline-flex items-center gap-0.5 text-[#a5b4fc]" title={`Compressed on the fly: ${bytes(t.payloadBytes)} sent as ${bytes(t.wireBytes)}`}>
+          <span className="inline-flex items-center gap-0.5 text-[#a5b4fc]" title={`Compressed: ${bytes(t.payloadBytes)} → ${bytes(t.wireBytes)}`}>
             <Zap size={10} />
             {ratio.toFixed(ratio >= 10 ? 0 : 1)}×
           </span>
         )}
-        {t.startOffset > 0 && <span title="Resumed from a previous attempt">resumed at {bytes(t.startOffset)}</span>}
+        {t.startOffset > 0 && <span title="Resumed">resumed at {bytes(t.startOffset)}</span>}
         <span className="ml-auto text-[#6b7381]">{terminal ? (t.finishedAt ? timeOfDay(t.finishedAt) : '') : duration(new Date(t.startedAt).toISOString(), null, now)}</span>
       </div>
       {t.error && <div className="mt-0.5 text-[11.5px] text-[#f87171]">{t.error}</div>}

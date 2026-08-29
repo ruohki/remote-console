@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowDownToLine, ArrowUpFromLine, ChevronDown, ChevronRight, FolderInput, Inbox, RotateCcw, Upload, X, Zap } from 'lucide-react'
+import { ArrowDownToLine, ArrowUpFromLine, ChevronDown, ChevronRight, Inbox, RotateCcw, X, Zap } from 'lucide-react'
 import { Button, Select, cx } from '@/components/ui'
 import { useNow } from '@/hooks/useNow'
 import { bytes, eta, throughput } from '@/lib/format'
@@ -14,32 +14,22 @@ import { summarize } from './summary'
 import type { CompressionPref } from './prefs'
 
 const COMPRESSION_OPTIONS = [
-  { value: 'auto' as const, label: 'Auto', description: 'Compress on the fly when it helps' },
-  { value: 'off' as const, label: 'Off', description: 'Always send raw bytes' },
+  { value: 'auto' as const, label: 'Auto' },
+  { value: 'off' as const, label: 'Off' },
 ]
 
 export function TransfersTab({
   deviceId,
-  destDir,
   compression,
-  onChangeDest,
-  onResetDest,
   onChangeCompression,
   onReveal,
-  hint = 'or drop files anywhere',
 }: {
   deviceId: string
-  destDir: string | null
   compression: CompressionPref
-  onChangeDest: () => void
-  onResetDest: () => void
   onChangeCompression: (p: CompressionPref) => void
   onReveal: (dir: string) => void
-  /** Text next to the "Send files…" button. */
-  hint?: string
 }) {
   const transfers = useFiles((s) => s.transfers)
-  const fileInput = useRef<HTMLInputElement>(null)
   const summary = summarize(transfers)
   const now = useNow(1000)
 
@@ -60,11 +50,6 @@ export function TransfersTab({
   const resumables = resumablesQuery.data ?? { uploads: [], downloads: [] }
   const refreshResumables = () => void resumablesQuery.refetch()
 
-  const onPick = (files: FileList | null) => {
-    if (!files) return
-    for (const f of Array.from(files)) void transferManager.upload(f)
-  }
-
   const active = transfers.filter((t) => !isTerminal(t.status))
   const failed = transfers.filter((t) => t.status === 'failed' || t.status === 'cancelled')
   const done = transfers.filter((t) => t.status === 'done')
@@ -72,20 +57,25 @@ export function TransfersTab({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-2">
-        <Button size="sm" variant="primary" icon={<Upload size={13} />} onClick={() => fileInput.current?.click()}>
-          Send files…
-        </Button>
-        <input ref={fileInput} type="file" multiple className="hidden" onChange={(e) => onPick(e.target.files)} data-testid="send-files-input" />
-        <span className="text-[11.5px] text-[#6b7381]">{hint}</span>
+      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5 text-[11.5px]">
+        <Zap size={13} className="shrink-0 text-[#9aa3b2]" />
+        <span className="shrink-0 text-[#6b7381]">Compression</span>
+        <span className="w-24 shrink-0">
+        <Select size="sm" variant="hud" menuTone="dark" value={compression} onChange={onChangeCompression} options={COMPRESSION_OPTIONS} aria-label="Compression" />
+      </span>
+        {summary.savedBytes > 0 && (
+          <span className="mono truncate text-[#6b7381]" title="Saved by compression">
+            saved {bytes(summary.savedBytes)}
+          </span>
+        )}
         <span className="ml-auto flex items-center gap-1">
           {failed.length > 0 && failed.some((t) => t.resumable) && (
-            <button onClick={() => transferManager.retryFailed()} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-[#9aa3b2] hover:bg-white/10 hover:text-white" title="Retry every failed transfer">
+            <button onClick={() => transferManager.retryFailed()} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-[#9aa3b2] hover:bg-white/10 hover:text-white" title="Retry failed">
               <RotateCcw size={11} /> Retry failed
             </button>
           )}
           {active.length > 0 && (
-            <button onClick={() => transferManager.cancelAll()} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-[#9aa3b2] hover:bg-white/10 hover:text-[#f87171]" title="Cancel every running transfer">
+            <button onClick={() => transferManager.cancelAll()} className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11.5px] text-[#9aa3b2] hover:bg-white/10 hover:text-[#f87171]" title="Cancel all">
               <X size={11} /> Cancel all
             </button>
           )}
@@ -117,36 +107,12 @@ export function TransfersTab({
         </div>
       )}
 
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5 text-[11.5px]">
-        <FolderInput size={13} className="shrink-0 text-[#9aa3b2]" />
-        <span className="shrink-0 text-[#6b7381]">Save to</span>
-        <span className="mono min-w-0 flex-1 truncate text-[#c8ced8]" title={destDir ?? undefined}>
-          {destDir ?? 'Device default folder'}
-        </span>
-        <button onClick={onChangeDest} className="shrink-0 rounded px-1.5 py-0.5 text-[#6cb6ff] hover:bg-white/10">
-          Change…
-        </button>
-        {destDir && (
-          <button onClick={onResetDest} className="shrink-0 rounded px-1.5 py-0.5 text-[#9aa3b2] hover:bg-white/10 hover:text-white">
-            Reset
-          </button>
-        )}
-      </div>
-      <div className="flex items-center gap-2 border-b border-white/10 px-3 py-1.5 text-[11.5px]">
-        <Zap size={13} className="shrink-0 text-[#9aa3b2]" />
-        <span className="shrink-0 text-[#6b7381]">Compression</span>
-        <Select size="sm" variant="hud" menuTone="dark" value={compression} onChange={onChangeCompression} options={COMPRESSION_OPTIONS} aria-label="Compression" className="min-w-[88px]" />
-        <span className="mono ml-auto truncate text-[#6b7381]" title="Bytes that compression kept off the wire in this list">
-          {summary.savedBytes > 0 ? `saved ${bytes(summary.savedBytes)}` : compression === 'auto' ? 'files & clipboard, both ways' : 'raw bytes only'}
-        </span>
-      </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {empty && (
           <div className="flex flex-col items-center gap-2 px-6 py-10 text-center text-[#6b7381]">
             <Inbox size={28} className="text-[#3b4250]" />
-            <div className="text-[13px] text-[#9aa3b2]">No transfers yet</div>
-            <div className="text-[12px]">Drop files on the screen or the device pane to send them; double-click or fetch files on the device to bring them here.</div>
+            <div className="text-[13px] text-[#9aa3b2]">No transfers</div>
           </div>
         )}
         {active.length > 0 && (
@@ -227,7 +193,7 @@ function ResumeUploadRow({ rec, onDone }: { rec: UploadRecord; onDone: () => voi
     const f = files?.[0]
     if (!f) return
     if (f.name !== rec.name || f.size !== rec.size || f.lastModified !== rec.lastModified) {
-      toast.error('That is a different file', `Pick "${rec.name}" (${bytes(rec.size)}) again to resume.`)
+      toast.error('Different file', `Pick "${rec.name}" (${bytes(rec.size)}).`)
       return
     }
     void transferManager.upload(f, { token: rec.token, destDir: rec.destDir }).then(onDone)
@@ -240,7 +206,7 @@ function ResumeUploadRow({ rec, onDone }: { rec: UploadRecord; onDone: () => voi
       </span>
       <span className="mono text-[11px] text-[#6b7381]">{bytes(rec.size)}</span>
       <input ref={input} type="file" className="hidden" onChange={(e) => pick(e.target.files)} />
-      <Button size="sm" onClick={() => input.current?.click()} title="Pick the same file again to resume">
+      <Button size="sm" onClick={() => input.current?.click()} title="Pick the same file again">
         Resume…
       </Button>
       <button onClick={() => void resumeStore.deleteUpload(rec.key).then(onDone)} className="rounded p-1 text-[#9aa3b2] hover:text-white" title="Forget">
@@ -253,11 +219,11 @@ function ResumeUploadRow({ rec, onDone }: { rec: UploadRecord; onDone: () => voi
 function ResumeDownloadRow({ rec, onDone }: { rec: DownloadRecord; onDone: () => void }) {
   const resume = async () => {
     if (!rec.handle) {
-      toast.error('Cannot resume', 'The browser did not keep a handle to the partial file.')
+      toast.error('Cannot resume', 'No handle to the partial file.')
       return
     }
     if (!(await FileSystemSink.ensurePermission(rec.handle))) {
-      toast.error('Permission to write the file was not granted')
+      toast.error('Write permission denied')
       return
     }
     const handle = rec.handle

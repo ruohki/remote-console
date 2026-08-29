@@ -34,7 +34,7 @@ export function Setup() {
   }
 
   return (
-    <AuthShell title="Create the admin account" subtitle="This console has no users yet. The first account becomes the administrator.">
+    <AuthShell title="Create the admin account" subtitle="The first account becomes the administrator.">
       <form onSubmit={submit} className="flex flex-col gap-3">
         <Field label="Your name">
           <Input autoFocus required value={name} onChange={(e) => setName(e.target.value)} />
