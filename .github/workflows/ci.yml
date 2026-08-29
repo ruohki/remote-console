@@ -22,8 +22,9 @@ jobs:
         with:
           repository: ruohki/remote-agent
           path: remote-agent
-          # A PAT with read access is required while remote-agent is private.
-          token: ${{ secrets.AGENT_REPO_TOKEN || github.token }}
+          # remote-agent is private: a read-only deploy key on that repo, held here as
+          # AGENT_REPO_SSH_KEY. github.token cannot reach another repository.
+          ssh-key: ${{ secrets.AGENT_REPO_SSH_KEY }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
