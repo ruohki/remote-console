@@ -30,6 +30,7 @@ Configuration is via environment variables (see `.env.example`):
 | `MACOS_SIGN_IDENTITY` | – | `Developer ID Application: Name (TEAMID)`; signs baked `.app` bundles with `codesign` (macOS host) |
 | `MACOS_NOTARY_PROFILE` | – | `notarytool` keychain profile (`xcrun notarytool store-credentials <profile>`); notarizes + staples bundles |
 | `MACOS_SIGN_P12` / `MACOS_SIGN_P12_PASSWORD` (or `MACOS_SIGN_P12_PASSWORD_FILE`) | – | Developer ID certificate for `rcodesign` on non-macOS hosts (Docker); see [Signing from Linux](#signing-macos-agents-from-linux--docker) |
+| `MACOS_SIGN_P12_BASE64` | – | the same certificate as base64 text, for hosts that cannot mount a binary file (Coolify, config maps); a `MACOS_SIGN_P12` file holding base64 works too |
 | `APPLE_API_KEY_JSON` | – | App Store Connect API key file for `rcodesign notary-submit` |
 | `WINDOWS_SIGN_PFX` / `WINDOWS_SIGN_PFX_PASSWORD` | – | reserved for Authenticode signing (not applied yet, see docs) |
 | `SESSION_TTL_HOURS` | `168` | absolute login session lifetime (sessions also expire after 12 h idle) |
@@ -118,6 +119,11 @@ preparation, on a Mac with the Developer ID identity:
    MACOS_SIGN_P12_PASSWORD_FILE=/secrets/developer-id.password   # or MACOS_SIGN_P12_PASSWORD
    APPLE_API_KEY_JSON=/secrets/app-store-connect.json
    ```
+
+   Hosts that can only surface *text* (Coolify file mounts, config maps) cannot carry the raw
+   `.p12`. Pass it base64-encoded instead — either as `MACOS_SIGN_P12_BASE64`, or as a file at
+   `MACOS_SIGN_P12` whose content is that base64; both are decoded to an owner-only temporary
+   file for the duration of one signature. `base64 -i developer-id.p12` produces it.
 
 `MACOS_SIGN_IDENTITY` / `MACOS_NOTARY_PROFILE` are the macOS-host equivalents and are ignored on
 Linux. The container needs outbound HTTPS to `appstoreconnect.apple.com` (notary service) and

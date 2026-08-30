@@ -22,6 +22,10 @@ pub struct SignConfig {
     pub macos_identity: Option<String>,
     pub notary_profile: Option<String>,
     pub p12: Option<PathBuf>,
+    /// Base64 of the certificate (`MACOS_SIGN_P12_BASE64`), for hosts that can only pass text
+    /// — a Coolify file mount, a config map, a plain environment variable. A `.p12` *file*
+    /// holding base64 instead of DER is accepted just the same.
+    pub p12_base64: Option<String>,
     pub p12_password: Option<String>,
     /// File holding the `.p12` password (Docker/Kubernetes secrets); wins over the env value.
     pub p12_password_file: Option<PathBuf>,
@@ -57,6 +61,7 @@ impl SignConfig {
             macos_identity: env_opt("MACOS_SIGN_IDENTITY"),
             notary_profile: env_opt("MACOS_NOTARY_PROFILE"),
             p12: env_opt("MACOS_SIGN_P12").map(PathBuf::from),
+            p12_base64: env_opt("MACOS_SIGN_P12_BASE64"),
             p12_password: env_opt("MACOS_SIGN_P12_PASSWORD"),
             p12_password_file: env_opt("MACOS_SIGN_P12_PASSWORD_FILE").map(PathBuf::from),
             api_key_json: env_opt("APPLE_API_KEY_JSON").map(PathBuf::from),
@@ -70,7 +75,7 @@ impl SignConfig {
         if self.macos_identity.is_some() && tool_on_path("codesign") {
             return Some(MacBackend::Codesign);
         }
-        if self.p12.is_some()
+        if (self.p12.is_some() || self.p12_base64.is_some())
             && (self.p12_password.is_some() || self.p12_password_file.is_some())
             && tool_on_path("rcodesign")
         {
@@ -99,7 +104,7 @@ impl SignConfig {
 }
 
 /// Write `secret` to `path` readable by the owner only.
-fn write_secret(path: &Path, secret: &str) -> std::io::Result<()> {
+fn write_secret(path: &Path, secret: &[u8]) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::io::Write;
@@ -110,12 +115,60 @@ fn write_secret(path: &Path, secret: &str) -> std::io::Result<()> {
             .truncate(true)
             .mode(0o600)
             .open(path)?;
-        f.write_all(secret.as_bytes())
+        f.write_all(secret)
     }
     #[cfg(not(unix))]
     {
         std::fs::write(path, secret)
     }
+}
+
+/// A PKCS#12 blob is DER: it starts with a SEQUENCE tag. Anything else we are handed is text
+/// (base64), because the host could only pass the certificate as characters.
+fn looks_like_pkcs12(bytes: &[u8]) -> bool {
+    bytes.first() == Some(&0x30)
+}
+
+/// Decode base64 that may be wrapped across lines or padded with whitespace.
+fn decode_base64_text(text: &str) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    let compact: String = text.split_whitespace().collect();
+    base64::engine::general_purpose::STANDARD
+        .decode(compact.as_bytes())
+        .map_err(|e| anyhow!("not valid base64: {e}"))
+}
+
+/// The certificate `rcodesign` should use, written into `work_dir` when it had to be decoded.
+/// Returns the path and whether it is a temporary copy the caller must delete.
+///
+/// Accepts three shapes, so a host that can only surface text (Coolify file mounts, config
+/// maps, plain environment variables) works without a binary volume: `MACOS_SIGN_P12_BASE64`,
+/// a `MACOS_SIGN_P12` file holding base64, or a real `.p12`.
+fn p12_file(cfg: &SignConfig, work_dir: &Path) -> Result<(PathBuf, bool)> {
+    let decoded = match (cfg.p12_base64.as_deref(), cfg.p12.as_deref()) {
+        (Some(b64), _) => {
+            decode_base64_text(b64).context("MACOS_SIGN_P12_BASE64 is not valid base64")?
+        }
+        (None, Some(path)) => {
+            let bytes = std::fs::read(path)
+                .with_context(|| format!("reading {}", path.display()))?;
+            if looks_like_pkcs12(&bytes) {
+                return Ok((path.to_path_buf(), false));
+            }
+            let text = std::str::from_utf8(&bytes).map_err(|_| {
+                anyhow!("{} is neither a PKCS#12 file nor base64 text", path.display())
+            })?;
+            decode_base64_text(text)
+                .with_context(|| format!("{} is not a PKCS#12 file", path.display()))?
+        }
+        (None, None) => return Err(anyhow!("no signing certificate configured")),
+    };
+    if !looks_like_pkcs12(&decoded) {
+        return Err(anyhow!("the decoded signing certificate is not PKCS#12"));
+    }
+    let path = work_dir.join("developer-id.p12");
+    write_secret(&path, &decoded).context("writing the decoded certificate")?;
+    Ok((path, true))
 }
 
 /// Whether an executable named `name` exists on `PATH` (plus the usual macOS locations).
@@ -215,14 +268,17 @@ fn sign_with(
             }
         }
         MacBackend::Rcodesign => {
-            let p12 = cfg.p12.as_deref().unwrap_or(Path::new(""));
+            let (p12, p12_is_temporary) = p12_file(cfg, work_dir)?;
             // The password goes through a file so it never shows up in the process list.
             let password_file = match cfg.p12_password_file.as_deref() {
                 Some(f) => f.to_path_buf(),
                 None => {
                     let f = work_dir.join("p12-password");
-                    write_secret(&f, cfg.p12_password.as_deref().unwrap_or_default())
-                        .context("writing p12 password file")?;
+                    write_secret(
+                        &f,
+                        cfg.p12_password.as_deref().unwrap_or_default().as_bytes(),
+                    )
+                    .context("writing p12 password file")?;
                     f
                 }
             };
@@ -241,6 +297,9 @@ fn sign_with(
             );
             if cfg.p12_password_file.is_none() {
                 let _ = std::fs::remove_file(&password_file);
+            }
+            if p12_is_temporary {
+                let _ = std::fs::remove_file(&p12);
             }
             result.context("rcodesign sign")?;
             outcome.signed = true;
@@ -341,10 +400,77 @@ mod tests {
     }
 
     #[test]
+    fn p12_is_accepted_as_der_as_a_base64_file_and_as_base64_env() {
+        use base64::Engine as _;
+        let tmp = tempfile::tempdir().unwrap();
+        let work = tmp.path();
+        // Minimal stand-in for a certificate: what matters here is the DER SEQUENCE tag.
+        let der: Vec<u8> = vec![0x30, 0x82, 0x04, 0x01, 0xde, 0xad];
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+
+        // A real .p12 is used in place, without a copy.
+        let der_path = work.join("real.p12");
+        std::fs::write(&der_path, &der).unwrap();
+        let cfg = SignConfig {
+            p12: Some(der_path.clone()),
+            ..Default::default()
+        };
+        let (path, temporary) = p12_file(&cfg, work).unwrap();
+        assert_eq!((path, temporary), (der_path, false));
+
+        // A mounted file holding base64 (line-wrapped, as a text field tends to be).
+        let text_path = work.join("mounted.p12");
+        std::fs::write(&text_path, format!("{}\n{}\n", &b64[..4], &b64[4..])).unwrap();
+        let cfg = SignConfig {
+            p12: Some(text_path),
+            ..Default::default()
+        };
+        let (path, temporary) = p12_file(&cfg, work).unwrap();
+        assert!(temporary);
+        assert_eq!(std::fs::read(&path).unwrap(), der);
+
+        // MACOS_SIGN_P12_BASE64 wins over a path.
+        let cfg = SignConfig {
+            p12: Some(work.join("does-not-exist.p12")),
+            p12_base64: Some(b64),
+            ..Default::default()
+        };
+        let (path, temporary) = p12_file(&cfg, work).unwrap();
+        assert!(temporary);
+        assert_eq!(std::fs::read(&path).unwrap(), der);
+
+        // Garbage is refused rather than handed to rcodesign.
+        let cfg = SignConfig {
+            p12_base64: Some("not base64!!".into()),
+            ..Default::default()
+        };
+        assert!(p12_file(&cfg, work).is_err());
+        let cfg = SignConfig {
+            p12_base64: Some(base64::engine::general_purpose::STANDARD.encode(b"still not a p12")),
+            ..Default::default()
+        };
+        assert!(p12_file(&cfg, work).is_err());
+    }
+
+    #[test]
+    fn base64_alone_configures_the_rcodesign_backend() {
+        let cfg = SignConfig {
+            p12_base64: Some("MIIE".into()),
+            p12_password: Some("pw".into()),
+            ..Default::default()
+        };
+        // Only when rcodesign is actually installed, as before.
+        assert_eq!(
+            cfg.macos_backend().is_some(),
+            super::tool_on_path("rcodesign")
+        );
+    }
+
+    #[test]
     fn secret_files_are_owner_only() {
         let tmp = tempfile::tempdir().unwrap();
         let f = tmp.path().join("pw");
-        write_secret(&f, "hunter2").unwrap();
+        write_secret(&f, b"hunter2").unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "hunter2");
         #[cfg(unix)]
         {

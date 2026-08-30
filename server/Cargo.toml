@@ -1,6 +1,6 @@
 [package]
 name = "remote-console"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Management console for remote-agent: device registry, enrollment, WebRTC signaling hub and embedded web UI"
