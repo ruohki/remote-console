@@ -937,7 +937,6 @@ function DisplayTile({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [needsGesture, setNeedsGesture] = useState(false)
-  const [hovering, setHovering] = useState(false)
   const [latency, setLatency] = useState<{ medianMs: number | null; p95Ms: number | null } | null>(null)
 
   /* ───── viewport hint: ask the agent to encode no more pixels than we show ─────
@@ -1165,20 +1164,16 @@ function DisplayTile({
     <div
       ref={tileRef}
       className={cx('group relative min-h-0 min-w-0 overflow-hidden', annotating ? 'cursor-crosshair' : controlling ? 'cursor-none' : 'cursor-default', multi && isCurrent && 'ring-1 ring-[#6cb6ff]/60 ring-inset')}
-      onPointerEnter={() => {
-        setHovering(true)
-        onEnter()
-      }}
+      onPointerEnter={onEnter}
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
       onPointerLeave={() => {
-        setHovering(false)
         if (annotating) laserAt(null, true)
       }}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} controlling={controlling} hovering={hovering} enabled={showRemoteCursor} />
+      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} controlling={controlling} enabled={showRemoteCursor} />
       <AnnotateCanvas display={display.index} getGeometry={tileGeometry} />
       {!stream && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12.5px] text-[#6b7381]">

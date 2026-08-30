@@ -22,23 +22,20 @@ describe('viewportHint', () => {
 })
 
 describe('cursorOverlayMode', () => {
-  it('steps aside only when the frame already carries the cursor under the operator', () => {
-    const visible = { deviceVisible: true, controlling: true, hovering: true }
-    expect(cursorOverlayMode(visible)).toBe('hidden')
-    expect(cursorOverlayMode({ ...visible, hovering: false })).toBe('solid')
-    expect(cursorOverlayMode({ ...visible, controlling: false })).toBe('solid')
+  it('always draws the cursor the device reports: it is the only one in the picture', () => {
+    // An agent that streams cursor updates captures without the system cursor, and the tile
+    // hides the operator's own pointer while controlling — suppressing this leaves nothing.
+    expect(cursorOverlayMode({ deviceVisible: true, controlling: true })).toBe('solid')
+    expect(cursorOverlayMode({ deviceVisible: true, controlling: false })).toBe('solid')
   })
 
-  it('draws a dimmed cursor for the operator when the device reports none', () => {
-    // Windows hides the pointer while typing, and tools like Parsec suppress it: the frame has
-    // no cursor, so without this the operator points blind.
-    expect(cursorOverlayMode({ deviceVisible: false, controlling: true, hovering: true })).toBe('dimmed')
-    expect(cursorOverlayMode({ deviceVisible: false, controlling: true, hovering: false })).toBe('dimmed')
+  it('dims for whoever is controlling when the device reports no cursor', () => {
+    // Windows hides the pointer while typing, and tools like Parsec suppress it.
+    expect(cursorOverlayMode({ deviceVisible: false, controlling: true })).toBe('dimmed')
   })
 
   it('shows nothing to an observer when the device has no cursor', () => {
-    expect(cursorOverlayMode({ deviceVisible: false, controlling: false, hovering: false })).toBe('hidden')
-    expect(cursorOverlayMode({ deviceVisible: false, controlling: false, hovering: true })).toBe('hidden')
+    expect(cursorOverlayMode({ deviceVisible: false, controlling: false })).toBe('hidden')
   })
 })
 

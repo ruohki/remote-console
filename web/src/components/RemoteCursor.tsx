@@ -69,32 +69,30 @@ export class CursorStore {
 }
 
 /**
- * Overlay for one display tile. It steps aside while the operator controls the tile with the
- * pointer over it, because the agent already paints the cursor into the frame — but it draws a
- * dimmed cursor when the device reports none, so typing (Windows hides the pointer while you
- * type) or another remote tool suppressing the cursor cannot leave the operator pointing
- * blind. See [`cursorOverlayMode`]. Never intercepts pointer events.
+ * Overlay for one display tile — the only cursor there is, because an agent that streams
+ * cursor updates captures the screen without the system cursor and the tile hides the
+ * browser's own pointer while controlling. It dims to show where the operator is pointing when
+ * the device reports no cursor at all (typing on Windows, another remote tool suppressing it).
+ * See [`cursorOverlayMode`]. Never intercepts pointer events.
  */
 export function RemoteCursorLayer({
   store,
   display,
   getGeometry,
   controlling,
-  hovering,
   enabled,
 }: {
   store: CursorStore
   display: number
   getGeometry: () => { box: { width: number; height: number }; video: { width: number; height: number } } | null
   controlling: boolean
-  hovering: boolean
   enabled: boolean
 }) {
   const imgRef = useRef<HTMLImageElement>(null)
-  const modeInputRef = useRef({ controlling, hovering })
+  const controllingRef = useRef(controlling)
   useEffect(() => {
-    modeInputRef.current = { controlling, hovering }
-  }, [controlling, hovering])
+    controllingRef.current = controlling
+  }, [controlling])
 
   useEffect(() => {
     const img = imgRef.current
@@ -109,11 +107,7 @@ export function RemoteCursorLayer({
         img.style.display = 'none'
         return
       }
-      const mode = cursorOverlayMode({
-        deviceVisible: position.visible,
-        controlling: modeInputRef.current.controlling,
-        hovering: modeInputRef.current.hovering,
-      })
+      const mode = cursorOverlayMode({ deviceVisible: position.visible, controlling: controllingRef.current })
       if (mode === 'hidden') {
         img.style.display = 'none'
         return
@@ -147,12 +141,12 @@ export function RemoteCursorLayer({
     }
   }, [store, display, getGeometry, enabled])
 
-  // Control and hover changes do not move the cursor, so no store event fires for them: nudge
+  // Taking or dropping control does not move the cursor, so no store event fires for it: nudge
   // the store to re-render with the new mode.
   useEffect(() => {
     if (!imgRef.current) return
     store.setPosition(store.get().position ?? { display, x: -1, y: -1, shapeId: 0, visible: false })
-  }, [controlling, hovering, store, display])
+  }, [controlling, store, display])
 
   return (
     <img
