@@ -55,7 +55,7 @@ import { AnnotateToolbar } from '@/features/annotate/AnnotateToolbar'
 import { colorValue, useAnnotate } from '@/features/annotate/store'
 import { PointerThrottle, StrokeBatcher, strokeWidthPx } from '@/features/annotate/model'
 import { RemoteCursorLayer, type CursorStore } from '@/components/RemoteCursor'
-import { sameHint, viewportHint, type ViewportHint } from '@/lib/perf'
+import { cursorPredictionAllowed, sameHint, viewportHint, type ViewportHint } from '@/lib/perf'
 import { LatencyProbe, rvfcSupported } from '@/lib/latencyProbe'
 
 const FPS_PRESETS = [15, 30, 60]
@@ -1119,13 +1119,16 @@ function DisplayTile({
     if (!controlling) return
     const p = remotePoint(e)
     if (!p) return
-    // Draw the cursor where the operator's hand is, not where the device last said it was.
-    const local = displayPoint(e)
-    if (local) cursorStore.setLocal({ display: display.index, x: local.x, y: local.y, at: performance.now() })
+    // Draw the cursor where the operator's hand is, not where the device last said it was —
+    // except while dragging, when it must stay with the window it is moving.
+    const local = cursorPredictionAllowed({ controlling, buttons: e.buttons }) ? displayPoint(e) : null
+    cursorStore.setLocal(local ? { display: display.index, x: local.x, y: local.y, at: performance.now() } : null)
     pendingMove.current = p
     if (moveRaf.current === null) moveRaf.current = requestAnimationFrame(flushMove)
   }
   const onPointerDown = (e: React.PointerEvent) => {
+    // The drag starts here: hand the cursor back to the device before it can separate.
+    cursorStore.setLocal(null)
     onPointerDownFocus()
     if (annotating) {
       const { tool, color, width } = useAnnotate.getState()

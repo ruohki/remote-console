@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FAST_CHANNEL_GRACE_MS, LOCAL_CURSOR_TTL_MS, cursorDrawPoint, cursorOverlayMode, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
+import { FAST_CHANNEL_GRACE_MS, LOCAL_CURSOR_TTL_MS, cursorDrawPoint, cursorOverlayMode, cursorPredictionAllowed, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
 
 describe('viewportHint', () => {
   const display = { width: 5120, height: 2160 }
@@ -36,6 +36,16 @@ describe('cursorOverlayMode', () => {
 
   it('shows nothing to an observer when the device has no cursor', () => {
     expect(cursorOverlayMode({ deviceVisible: false, controlling: false })).toBe('hidden')
+  })
+})
+
+describe('cursorPredictionAllowed', () => {
+  it('runs ahead only while nothing is being dragged', () => {
+    expect(cursorPredictionAllowed({ controlling: true, buttons: 0 })).toBe(true)
+    // Any held button means the device is dragging something that follows its real pointer.
+    expect(cursorPredictionAllowed({ controlling: true, buttons: 1 })).toBe(false)
+    expect(cursorPredictionAllowed({ controlling: true, buttons: 2 })).toBe(false)
+    expect(cursorPredictionAllowed({ controlling: false, buttons: 0 })).toBe(false)
   })
 })
 

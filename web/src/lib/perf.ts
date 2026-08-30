@@ -127,6 +127,19 @@ export const CURSOR_DIMMED_OPACITY = 0.55
 export const LOCAL_CURSOR_TTL_MS = 250
 
 /**
+ * Whether the overlay may run ahead of the device at all.
+ *
+ * Not while a button is held: then the device is dragging something that follows its *real*
+ * pointer — a window, a selection rectangle, a scrollbar — and that content is a full round
+ * trip behind. A predicted cursor separates from what it is dragging, which reads as two
+ * cursors, one of them oddly attached to the window. During a drag the cursor rejoins the
+ * thing it moves, even though both then lag. Free movement drags nothing, so it stays ahead.
+ */
+export function cursorPredictionAllowed(s: { controlling: boolean; buttons: number }): boolean {
+  return s.controlling && s.buttons === 0
+}
+
+/**
  * Where to draw the cursor: the operator's own pointer, or the position the device reported.
  *
  * While the operator drives, the device's report is a full round trip old — the browser sends
