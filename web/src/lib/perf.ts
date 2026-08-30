@@ -174,6 +174,24 @@ export function cursorDrawPoint(s: {
   return { x: remote.x, y: remote.y }
 }
 
+/**
+ * A 1x1 fully transparent PNG used as the tile's cursor while the operator controls.
+ *
+ * `cursor: none` is the obvious spelling, but Chromium restores the real pointer for a frame
+ * whenever the compositor re-evaluates the cursor — a video frame arriving, a hover target
+ * changing, a drag ending — which shows up as the operator's own cursor flashing over the
+ * remote screen. A transparent cursor image has nothing to restore, so it never blinks;
+ * `none` stays as the fallback for anything that cannot load the image.
+ */
+export const INVISIBLE_CURSOR =
+  'url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=") 0 0, none'
+
+/** The CSS `cursor` for a display tile. */
+export function tileCursor(s: { annotating: boolean; controlling: boolean }): string {
+  if (s.annotating) return 'crosshair'
+  return s.controlling ? INVISIBLE_CURSOR : 'default'
+}
+
 /* ───────────── latency-rig strip codec ───────────── */
 
 /**

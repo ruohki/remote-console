@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FAST_CHANNEL_GRACE_MS, LOCAL_CURSOR_TTL_MS, cursorDrawPoint, cursorOverlayMode, cursorPredictionAllowed, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
+import { FAST_CHANNEL_GRACE_MS, LOCAL_CURSOR_TTL_MS, cursorDrawPoint, cursorOverlayMode, cursorPredictionAllowed, tileCursor, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
 
 describe('viewportHint', () => {
   const display = { width: 5120, height: 2160 }
@@ -44,6 +44,21 @@ describe('cursorOverlayMode', () => {
 
   it('shows nothing to an observer when the device has no cursor', () => {
     expect(cursorOverlayMode({ ...base, deviceVisible: false, controlling: false })).toBe('hidden')
+  })
+})
+
+describe('tileCursor', () => {
+  it('hides the operator\u2019s own pointer with an image, not `none`', () => {
+    // `cursor: none` blinks in Chromium whenever the compositor re-evaluates the cursor.
+    const c = tileCursor({ annotating: false, controlling: true })
+    expect(c).toContain('data:image/png;base64,')
+    expect(c).toContain('none')
+    expect(c).not.toBe('none')
+  })
+
+  it('leaves the pointer alone when not controlling, and draws for annotation', () => {
+    expect(tileCursor({ annotating: false, controlling: false })).toBe('default')
+    expect(tileCursor({ annotating: true, controlling: true })).toBe('crosshair')
   })
 })
 
