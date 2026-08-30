@@ -87,51 +87,31 @@ export function cursorPlacement(
 }
 
 /**
- * How the remote-cursor overlay should draw, given what the device reports and what the
- * operator is doing.
+ * Whether to draw the remote-cursor overlay.
  *
- * An agent that streams cursor updates at all captures the screen *without* the system cursor
- * (`show_cursor: !client_cursor`), so this overlay is the only cursor in the picture — there is
- * never a second one to avoid, and the tile hides the browser's own pointer in control mode.
- * Hence: draw whenever the device has a cursor.
+ * An agent that streams cursor updates captures the screen *without* the system cursor, so
+ * this overlay is the only cursor the operator has, and the tile hides their own pointer while
+ * they control. It therefore stays solid for as long as they are controlling — including the
+ * moments the device reports no cursor at all, which happen constantly: Windows hides the
+ * pointer while someone types, an app hides it when it rests, another remote tool suppresses
+ * it while drawing its own. Dimming or hiding in those moments makes the cursor flicker
+ * between states while the operator is trying to point at something.
  *
- * A device can also report its cursor as hidden for reasons that have nothing to do with the
- * operator: Windows hides the pointer while someone types, and another remote tool on the same
- * machine (Parsec, RDP) suppresses it while it draws its own. Whoever is controlling still
- * needs to see where they are pointing, so the last known cursor is drawn dimmed — dimmed
- * because the device's own screen genuinely shows none. An observer, who is not moving
- * anything, sees nothing, which is the truth.
- *
- * While a button is held the overlay steps aside entirely. A drag is carried by the device —
- * the window moves with its own pointer, drawn in the picture — and a second cursor next to it
- * is noise. This overlay exists to make free movement feel immediate, which a drag is not.
+ * Two exceptions. While a button is held the device carries the drag with its own cursor,
+ * drawn in the picture, and a second one beside it is noise. And an observer, who is moving
+ * nothing, sees only what the device actually shows.
  */
-export type CursorOverlayMode = 'hidden' | 'solid' | 'dimmed'
-
-export function cursorOverlayMode(s: {
+export function drawsCursorOverlay(s: {
   /** the device says its cursor is drawn on screen */
   deviceVisible: boolean
   /** the operator is controlling this device */
   controlling: boolean
   /** the operator is holding a button: the device is dragging something */
   dragging: boolean
-}): CursorOverlayMode {
-  if (s.dragging) return 'hidden'
-  if (s.deviceVisible) return 'solid'
-  return s.controlling ? 'dimmed' : 'hidden'
+}): boolean {
+  if (s.dragging) return false
+  return s.controlling || s.deviceVisible
 }
-
-/** Opacity for a [`CursorOverlayMode`]; `hidden` is handled by not drawing at all. */
-export const CURSOR_DIMMED_OPACITY = 0.55
-
-/**
- * How long a locally predicted cursor position outranks the device's own report.
- *
- * Long enough that a continuous drag never falls back to the echo between two pointer events
- * (a 60 Hz mouse fires every ~16 ms, a slow one every ~125 ms), short enough that the cursor
- * settles onto the truth a blink after the operator stops moving.
- */
-export const LOCAL_CURSOR_TTL_MS = 250
 
 /**
  * Whether the overlay may run ahead of the device at all.
@@ -145,6 +125,15 @@ export const LOCAL_CURSOR_TTL_MS = 250
 export function cursorPredictionAllowed(s: { controlling: boolean; buttons: number }): boolean {
   return s.controlling && s.buttons === 0
 }
+
+/**
+ * How long a locally predicted cursor position outranks the device's own report.
+ *
+ * Long enough that a continuous movement never falls back to the echo between two pointer
+ * events (a 60 Hz mouse fires every ~16 ms, a slow one every ~125 ms), short enough that the
+ * cursor settles onto the truth a blink after the operator stops moving.
+ */
+export const LOCAL_CURSOR_TTL_MS = 250
 
 /**
  * Where to draw the cursor: the operator's own pointer, or the position the device reported.

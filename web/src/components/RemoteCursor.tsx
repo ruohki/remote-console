@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { CURSOR_DIMMED_OPACITY, cursorDrawPoint, cursorOverlayMode, cursorPlacement, type CursorShapeInfo } from '@/lib/perf'
+import { cursorDrawPoint, cursorPlacement, drawsCursorOverlay, type CursorShapeInfo } from '@/lib/perf'
 
 /**
  * Client-side remote cursor. The agent captures the screen *without* the system cursor and
@@ -96,9 +96,9 @@ export class CursorStore {
 /**
  * Overlay for one display tile — the only cursor there is, because an agent that streams
  * cursor updates captures the screen without the system cursor and the tile hides the
- * browser's own pointer while controlling. It dims to show where the operator is pointing when
- * the device reports no cursor at all (typing on Windows, another remote tool suppressing it).
- * See [`cursorOverlayMode`]. Never intercepts pointer events.
+ * browser's own pointer while controlling. It stays put through the moments the device reports
+ * no cursor (typing on Windows, an app hiding it at rest) and steps aside for a drag.
+ * See [`drawsCursorOverlay`]. Never intercepts pointer events.
  */
 export function RemoteCursorLayer({
   store,
@@ -134,12 +134,12 @@ export function RemoteCursorLayer({
         img.style.display = 'none'
         return
       }
-      const mode = cursorOverlayMode({
+      const draw = drawsCursorOverlay({
         deviceVisible: position.visible,
         controlling: modeRef.current.controlling,
         dragging: modeRef.current.dragging,
       })
-      if (mode === 'hidden') {
+      if (!draw) {
         img.style.display = 'none'
         return
       }
@@ -154,7 +154,6 @@ export function RemoteCursorLayer({
         lastUrl = shape.url
       }
       img.style.display = 'block'
-      img.style.opacity = mode === 'dimmed' ? String(CURSOR_DIMMED_OPACITY) : '1'
       img.style.width = `${p.width}px`
       img.style.height = `${p.height}px`
       img.style.transform = `translate(${p.left}px, ${p.top}px)`
