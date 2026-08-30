@@ -55,7 +55,7 @@ import { AnnotateToolbar } from '@/features/annotate/AnnotateToolbar'
 import { colorValue, useAnnotate } from '@/features/annotate/store'
 import { PointerThrottle, StrokeBatcher, strokeWidthPx } from '@/features/annotate/model'
 import { RemoteCursorLayer, type CursorStore } from '@/components/RemoteCursor'
-import { cursorPredictionAllowed, sameHint, tileCursor, viewportHint, type ViewportHint } from '@/lib/perf'
+import { cursorPredictionAllowed, sameHint, tileCursorClass, viewportHint, type ViewportHint } from '@/lib/perf'
 import { LatencyProbe, rvfcSupported } from '@/lib/latencyProbe'
 
 const FPS_PRESETS = [15, 30, 60]
@@ -1186,8 +1186,7 @@ function DisplayTile({
   return (
     <div
       ref={tileRef}
-      className={cx('group relative min-h-0 min-w-0 overflow-hidden', multi && isCurrent && 'ring-1 ring-[#6cb6ff]/60 ring-inset')}
-      style={{ cursor: tileCursor({ annotating, controlling }) }}
+      className={cx('group relative min-h-0 min-w-0 overflow-hidden', tileCursorClass({ annotating, controlling }), multi && isCurrent && 'ring-1 ring-[#6cb6ff]/60 ring-inset')}
       onPointerEnter={onEnter}
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}

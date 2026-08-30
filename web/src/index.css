@@ -220,3 +220,11 @@
     transition-duration: 0.001ms !important;
   }
 }
+
+/* The operator's own pointer over a tile they control.
+   `cursor: none` is restored for a frame whenever Chromium re-evaluates the cursor, and an
+   inline style re-applies it on every render — both show up as the pointer flashing over the
+   remote screen. A transparent image in a class is resolved once and has nothing to restore. */
+@utility cursor-hidden {
+  cursor: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=") 0 0, none;
+}

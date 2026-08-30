@@ -175,21 +175,17 @@ export function cursorDrawPoint(s: {
 }
 
 /**
- * A 1x1 fully transparent PNG used as the tile's cursor while the operator controls.
+ * The tile's cursor class while the operator works.
  *
- * `cursor: none` is the obvious spelling, but Chromium restores the real pointer for a frame
- * whenever the compositor re-evaluates the cursor — a video frame arriving, a hover target
- * changing, a drag ending — which shows up as the operator's own cursor flashing over the
- * remote screen. A transparent cursor image has nothing to restore, so it never blinks;
- * `none` stays as the fallback for anything that cannot load the image.
+ * A class, not an inline style: the tile re-renders on every viewer state patch, and rewriting
+ * `style.cursor` each time makes Chromium re-resolve the cursor, which the operator sees as
+ * their own pointer flashing over the remote screen. `cursor-hidden` (see index.css) is a
+ * transparent cursor image rather than `cursor: none`, which Chromium restores for a frame
+ * whenever it re-evaluates the cursor.
  */
-export const INVISIBLE_CURSOR =
-  'url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=") 0 0, none'
-
-/** The CSS `cursor` for a display tile. */
-export function tileCursor(s: { annotating: boolean; controlling: boolean }): string {
-  if (s.annotating) return 'crosshair'
-  return s.controlling ? INVISIBLE_CURSOR : 'default'
+export function tileCursorClass(s: { annotating: boolean; controlling: boolean }): string {
+  if (s.annotating) return 'cursor-crosshair'
+  return s.controlling ? 'cursor-hidden' : 'cursor-default'
 }
 
 /* ───────────── latency-rig strip codec ───────────── */
