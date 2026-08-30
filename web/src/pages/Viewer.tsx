@@ -937,6 +937,8 @@ function DisplayTile({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const [needsGesture, setNeedsGesture] = useState(false)
+  /** A mouse button is held: the device is dragging, and our cursor overlay steps aside. */
+  const [buttonHeld, setButtonHeld] = useState(false)
   const [latency, setLatency] = useState<{ medianMs: number | null; p95Ms: number | null } | null>(null)
 
   /* ───── viewport hint: ask the agent to encode no more pixels than we show ─────
@@ -1127,8 +1129,10 @@ function DisplayTile({
     if (moveRaf.current === null) moveRaf.current = requestAnimationFrame(flushMove)
   }
   const onPointerDown = (e: React.PointerEvent) => {
-    // The drag starts here: hand the cursor back to the device before it can separate.
+    // The device carries the drag from here: its own cursor moves the window, so the overlay
+    // hides and the prediction stops.
     cursorStore.setLocal(null)
+    if (controlling && !annotating && mouseButton(e.button)) setButtonHeld(true)
     onPointerDownFocus()
     if (annotating) {
       const { tool, color, width } = useAnnotate.getState()
@@ -1154,6 +1158,7 @@ function DisplayTile({
     sendInput({ t: 'md', button: b })
   }
   const onPointerUp = (e: React.PointerEvent) => {
+    setButtonHeld(false)
     if (annotating) {
       if (e.button === 0) endStroke()
       return
@@ -1186,13 +1191,14 @@ function DisplayTile({
       onPointerMove={onPointerMove}
       onPointerDown={onPointerDown}
       onPointerUp={onPointerUp}
+      onPointerCancel={() => setButtonHeld(false)}
       onPointerLeave={() => {
         cursorStore.setLocal(null)
         if (annotating) laserAt(null, true)
       }}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} controlling={controlling} enabled={showRemoteCursor} />
+      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} controlling={controlling} dragging={buttonHeld} enabled={showRemoteCursor} />
       <AnnotateCanvas display={display.index} getGeometry={tileGeometry} />
       {!stream && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12.5px] text-[#6b7381]">

@@ -101,6 +101,10 @@ export function cursorPlacement(
  * needs to see where they are pointing, so the last known cursor is drawn dimmed — dimmed
  * because the device's own screen genuinely shows none. An observer, who is not moving
  * anything, sees nothing, which is the truth.
+ *
+ * While a button is held the overlay steps aside entirely. A drag is carried by the device —
+ * the window moves with its own pointer, drawn in the picture — and a second cursor next to it
+ * is noise. This overlay exists to make free movement feel immediate, which a drag is not.
  */
 export type CursorOverlayMode = 'hidden' | 'solid' | 'dimmed'
 
@@ -109,7 +113,10 @@ export function cursorOverlayMode(s: {
   deviceVisible: boolean
   /** the operator is controlling this device */
   controlling: boolean
+  /** the operator is holding a button: the device is dragging something */
+  dragging: boolean
 }): CursorOverlayMode {
+  if (s.dragging) return 'hidden'
   if (s.deviceVisible) return 'solid'
   return s.controlling ? 'dimmed' : 'hidden'
 }

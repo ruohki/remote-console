@@ -105,19 +105,21 @@ export function RemoteCursorLayer({
   display,
   getGeometry,
   controlling,
+  dragging,
   enabled,
 }: {
   store: CursorStore
   display: number
   getGeometry: () => { box: { width: number; height: number }; video: { width: number; height: number } } | null
   controlling: boolean
+  dragging: boolean
   enabled: boolean
 }) {
   const imgRef = useRef<HTMLImageElement>(null)
-  const controllingRef = useRef(controlling)
+  const modeRef = useRef({ controlling, dragging })
   useEffect(() => {
-    controllingRef.current = controlling
-  }, [controlling])
+    modeRef.current = { controlling, dragging }
+  }, [controlling, dragging])
 
   useEffect(() => {
     const img = imgRef.current
@@ -132,12 +134,16 @@ export function RemoteCursorLayer({
         img.style.display = 'none'
         return
       }
-      const mode = cursorOverlayMode({ deviceVisible: position.visible, controlling: controllingRef.current })
+      const mode = cursorOverlayMode({
+        deviceVisible: position.visible,
+        controlling: modeRef.current.controlling,
+        dragging: modeRef.current.dragging,
+      })
       if (mode === 'hidden') {
         img.style.display = 'none'
         return
       }
-      const point = cursorDrawPoint({ remote: position, local, controlling: controllingRef.current, now: performance.now() })
+      const point = cursorDrawPoint({ remote: position, local, controlling: modeRef.current.controlling, now: performance.now() })
       const p = cursorPlacement(point, shape, geo.box, geo.video)
       if (!p) {
         img.style.display = 'none'
@@ -167,12 +173,12 @@ export function RemoteCursorLayer({
     }
   }, [store, display, getGeometry, enabled])
 
-  // Taking or dropping control does not move the cursor, so no store event fires for it: nudge
-  // the store to re-render with the new mode.
+  // Taking control or starting a drag does not move the cursor, so no store event fires for
+  // it: nudge the store to re-render with the new mode.
   useEffect(() => {
     if (!imgRef.current) return
     store.setPosition(store.get().position ?? { display, x: -1, y: -1, shapeId: 0, visible: false })
-  }, [controlling, store, display])
+  }, [controlling, dragging, store, display])
 
   return (
     <img

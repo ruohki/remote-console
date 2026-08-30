@@ -22,20 +22,28 @@ describe('viewportHint', () => {
 })
 
 describe('cursorOverlayMode', () => {
+  const base = { deviceVisible: true, controlling: true, dragging: false }
+
   it('always draws the cursor the device reports: it is the only one in the picture', () => {
     // An agent that streams cursor updates captures without the system cursor, and the tile
     // hides the operator's own pointer while controlling — suppressing this leaves nothing.
-    expect(cursorOverlayMode({ deviceVisible: true, controlling: true })).toBe('solid')
-    expect(cursorOverlayMode({ deviceVisible: true, controlling: false })).toBe('solid')
+    expect(cursorOverlayMode(base)).toBe('solid')
+    expect(cursorOverlayMode({ ...base, controlling: false })).toBe('solid')
+  })
+
+  it('steps aside for the whole drag', () => {
+    // The device moves the window with its own cursor; a second one beside it is just noise.
+    expect(cursorOverlayMode({ ...base, dragging: true })).toBe('hidden')
+    expect(cursorOverlayMode({ ...base, dragging: true, deviceVisible: false })).toBe('hidden')
   })
 
   it('dims for whoever is controlling when the device reports no cursor', () => {
     // Windows hides the pointer while typing, and tools like Parsec suppress it.
-    expect(cursorOverlayMode({ deviceVisible: false, controlling: true })).toBe('dimmed')
+    expect(cursorOverlayMode({ ...base, deviceVisible: false })).toBe('dimmed')
   })
 
   it('shows nothing to an observer when the device has no cursor', () => {
-    expect(cursorOverlayMode({ deviceVisible: false, controlling: false })).toBe('hidden')
+    expect(cursorOverlayMode({ ...base, deviceVisible: false, controlling: false })).toBe('hidden')
   })
 })
 
