@@ -172,7 +172,10 @@ impl Config {
             turn_username: None,
             turn_password: None,
             stun_urls: split_list(DEFAULT_STUN_URLS),
-            agent_download_base: DEFAULT_AGENT_DOWNLOAD_BASE.to_string(),
+            // Unroutable on purpose: tests must not reach the real release host. With the
+            // default the bakery really downloads published binaries, and cases like
+            // "no base binary for this platform" stop failing the way they should.
+            agent_download_base: "http://127.0.0.1:1/no-such-release".to_string(),
             session_ttl_hours: DEFAULT_SESSION_TTL_HOURS,
             agent_binary_dir: None,
             allow_insecure_public_url: false,
