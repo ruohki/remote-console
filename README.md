@@ -23,6 +23,7 @@ Configuration is via environment variables (see `.env.example`):
 | `LISTEN_ADDR` | `0.0.0.0:8080` | HTTP/WebSocket listener |
 | `TURN_URLS` | – | e.g. `turn:turn.example.com:3478?transport=udp,turns:…:5349` |
 | `TURN_SECRET` | – | coturn `static-auth-secret` for short-lived credentials |
+| `TURN_USERNAME` / `TURN_PASSWORD` | – | long-term credentials for a hosted relay that issues a fixed pair; ignored when `TURN_SECRET` is set |
 | `STUN_URLS` | `stun:stun.l.google.com:19302` | comma separated |
 | `AGENT_DOWNLOAD_BASE` | GitHub releases of `ruohki/remote-agent` | where install scripts fetch binaries (fallback for baking) |
 | `AGENT_BINARY_DIR` | – | directory of base agent binaries to bake branding into (else fetched & cached) |

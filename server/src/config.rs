@@ -17,6 +17,10 @@ pub struct Config {
     pub turn_urls: Vec<String>,
     /// coturn `static-auth-secret`; enables short-lived TURN credentials.
     pub turn_secret: Option<String>,
+    /// Long-term TURN credentials, for hosted relays that issue a fixed username/password
+    /// instead of accepting the `use-auth-secret` scheme. Ignored when `turn_secret` is set.
+    pub turn_username: Option<String>,
+    pub turn_password: Option<String>,
     /// STUN URLs, always included in ICE server lists.
     pub stun_urls: Vec<String>,
     /// Base URL the install scripts download agent binaries from (no trailing slash).
@@ -130,6 +134,12 @@ impl Config {
             turn_secret: std::env::var("TURN_SECRET")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            turn_username: std::env::var("TURN_USERNAME")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
+            turn_password: std::env::var("TURN_PASSWORD")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
             stun_urls: split_list(&env_or("STUN_URLS", DEFAULT_STUN_URLS)),
             agent_download_base: env_or("AGENT_DOWNLOAD_BASE", DEFAULT_AGENT_DOWNLOAD_BASE)
                 .trim_end_matches('/')
@@ -159,6 +169,8 @@ impl Config {
             listen_addr: "127.0.0.1:0".to_string(),
             turn_urls: vec![],
             turn_secret: None,
+            turn_username: None,
+            turn_password: None,
             stun_urls: split_list(DEFAULT_STUN_URLS),
             agent_download_base: DEFAULT_AGENT_DOWNLOAD_BASE.to_string(),
             session_ttl_hours: DEFAULT_SESSION_TTL_HOURS,
@@ -203,7 +215,9 @@ impl Config {
     }
 
     pub fn turn_enabled(&self) -> bool {
-        self.turn_secret.is_some() && !self.turn_urls.is_empty()
+        !self.turn_urls.is_empty()
+            && (self.turn_secret.is_some()
+                || (self.turn_username.is_some() && self.turn_password.is_some()))
     }
 
     /// Filesystem path of the SQLite database, if the URL points to a file.
@@ -243,10 +257,15 @@ impl Config {
                 bail!("{reason}");
             }
         }
-        if self.turn_secret.is_some() {
+        if self.turn_username.is_some() != self.turn_password.is_some() {
+            tracing::warn!(
+                "TURN_USERNAME and TURN_PASSWORD must both be set: no relay will be offered"
+            );
+        }
+        if self.turn_secret.is_some() || self.turn_enabled() {
             if self.turn_urls.is_empty() {
                 tracing::warn!(
-                    "TURN_SECRET is set but TURN_URLS is empty: no relay will be offered"
+                    "TURN credentials are set but TURN_URLS is empty: no relay will be offered"
                 );
             } else if !self.turn_urls.iter().any(|u| u.starts_with("turns:")) {
                 tracing::warn!(
