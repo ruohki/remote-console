@@ -86,6 +86,40 @@ export function cursorPlacement(
   }
 }
 
+/**
+ * How the remote-cursor overlay should draw, given what the device reports and what the
+ * operator is doing.
+ *
+ * The agent paints the cursor into the frame it captures, so while the operator controls a
+ * tile with the pointer over it the overlay would be a second cursor — it steps aside. But a
+ * device can report the cursor as hidden for reasons that have nothing to do with the
+ * operator: Windows hides the pointer while someone types, and another remote tool on the same
+ * machine (Parsec, RDP) suppresses it while it draws its own. Then the frame carries no cursor
+ * and, with the browser's own pointer hidden in control mode, the operator is left with no way
+ * to see where they are pointing. In that case the overlay draws the last known cursor,
+ * dimmed, because the device's screen genuinely has none.
+ */
+export type CursorOverlayMode = 'hidden' | 'solid' | 'dimmed'
+
+export function cursorOverlayMode(s: {
+  /** the device says its cursor is drawn on screen */
+  deviceVisible: boolean
+  /** the operator is controlling this device */
+  controlling: boolean
+  /** the operator's pointer is over this tile */
+  hovering: boolean
+}): CursorOverlayMode {
+  if (s.deviceVisible) {
+    // The frame already carries the cursor under the operator's own pointer.
+    return s.controlling && s.hovering ? 'hidden' : 'solid'
+  }
+  // Nothing on the device's screen: only worth drawing for whoever is moving it.
+  return s.controlling ? 'dimmed' : 'hidden'
+}
+
+/** Opacity for a [`CursorOverlayMode`]; `hidden` is handled by not drawing at all. */
+export const CURSOR_DIMMED_OPACITY = 0.55
+
 /* ───────────── latency-rig strip codec ───────────── */
 
 /**

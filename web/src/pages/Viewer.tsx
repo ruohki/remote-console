@@ -1178,7 +1178,7 @@ function DisplayTile({
       }}
     >
       <video ref={videoRef} autoPlay playsInline muted className="h-full w-full object-contain" />
-      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} suppressed={controlling && hovering} enabled={showRemoteCursor} />
+      <RemoteCursorLayer store={cursorStore} display={display.index} getGeometry={cursorGeometry} controlling={controlling} hovering={hovering} enabled={showRemoteCursor} />
       <AnnotateCanvas display={display.index} getGeometry={tileGeometry} />
       {!stream && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12.5px] text-[#6b7381]">

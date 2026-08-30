@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FAST_CHANNEL_GRACE_MS, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
+import { FAST_CHANNEL_GRACE_MS, cursorOverlayMode, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
 
 describe('viewportHint', () => {
   const display = { width: 5120, height: 2160 }
@@ -18,6 +18,27 @@ describe('viewportHint', () => {
     expect(viewportHint({ width: 800, height: 600 }, display, 2, true)).toEqual({ width: null, height: null })
     expect(viewportHint({ width: 2560, height: 1080 }, display, 2, false)).toEqual({ width: null, height: null })
     expect(viewportHint({ width: 0, height: 0 }, display, 2, false)).toEqual({ width: null, height: null })
+  })
+})
+
+describe('cursorOverlayMode', () => {
+  it('steps aside only when the frame already carries the cursor under the operator', () => {
+    const visible = { deviceVisible: true, controlling: true, hovering: true }
+    expect(cursorOverlayMode(visible)).toBe('hidden')
+    expect(cursorOverlayMode({ ...visible, hovering: false })).toBe('solid')
+    expect(cursorOverlayMode({ ...visible, controlling: false })).toBe('solid')
+  })
+
+  it('draws a dimmed cursor for the operator when the device reports none', () => {
+    // Windows hides the pointer while typing, and tools like Parsec suppress it: the frame has
+    // no cursor, so without this the operator points blind.
+    expect(cursorOverlayMode({ deviceVisible: false, controlling: true, hovering: true })).toBe('dimmed')
+    expect(cursorOverlayMode({ deviceVisible: false, controlling: true, hovering: false })).toBe('dimmed')
+  })
+
+  it('shows nothing to an observer when the device has no cursor', () => {
+    expect(cursorOverlayMode({ deviceVisible: false, controlling: false, hovering: false })).toBe('hidden')
+    expect(cursorOverlayMode({ deviceVisible: false, controlling: false, hovering: true })).toBe('hidden')
   })
 })
 
