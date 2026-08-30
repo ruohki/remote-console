@@ -117,6 +117,43 @@ export function cursorOverlayMode(s: {
 /** Opacity for a [`CursorOverlayMode`]; `hidden` is handled by not drawing at all. */
 export const CURSOR_DIMMED_OPACITY = 0.55
 
+/**
+ * How long a locally predicted cursor position outranks the device's own report.
+ *
+ * Long enough that a continuous drag never falls back to the echo between two pointer events
+ * (a 60 Hz mouse fires every ~16 ms, a slow one every ~125 ms), short enough that the cursor
+ * settles onto the truth a blink after the operator stops moving.
+ */
+export const LOCAL_CURSOR_TTL_MS = 250
+
+/**
+ * Where to draw the cursor: the operator's own pointer, or the position the device reported.
+ *
+ * While the operator drives, the device's report is a full round trip old — the browser sends
+ * a move, the agent applies it, its cursor thread samples at up to 60 Hz, and the position
+ * travels back. Drawing that echo under a hidden local pointer is what makes control feel
+ * heavy. So while the operator is moving the pointer over a tile they control, the overlay
+ * follows *their* pointer immediately and the echo only supplies the shape.
+ *
+ * Everything else keeps the device's position: another display, an observer, a cursor the
+ * device moved by itself, or an operator who has stopped moving — after which the prediction
+ * expires and any divergence (a window edge the pointer could not cross, an app warping it)
+ * corrects itself.
+ */
+export function cursorDrawPoint(s: {
+  remote: { display: number; x: number; y: number }
+  local: { display: number; x: number; y: number; at: number } | null
+  controlling: boolean
+  now: number
+}): { x: number; y: number } {
+  const { remote, local } = s
+  const fresh = local !== null && s.now - local.at <= LOCAL_CURSOR_TTL_MS
+  if (s.controlling && local && fresh && local.display === remote.display) {
+    return { x: local.x, y: local.y }
+  }
+  return { x: remote.x, y: remote.y }
+}
+
 /* ───────────── latency-rig strip codec ───────────── */
 
 /**

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { CURSOR_DIMMED_OPACITY, cursorOverlayMode, cursorPlacement, type CursorShapeInfo } from '@/lib/perf'
+import { CURSOR_DIMMED_OPACITY, cursorDrawPoint, cursorOverlayMode, cursorPlacement, type CursorShapeInfo } from '@/lib/perf'
 
 /**
  * Client-side remote cursor. The agent captures the screen *without* the system cursor and
@@ -23,11 +23,21 @@ export interface CursorPosition {
   visible: boolean
 }
 
+/** The operator's own pointer over a tile, in physical pixels of that display. */
+export interface LocalCursor {
+  display: number
+  x: number
+  y: number
+  /** `performance.now()` when the pointer was there; the prediction expires. */
+  at: number
+}
+
 type Listener = () => void
 
 export class CursorStore {
   private shapes = new Map<number, CursorShape>()
   private position: CursorPosition | null = null
+  private local: LocalCursor | null = null
   private listeners = new Set<Listener>()
 
   setShape(shape: CursorShape) {
@@ -45,15 +55,30 @@ export class CursorStore {
     this.emit()
   }
 
-  reset() {
-    this.shapes.clear()
-    this.position = null
+  /**
+   * Where the operator's pointer is right now. Drawing follows this instead of the device's
+   * echo while they are controlling, so the cursor never trails their hand by a round trip.
+   * `null` when the pointer leaves the tile or control ends.
+   */
+  setLocal(local: LocalCursor | null) {
+    this.local = local
     this.emit()
   }
 
-  get(): { position: CursorPosition | null; shape: CursorShape | null } {
+  reset() {
+    this.shapes.clear()
+    this.position = null
+    this.local = null
+    this.emit()
+  }
+
+  get(): { position: CursorPosition | null; shape: CursorShape | null; local: LocalCursor | null } {
     const position = this.position
-    return { position, shape: position ? (this.shapes.get(position.shapeId) ?? null) : null }
+    return {
+      position,
+      shape: position ? (this.shapes.get(position.shapeId) ?? null) : null,
+      local: this.local,
+    }
   }
 
   subscribe(l: Listener): () => void {
@@ -101,7 +126,7 @@ export function RemoteCursorLayer({
     let lastUrl = ''
     const render = () => {
       raf = null
-      const { position, shape } = store.get()
+      const { position, shape, local } = store.get()
       const geo = getGeometry()
       if (!enabled || !position || !shape || position.display !== display || !geo) {
         img.style.display = 'none'
@@ -112,7 +137,8 @@ export function RemoteCursorLayer({
         img.style.display = 'none'
         return
       }
-      const p = cursorPlacement({ x: position.x, y: position.y }, shape, geo.box, geo.video)
+      const point = cursorDrawPoint({ remote: position, local, controlling: controllingRef.current, now: performance.now() })
+      const p = cursorPlacement(point, shape, geo.box, geo.video)
       if (!p) {
         img.style.display = 'none'
         return

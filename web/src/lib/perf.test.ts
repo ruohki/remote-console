@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FAST_CHANNEL_GRACE_MS, cursorOverlayMode, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
+import { FAST_CHANNEL_GRACE_MS, LOCAL_CURSOR_TTL_MS, cursorDrawPoint, cursorOverlayMode, STRIP_CELLS, STRIP_MODULO, cursorPlacement, decodeStrip, encodeStrip, moveChannel, percentile, stripLatencyMs, viewportHint } from './perf'
 
 describe('viewportHint', () => {
   const display = { width: 5120, height: 2160 }
@@ -36,6 +36,29 @@ describe('cursorOverlayMode', () => {
 
   it('shows nothing to an observer when the device has no cursor', () => {
     expect(cursorOverlayMode({ deviceVisible: false, controlling: false })).toBe('hidden')
+  })
+})
+
+describe('cursorDrawPoint', () => {
+  const remote = { display: 0, x: 100, y: 100 }
+
+  it('follows the operator while they are moving a tile they control', () => {
+    const local = { display: 0, x: 900, y: 400, at: 1_000 }
+    expect(cursorDrawPoint({ remote, local, controlling: true, now: 1_000 })).toEqual({ x: 900, y: 400 })
+    // Still theirs one slow mouse report later.
+    expect(cursorDrawPoint({ remote, local, controlling: true, now: 1_000 + LOCAL_CURSOR_TTL_MS })).toEqual({ x: 900, y: 400 })
+  })
+
+  it('settles onto the device once the operator stops moving', () => {
+    const local = { display: 0, x: 900, y: 400, at: 1_000 }
+    expect(cursorDrawPoint({ remote, local, controlling: true, now: 1_001 + LOCAL_CURSOR_TTL_MS })).toEqual({ x: 100, y: 100 })
+  })
+
+  it('never predicts for an observer, another display, or with no pointer on the tile', () => {
+    const local = { display: 0, x: 900, y: 400, at: 1_000 }
+    expect(cursorDrawPoint({ remote, local, controlling: false, now: 1_000 })).toEqual({ x: 100, y: 100 })
+    expect(cursorDrawPoint({ remote, local: { ...local, display: 1 }, controlling: true, now: 1_000 })).toEqual({ x: 100, y: 100 })
+    expect(cursorDrawPoint({ remote, local: null, controlling: true, now: 1_000 })).toEqual({ x: 100, y: 100 })
   })
 })
 
