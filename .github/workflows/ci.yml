@@ -1,9 +1,9 @@
 name: CI
 
+# Disabled: the console is built and checked locally. Manual runs only — restoring the
+# push/pull_request triggers below re-enables it.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

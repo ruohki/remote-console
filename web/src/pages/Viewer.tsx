@@ -1025,19 +1025,6 @@ function DisplayTile({
     return toRemotePixels({ x: e.clientX - r.left, y: e.clientY - r.top }, { width: r.width, height: r.height }, { width: v.videoWidth, height: v.videoHeight })
   }, [])
 
-  /** The pointer in physical pixels of the remote *display* — the cursor overlay's space. */
-  const displayPoint = useCallback(
-    (e: { clientX: number; clientY: number }) => {
-      const geo = cursorGeometryRef.current?.()
-      if (!geo) return null
-      const v = videoRef.current
-      if (!v) return null
-      const r = v.getBoundingClientRect()
-      return toRemotePixels({ x: e.clientX - r.left, y: e.clientY - r.top }, geo.box, geo.video)
-    },
-    [],
-  )
-
   const tileGeometry = useCallback(() => {
     const v = videoRef.current
     if (!v || !v.videoWidth) return null
@@ -1046,14 +1033,24 @@ function DisplayTile({
   }, [])
   // Cursor positions are physical pixels of the display, not of the (possibly downscaled)
   // encoded picture, so the cursor layer maps against the display size.
-  const cursorGeometryRef = useRef<(() => { box: { width: number; height: number }; video: { width: number; height: number } } | null) | null>(null)
   const cursorGeometry = useCallback(() => {
     const geo = tileGeometry()
     if (!geo) return null
     if (display.width > 0 && display.height > 0) return { box: geo.box, video: { width: display.width, height: display.height } }
     return geo
   }, [tileGeometry, display.width, display.height])
-  cursorGeometryRef.current = cursorGeometry
+
+  /** The pointer in physical pixels of the remote *display* — the cursor overlay's space. */
+  const displayPoint = useCallback(
+    (e: { clientX: number; clientY: number }) => {
+      const geo = cursorGeometry()
+      const v = videoRef.current
+      if (!geo || !v) return null
+      const r = v.getBoundingClientRect()
+      return toRemotePixels({ x: e.clientX - r.left, y: e.clientY - r.top }, geo.box, geo.video)
+    },
+    [cursorGeometry],
+  )
 
   const flushMove = useCallback(() => {
     moveRaf.current = null
