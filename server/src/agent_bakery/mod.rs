@@ -49,7 +49,23 @@ impl Platform {
     }
 
     /// Release asset / base-binary file name.
+    ///
+    /// The `-base` suffix marks the binaries that exist to be *baked*: the release also ships
+    /// run-anywhere builds (a `.app` for macOS, the plain `.exe` for Windows) under the
+    /// unsuffixed names, and picking those up here would serve them as if they were branded.
     pub fn asset(self) -> &'static str {
+        match self {
+            Self::MacosUniversal => "remote-agent-macos-universal-base",
+            Self::WindowsX86_64 => "remote-agent-windows-x86_64-base.exe",
+            Self::WindowsAarch64 => "remote-agent-windows-aarch64-base.exe",
+        }
+    }
+
+    /// What the base binary was called before the `-base` suffix.
+    ///
+    /// Releases published before the rename carry only these, and an `AGENT_BINARY_DIR` filled
+    /// in by hand still holds them, so both are accepted wherever a base binary is looked up.
+    pub fn legacy_asset(self) -> &'static str {
         match self {
             Self::MacosUniversal => "remote-agent-macos-universal",
             Self::WindowsX86_64 => "remote-agent-windows-x86_64.exe",
@@ -138,8 +154,10 @@ impl Bakery {
 
     fn local_path(config: &Config, platform: Platform) -> Option<PathBuf> {
         let dir = config.agent_binary_dir.as_ref()?;
-        let p = dir.join(platform.asset());
-        p.is_file().then_some(p)
+        [platform.asset(), platform.legacy_asset()]
+            .into_iter()
+            .map(|name| dir.join(name))
+            .find(|p| p.is_file())
     }
 
     fn signing_configured(&self, platform: Platform) -> bool {
@@ -163,7 +181,9 @@ impl Bakery {
                 } else {
                     let cached = Self::cache_dir(config).join(p.asset());
                     let size = std::fs::metadata(&cached).ok().map(|m| m.len());
-                    (sums.contains_key(p.asset()), Source::Release, size)
+                    let published =
+                        sums.contains_key(p.asset()) || sums.contains_key(p.legacy_asset());
+                    (published, Source::Release, size)
                 };
                 Availability {
                     platform: p.slug().to_string(),
@@ -219,17 +239,18 @@ impl Bakery {
         let cache_dir = Self::cache_dir(config);
         let cached = cache_dir.join(platform.asset());
         let sums = self.release_sums(config).await?;
-        let expected = sums
-            .get(platform.asset())
-            .ok_or_else(|| anyhow!("no base binary available for {}", platform.slug()))?
-            .to_lowercase();
+        // Releases from before the rename carry only the unsuffixed name.
+        let (asset, expected) = [platform.asset(), platform.legacy_asset()]
+            .into_iter()
+            .find_map(|name| sums.get(name).map(|sum| (name, sum.to_lowercase())))
+            .ok_or_else(|| anyhow!("no base binary available for {}", platform.slug()))?;
 
         if let Ok(bytes) = tokio::fs::read(&cached).await {
             if sha256_hex(&bytes) == expected {
                 return Ok(bytes);
             }
         }
-        let url = format!("{}/{}", config.agent_download_base, platform.asset());
+        let url = format!("{}/{}", config.agent_download_base, asset);
         let bytes = reqwest::Client::new()
             .get(&url)
             .timeout(Duration::from_secs(120))
@@ -242,7 +263,7 @@ impl Bakery {
             .context("reading download")?
             .to_vec();
         if sha256_hex(&bytes) != expected {
-            return Err(anyhow!("checksum mismatch for {}", platform.asset()));
+            return Err(anyhow!("checksum mismatch for {asset}"));
         }
         tokio::fs::create_dir_all(&cache_dir).await.ok();
         tokio::fs::write(&cached, &bytes).await.ok();
@@ -492,6 +513,24 @@ mod tests {
             download_filename("  ---  ", Platform::WindowsAarch64),
             "remote-agent-windows-aarch64.exe"
         );
+    }
+
+    #[test]
+    fn base_assets_carry_the_suffix_and_still_answer_to_the_old_name() {
+        // The release also ships run-anywhere builds under the unsuffixed names; baking one of
+        // those would hand out an agent that asks for a console URL instead of enrolling.
+        assert_eq!(
+            Platform::MacosUniversal.asset(),
+            "remote-agent-macos-universal-base"
+        );
+        assert_eq!(
+            Platform::WindowsX86_64.asset(),
+            "remote-agent-windows-x86_64-base.exe"
+        );
+        for p in Platform::ALL {
+            assert_ne!(p.asset(), p.legacy_asset());
+            assert_eq!(p.legacy_asset(), p.asset().replace("-base", ""));
+        }
     }
 
     #[test]

@@ -21,8 +21,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $arch = $env:PROCESSOR_ARCHITECTURE
 if ($env:PROCESSOR_ARCHITEW6432) { $arch = $env:PROCESSOR_ARCHITEW6432 }
 switch ($arch) {
-    'AMD64' { $Asset = 'remote-agent-windows-x86_64.exe';  $Slug = 'windows-x86_64';  $ArchKey = 'x86_64' }
-    'ARM64' { $Asset = 'remote-agent-windows-aarch64.exe'; $Slug = 'windows-aarch64'; $ArchKey = 'aarch64' }
+    'AMD64' { $Asset = 'remote-agent-windows-x86_64-base.exe'; $LegacyAsset = 'remote-agent-windows-x86_64.exe';  $Slug = 'windows-x86_64';  $ArchKey = 'x86_64' }
+    'ARM64' { $Asset = 'remote-agent-windows-aarch64-base.exe'; $LegacyAsset = 'remote-agent-windows-aarch64.exe'; $Slug = 'windows-aarch64'; $ArchKey = 'aarch64' }
     default { Fail "unsupported architecture: $arch" }
 }
 $Console = ($UseConsole -split ',') -contains $ArchKey
@@ -34,11 +34,14 @@ try {
         Write-Step "Downloading branded agent from $ServerUrl"
         Invoke-WebRequest -UseBasicParsing -Uri "$ServerUrl/api/agent/download/$Slug`?token=$Token" -OutFile (Join-Path $Tmp $Asset)
     } else {
+        Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/SHA256SUMS" -OutFile (Join-Path $Tmp 'SHA256SUMS')
+        # Releases from before the -base rename carry only the old name.
+        $sums = Get-Content (Join-Path $Tmp 'SHA256SUMS')
+        if (-not ($sums | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" })) { $Asset = $LegacyAsset }
         Write-Step "Downloading $Asset from $DownloadBase"
         Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/$Asset" -OutFile (Join-Path $Tmp $Asset)
-        Invoke-WebRequest -UseBasicParsing -Uri "$DownloadBase/SHA256SUMS" -OutFile (Join-Path $Tmp 'SHA256SUMS')
         Write-Step 'Verifying checksum'
-        $line = Get-Content (Join-Path $Tmp 'SHA256SUMS') | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1
+        $line = $sums | Where-Object { $_ -match "\s$([regex]::Escape($Asset))$" } | Select-Object -First 1
         if (-not $line) { Fail "no checksum for $Asset in SHA256SUMS" }
         $expected = ($line -split '\s+')[0].ToLower()
         $actual = (Get-FileHash -Algorithm SHA256 (Join-Path $Tmp $Asset)).Hash.ToLower()

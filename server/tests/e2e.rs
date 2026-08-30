@@ -1907,6 +1907,8 @@ async fn spawn_app_with_binaries() -> (TestApp, Vec<u8>) {
     let bin_dir = dir.path().join("bins");
     std::fs::create_dir_all(&bin_dir).unwrap();
     let base = b"\x7fELF fake-remote-agent base binary".to_vec();
+    // Deliberately the legacy name: an AGENT_BINARY_DIR filled in before the -base rename
+    // must keep working.
     std::fs::write(bin_dir.join("remote-agent-macos-universal"), &base).unwrap();
 
     let mut config = Config::for_tests(format!("sqlite://{}?mode=rwc", db_path.display()));

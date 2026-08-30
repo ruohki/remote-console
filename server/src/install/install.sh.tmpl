@@ -9,7 +9,10 @@ DOWNLOAD_BASE="{{DOWNLOAD_BASE}}"
 USE_CONSOLE="{{USE_CONSOLE}}"
 INSTALL_DIR="/usr/local/bin"
 BINARY="$INSTALL_DIR/remote-agent"
-ASSET="remote-agent-macos-universal"
+# The release ships the bakeable binary under -base and a run-anywhere app beside it; the
+# console serves the branded bundle, this is only the fallback when it has none.
+ASSET="remote-agent-macos-universal-base"
+LEGACY_ASSET="remote-agent-macos-universal"
 
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
@@ -42,12 +45,17 @@ if [ "$USE_CONSOLE" = "1" ]; then
     mkdir -p "$INSTALL_DIR"
     ln -sfn "$APP_DIR/Contents/MacOS/remote-agent" "$BINARY"
 else
+    curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$DOWNLOAD_BASE/SHA256SUMS" || fail "download failed: $DOWNLOAD_BASE/SHA256SUMS"
+    # Releases from before the -base rename carry only the old name.
+    EXPECTED="$(grep " $ASSET\$" "$TMP/SHA256SUMS" | awk '{print $1}' | head -n 1)"
+    if [ -z "$EXPECTED" ]; then
+        ASSET="$LEGACY_ASSET"
+        EXPECTED="$(grep " $ASSET\$" "$TMP/SHA256SUMS" | awk '{print $1}' | head -n 1)"
+    fi
+    [ -n "$EXPECTED" ] || fail "no checksum for $ASSET in SHA256SUMS"
     log "Downloading $ASSET from $DOWNLOAD_BASE"
     curl -fsSL --retry 3 -o "$TMP/$ASSET" "$DOWNLOAD_BASE/$ASSET" || fail "download failed: $DOWNLOAD_BASE/$ASSET"
-    curl -fsSL --retry 3 -o "$TMP/SHA256SUMS" "$DOWNLOAD_BASE/SHA256SUMS" || fail "download failed: $DOWNLOAD_BASE/SHA256SUMS"
     log "Verifying checksum"
-    EXPECTED="$(grep " $ASSET\$" "$TMP/SHA256SUMS" | awk '{print $1}' | head -n 1)"
-    [ -n "$EXPECTED" ] || fail "no checksum for $ASSET in SHA256SUMS"
     ACTUAL="$(shasum -a 256 "$TMP/$ASSET" | awk '{print $1}')"
     [ "$EXPECTED" = "$ACTUAL" ] || fail "checksum mismatch (expected $EXPECTED, got $ACTUAL)"
 fi
