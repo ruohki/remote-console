@@ -1,8 +1,9 @@
-name: Release image
+name: Release image (manual)
+# Disabled: images are built outside CI. Kept for reference and manual runs only —
+# re-enable by restoring the `push: tags` trigger below.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
