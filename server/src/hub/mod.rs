@@ -21,7 +21,7 @@ use protocol::config::AgentConfig;
 use protocol::ui::{ConsoleToUi, DeviceSummary, SessionSummary};
 use serde_json::json;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -39,9 +39,16 @@ pub const EVENT_GRACE_AFTER_END: Duration = Duration::from_secs(60);
 pub const EVENTS_PER_SECOND: u32 = 50;
 /// Idle event limiters are dropped after this long.
 const EVENT_LIMITER_IDLE: Duration = Duration::from_secs(120);
+/// First protocol version that knows `ConsoleToAgent::Retire` and the service-side `Update`.
+pub const PROTOCOL_RETIRE_UPDATE: u32 = 2;
+/// `goodbye` reason on console shutdown; agents reconnect quickly on it (the reason contains
+/// "restart").
+pub const GOODBYE_RESTARTING: &str = "console restarting";
 
 pub struct AgentConn {
     pub conn_id: u64,
+    /// Protocol version the agent announced in `hello` (decides which messages it may get).
+    pub protocol_version: u32,
     pub tx: mpsc::UnboundedSender<ConsoleToAgent>,
     pub cancel: CancellationToken,
     pub heartbeat_interval: Duration,
@@ -77,6 +84,8 @@ pub struct Hub {
     pub db: Db,
     state: Mutex<HubState>,
     next_id: AtomicU64,
+    /// Set once shutdown began: new agent connections are turned away.
+    shutting_down: AtomicBool,
 }
 
 /// Outcome of [`Hub::start_session`].
@@ -118,7 +127,12 @@ impl Hub {
             db,
             state: Mutex::new(HubState::default()),
             next_id: AtomicU64::new(1),
+            shutting_down: AtomicBool::new(false),
         })
+    }
+
+    pub fn is_shutting_down(&self) -> bool {
+        self.shutting_down.load(Ordering::SeqCst)
     }
 
     pub fn next_conn_id(&self) -> u64 {
@@ -175,6 +189,25 @@ impl Hub {
 
     pub fn is_online(&self, device_id: &str) -> bool {
         self.state.lock().agents.contains_key(device_id)
+    }
+
+    /// Protocol version of the connected agent, `None` while offline.
+    pub fn agent_protocol(&self, device_id: &str) -> Option<u32> {
+        self.state
+            .lock()
+            .agents
+            .get(device_id)
+            .map(|c| c.protocol_version)
+    }
+
+    /// Every connected agent with its protocol version.
+    pub fn online_agents(&self) -> HashMap<String, u32> {
+        self.state
+            .lock()
+            .agents
+            .iter()
+            .map(|(id, c)| (id.clone(), c.protocol_version))
+            .collect()
     }
 
     pub fn active_session_id(&self, device_id: &str) -> Option<String> {
@@ -253,6 +286,20 @@ impl Hub {
         match self.state.lock().agents.get(device_id) {
             Some(c) => c.tx.send(msg).is_ok(),
             None => false,
+        }
+    }
+
+    /// Send only when the connected agent speaks at least `min_protocol` (messages older
+    /// agents would not understand: `retire`, the service-side `update`).
+    pub fn send_to_agent_min_protocol(
+        &self,
+        device_id: &str,
+        min_protocol: u32,
+        msg: ConsoleToAgent,
+    ) -> bool {
+        match self.state.lock().agents.get(device_id) {
+            Some(c) if c.protocol_version >= min_protocol => c.tx.send(msg).is_ok(),
+            _ => false,
         }
     }
 
@@ -474,20 +521,72 @@ impl Hub {
 
     /// Say goodbye and drop the agent's connection.
     pub async fn disconnect_device(&self, device_id: &str, reason: &str) {
+        self.close_agent(device_id, |_| ConsoleToAgent::Goodbye {
+            reason: reason.to_string(),
+        })
+        .await;
+    }
+
+    /// The device was deleted: protocol 2+ agents get `retire` (forget the enrollment, stop
+    /// reconnecting), older ones a `goodbye` (they keep retrying and are rejected).
+    pub async fn retire_device(&self, device_id: &str, reason: &str) {
+        self.close_agent(device_id, |protocol| {
+            if protocol >= PROTOCOL_RETIRE_UPDATE {
+                ConsoleToAgent::Retire {
+                    reason: reason.to_string(),
+                }
+            } else {
+                ConsoleToAgent::Goodbye {
+                    reason: reason.to_string(),
+                }
+            }
+        })
+        .await;
+    }
+
+    /// Send a last message (chosen by protocol version) and close the agent's socket.
+    async fn close_agent(&self, device_id: &str, last: impl FnOnce(u32) -> ConsoleToAgent) {
         let cancel = {
             let st = self.state.lock();
             st.agents.get(device_id).map(|c| {
-                let _ = c.tx.send(ConsoleToAgent::Goodbye {
-                    reason: reason.to_string(),
-                });
+                let _ = c.tx.send(last(c.protocol_version));
                 c.cancel.clone()
             })
         };
         if let Some(cancel) = cancel {
-            // Give the writer a moment to flush the goodbye before closing.
+            // The writer flushes queued messages before the close frame; the short pause only
+            // keeps the order obvious in logs.
             tokio::time::sleep(Duration::from_millis(50)).await;
             cancel.cancel();
         }
+    }
+
+    /// Console shutdown: turn new agents away, tell every connected agent `goodbye`
+    /// ([`GOODBYE_RESTARTING`]) and close the sockets cleanly. Returns once every connection
+    /// has flushed its close frame and unregistered, or after `timeout`.
+    pub async fn shutdown_agents(&self, timeout: Duration) -> usize {
+        self.shutting_down.store(true, Ordering::SeqCst);
+        let conns: Vec<CancellationToken> = {
+            let st = self.state.lock();
+            st.agents
+                .values()
+                .map(|c| {
+                    let _ = c.tx.send(ConsoleToAgent::Goodbye {
+                        reason: GOODBYE_RESTARTING.into(),
+                    });
+                    c.cancel.clone()
+                })
+                .collect()
+        };
+        let count = conns.len();
+        for cancel in conns {
+            cancel.cancel();
+        }
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline && !self.state.lock().agents.is_empty() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        count
     }
 
     // ── sessions ─────────────────────────────────────────────────────────────

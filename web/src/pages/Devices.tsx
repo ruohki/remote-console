@@ -1,12 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { useQuery } from '@tanstack/react-query'
-import { Eye, FolderKanban, MonitorPlay, Plus, Search } from 'lucide-react'
-import { api } from '@/lib/api'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { CircleArrowUp, Eye, FolderKanban, MonitorPlay, Plus, Search } from 'lucide-react'
+import { api, errorMessage } from '@/lib/api'
 import type { DeviceSummary } from '@/protocol'
+import type { BulkUpdateRequested } from '@/lib/types'
 import { useLive } from '@/store/live'
-import { Button, EmptyState, Input, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
-import { GroupChips, ModeBadge, OsIcon, OverrideBadge, StatusLed, Tags } from '@/components/badges'
+import { Button, ConfirmDialog, EmptyState, Input, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
+import { DesktopBadge, GroupChips, ModeBadge, OsIcon, OverrideBadge, StatusLed, Tags, UpdateBadge } from '@/components/badges'
+import { useAgentVersions } from '@/hooks/useAgentVersions'
+import { availableUpdate } from '@/lib/agentUpdate'
+import { toast } from '@/lib/toast'
 import { Pager } from '@/components/Pager'
 import { slicePage } from '@/lib/paging'
 import { useAuth } from '@/store/auth'
@@ -37,6 +41,8 @@ export function Devices() {
   const navigate = useNavigate()
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
+  const versions = useAgentVersions()
+  const [confirmUpdate, setConfirmUpdate] = useState(false)
 
   // REST fallback until the socket delivers its snapshot.
   const fallback = useQuery({
@@ -77,6 +83,24 @@ export function Devices() {
   const loading = !hydrated && fallback.isPending && devices.length === 0
   const onlineCount = devices.filter((d) => d.online).length
 
+  // Bulk update: online, outdated devices the admin manages (within the group filter).
+  const outdated = useMemo(
+    () => devices.filter((d) => d.online && (group ? d.groups.some((g) => g.id === group) : true) && availableUpdate(d, versions.data)),
+    [devices, group, versions.data],
+  )
+  const groupName = group ? allGroups.find((g) => g.id === group)?.name : undefined
+  const bulkUpdate = useMutation({
+    mutationFn: () => api.post<BulkUpdateRequested>('/api/devices/update-outdated', group ? { group_id: group } : {}),
+    onSuccess: (r) => {
+      setConfirmUpdate(false)
+      const old = r.skipped.agent_too_old ?? 0
+      const detail = old > 0 ? `${old} older agent${old === 1 ? ' needs' : 's need'} a reinstall` : undefined
+      if (r.requested.length === 0) toast.info('No devices to update', detail)
+      else toast.success(`Update requested for ${r.requested.length} device${r.requested.length === 1 ? '' : 's'}`, detail)
+    },
+    onError: (e) => toast.error('Could not request updates', errorMessage(e)),
+  })
+
   return (
     <div className="w-full">
       <PageHeader
@@ -92,9 +116,17 @@ export function Devices() {
         }
         actions={
           isAdmin && (
-            <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
-              Add device
-            </Button>
+            <>
+              {outdated.length > 0 && (
+                <Button icon={<CircleArrowUp size={14} />} onClick={() => setConfirmUpdate(true)} title="Update agents on online devices that run an older version">
+                  Update outdated
+                  <span className="mono rounded-sm bg-accent-soft px-1 text-[11px] text-accent">{outdated.length}</span>
+                </Button>
+              )}
+              <Button variant="primary" icon={<Plus size={14} />} onClick={() => setAdding(true)}>
+                Add device
+              </Button>
+            </>
           )
         }
       />
@@ -212,7 +244,11 @@ export function Devices() {
                   <div className="flex items-center gap-2">
                     <OsIcon os={d.os} />
                     <div className="min-w-0">
-                      <div className="truncate font-medium">{d.name}</div>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate font-medium">{d.name}</span>
+                        <DesktopBadge device={d} />
+                        <UpdateBadge version={availableUpdate(d, versions.data)} />
+                      </div>
                       <div className="mono truncate text-ink-faint">
                         {d.hostname} · {OS_LABEL[d.os]} {d.arch === 'aarch64' ? 'arm64' : 'x64'} · v{d.agent_version}
                       </div>
@@ -268,6 +304,23 @@ export function Devices() {
       )}
 
       <AddDeviceDialog open={adding} onClose={() => setAdding(false)} />
+      <ConfirmDialog
+        open={confirmUpdate}
+        onClose={() => setConfirmUpdate(false)}
+        onConfirm={() => bulkUpdate.mutate()}
+        title="Update outdated agents?"
+        confirmLabel="Update"
+        loading={bulkUpdate.isPending}
+        body={
+          <div className="flex flex-col gap-2">
+            <p>
+              {outdated.length} online device{outdated.length === 1 ? '' : 's'}
+              {groupName ? ` in ${groupName}` : ''} get the console's agent version and restart. Active sessions end.
+            </p>
+            <p className="text-[12.5px] text-ink-faint">Sent in batches. Older agents need a reinstall.</p>
+          </div>
+        }
+      />
     </div>
   )
 }

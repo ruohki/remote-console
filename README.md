@@ -24,6 +24,7 @@ Configuration is via environment variables (see `.env.example`):
 | `TURN_URLS` | – | e.g. `turn:turn.example.com:3478?transport=udp,turns:…:5349` |
 | `TURN_SECRET` | – | coturn `static-auth-secret` for short-lived credentials |
 | `TURN_USERNAME` / `TURN_PASSWORD` | – | long-term credentials for a hosted relay that issues a fixed pair; ignored when `TURN_SECRET` is set |
+| `CLOUDFLARE_TURN_KEY_ID` / `CLOUDFLARE_TURN_API_TOKEN` | – | Cloudflare Realtime TURN (anycast: each peer uses the nearest relay — best for operators and devices on several continents). Credentials are fetched and renewed automatically; `TURN_URLS` is not needed. The token may come from a file via `CLOUDFLARE_TURN_API_TOKEN_FILE` |
 | `STUN_URLS` | `stun:stun.l.google.com:19302` | comma separated |
 | `AGENT_DOWNLOAD_BASE` | GitHub releases of `ruohki/remote-agent` | where install scripts fetch binaries (fallback for baking) |
 | `AGENT_BINARY_DIR` | – | directory of base agent binaries to bake branding into (else fetched & cached) |
@@ -38,6 +39,8 @@ Configuration is via environment variables (see `.env.example`):
 | `LOCAL_LOGIN` | `1` | set `0` to disable password sign-in except for accounts flagged `break_glass` (requires at least one such admin; SSO/LDAP/passkeys still work) |
 | `ALLOW_INSECURE_PUBLIC_URL` | – | set `1` to allow a plain-http public URL on a public host (never in production) |
 | `TRUST_PROXY` | – | set `1` behind a reverse proxy so `X-Forwarded-For`/`-Proto` are honoured |
+| `ENROLL_RATE_LIMIT_PER_MIN` | `120` | enrollment requests per client IP and minute (raise it when many machines enroll from behind one NAT; only *failed* attempts count per token) |
+| `DOWNLOAD_RATE_LIMIT_PER_MIN` | `120` | token-authenticated agent downloads (install scripts) per client IP and minute; admin downloads are not limited |
 | `CONSOLE_MASTER_KEY` | – | 32 bytes base64; encrypts the bakery signing key at rest (see SECURITY.md) |
 | `CONSOLE_TLS_CERT_PEM` / `CONSOLE_TLS_SPKI_SHA256` | – | publish the console's TLS public-key pin in `/api/info` |
 | `TURN_HOST` | – | DNS name of the relay (docker-compose builds `turn:`/`turns:` URLs from it) |
@@ -45,6 +48,16 @@ Configuration is via environment variables (see `.env.example`):
 
 Put the console behind a TLS terminating reverse proxy (Caddy/Traefik/nginx) — WebRTC in
 browsers requires HTTPS, and agents connect over `wss://`.
+
+### Fleet rollout
+
+The install one-liners from *Add device* can be deployed unattended by an RMM / MDM (Intune,
+NinjaOne, Jamf) as SYSTEM / root and re-run safely: an already enrolled machine keeps its
+enrollment (`enroll --if-needed`), even after the token expired or ran out of uses. A
+reinstalled or re-imaged machine reports its hardware id and gets its existing device entry
+back instead of a duplicate. Connected agents are updated from the console (*Update agent* on a
+device, *Update outdated* on the device list); the version handed out is the one embedded in
+the base binary. Restarting the console tells agents to reconnect right away.
 
 ### Sign-in options
 

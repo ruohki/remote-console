@@ -12,6 +12,7 @@ pub mod info;
 pub mod sessions;
 pub mod sso;
 pub mod tokens;
+pub mod updates;
 pub mod users;
 
 use crate::app::AppState;
@@ -121,6 +122,8 @@ pub fn router() -> Router<AppState> {
         .route("/branding", get(branding::get).put(branding::put))
         .route("/agent/downloads", get(agent::downloads))
         .route("/agent/download/{platform}", get(agent::download))
+        .route("/agent/versions", get(agent::versions))
+        .route("/agent/package/{platform}", get(agent::package))
         .route("/users", get(users::list).post(users::create))
         .route(
             "/users/{id}",
@@ -140,10 +143,13 @@ pub fn router() -> Router<AppState> {
             "/groups/{id}/grants",
             get(groups::grants).put(groups::set_grants),
         )
+        .route("/groups/{id}/config", patch(groups::update_config))
         .route("/enroll-tokens", get(tokens::list).post(tokens::create))
         .route("/enroll-tokens/{id}", delete(tokens::revoke))
         .route("/enroll", post(enroll::enroll))
         .route("/devices", get(devices::list))
+        .route("/devices/update-outdated", post(updates::update_outdated))
+        .route("/devices/{id}/update", post(updates::update_one))
         .route(
             "/devices/{id}",
             get(devices::get_one)

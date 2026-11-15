@@ -2,7 +2,8 @@
 
 use crate::db::{enum_parse, enum_str};
 use protocol::common::{
-    Arch, DeviceMode, DisplayInfo, EndReason, Os, PrivacyScreenSupport, SessionState, VideoCodec,
+    Arch, DesktopState, DeviceMode, DisplayInfo, EndReason, Os, PrivacyScreenSupport, SessionState,
+    VideoCodec,
 };
 use protocol::config::{AgentConfig, LocalOverrides};
 use protocol::ui::{DevicePermission, DeviceSummary, GroupRef, SessionSummary};
@@ -247,6 +248,10 @@ pub struct DeviceRow {
     pub local_overrides: String,
     /// `protocol::common::PrivacyScreenSupport` wire name, as last reported in `hello`.
     pub privacy_screen: String,
+    /// Stable hardware identity reported at enrollment / in `hello` (protocol 2+).
+    pub machine_id: Option<String>,
+    /// `protocol::common::DesktopState` wire name; `unknown` while offline.
+    pub desktop: String,
 }
 
 impl DeviceRow {
@@ -272,6 +277,15 @@ impl DeviceRow {
 
     pub fn privacy_screen(&self) -> PrivacyScreenSupport {
         enum_parse(&self.privacy_screen).unwrap_or_default()
+    }
+
+    /// What the screen shows; always `Unknown` for an offline device.
+    pub fn desktop(&self) -> DesktopState {
+        if self.online {
+            enum_parse(&self.desktop).unwrap_or_default()
+        } else {
+            DesktopState::Unknown
+        }
     }
 
     pub fn os(&self) -> Os {
@@ -310,6 +324,7 @@ impl DeviceRow {
             permission,
             local_overrides: self.local_overrides(),
             privacy_screen: self.privacy_screen(),
+            desktop: self.desktop(),
         }
     }
 
@@ -319,6 +334,7 @@ impl DeviceRow {
         enrolled_with: Option<String>,
         groups: Vec<GroupRef>,
         permission: DevicePermission,
+        agent_protocol: Option<u32>,
     ) -> DeviceDetail {
         DeviceDetail {
             summary: self.summary(active_session_id, groups, permission),
@@ -326,6 +342,8 @@ impl DeviceRow {
             created_at: self.created_at.clone(),
             enrolled_with,
             config: self.config(),
+            machine_id: self.machine_id.clone(),
+            agent_protocol,
         }
     }
 }
@@ -340,6 +358,12 @@ pub struct DeviceDetail {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enrolled_with: Option<String>,
     pub config: AgentConfig,
+    /// Hardware identity used to recognise a reinstalled machine (protocol 2+ agents).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub machine_id: Option<String>,
+    /// Protocol version of the connected agent (absent while offline); 2+ can self-update.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_protocol: Option<u32>,
 }
 
 // ── device groups ─────────────────────────────────────────────────────────────

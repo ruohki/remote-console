@@ -2,6 +2,7 @@
 //! CSRF guard.
 
 pub mod access;
+pub mod device;
 pub mod ldap;
 pub mod oidc;
 pub mod passkeys;
@@ -370,18 +371,28 @@ impl RateLimiter {
 
     /// Count one event; returns `false` when the budget is exhausted (the event is rejected).
     pub fn check(&self, key: &str) -> bool {
+        self.hit(key).is_ok()
+    }
+
+    /// Count one event; `Err(wait)` when the budget is exhausted, with the time until the
+    /// window resets (for `Retry-After`).
+    pub fn hit(&self, key: &str) -> Result<(), Duration> {
         let mut map = self.entries.lock();
         let entry = map.entry(key.to_string()).or_insert((0, Instant::now()));
         if entry.1.elapsed() >= self.window {
             *entry = (0, Instant::now());
         }
-        entry.0 += 1;
-        let ok = entry.0 <= self.max;
+        entry.0 = entry.0.saturating_add(1);
+        let result = if entry.0 <= self.max {
+            Ok(())
+        } else {
+            Err(self.window.saturating_sub(entry.1.elapsed()))
+        };
         if map.len() > 20_000 {
             let window = self.window;
             map.retain(|_, (_, since)| since.elapsed() < window);
         }
-        ok
+        result
     }
 
     pub fn record_failure(&self, key: &str) {
@@ -421,20 +432,31 @@ impl LoginLimiter {
 }
 
 /// Exponential backoff per key: after `threshold` consecutive failures the key is blocked
-/// for `base`, doubling with every further failure up to `max`. Success clears it.
+/// for `base`, doubling with every further failure up to `max`. Success clears it, and so does
+/// a quiet period: failures older than `decay` (default `2 × max`) are forgotten, so a key that
+/// failed once in a while long ago starts from zero again.
 pub struct BackoffLimiter {
     threshold: u32,
     base: Duration,
     max: Duration,
-    entries: Mutex<HashMap<String, (u32, Option<Instant>)>>,
+    decay: Duration,
+    entries: Mutex<HashMap<String, BackoffEntry>>,
 }
+
+/// (consecutive failures, last failure, blocked until)
+type BackoffEntry = (u32, Instant, Option<Instant>);
 
 impl BackoffLimiter {
     pub fn new(threshold: u32, base: Duration, max: Duration) -> Self {
+        Self::with_decay(threshold, base, max, max.saturating_mul(2))
+    }
+
+    pub fn with_decay(threshold: u32, base: Duration, max: Duration, decay: Duration) -> Self {
         Self {
             threshold,
             base,
             max,
+            decay,
             entries: Mutex::new(HashMap::new()),
         }
     }
@@ -442,7 +464,7 @@ impl BackoffLimiter {
     /// Remaining block time for `key`, if blocked.
     pub fn blocked_for(&self, key: &str) -> Option<Duration> {
         let map = self.entries.lock();
-        let (_, until) = map.get(key)?;
+        let (_, _, until) = map.get(key)?;
         let until = (*until)?;
         let now = Instant::now();
         (until > now).then(|| until - now)
@@ -453,16 +475,24 @@ impl BackoffLimiter {
     }
 
     pub fn record_failure(&self, key: &str) {
+        let now = Instant::now();
         let mut map = self.entries.lock();
-        let entry = map.entry(key.to_string()).or_insert((0, None));
+        let entry = map.entry(key.to_string()).or_insert((0, now, None));
+        if now.duration_since(entry.1) >= self.decay {
+            *entry = (0, now, None);
+        }
         entry.0 = entry.0.saturating_add(1);
+        entry.1 = now;
         if entry.0 >= self.threshold {
             let exp = (entry.0 - self.threshold).min(16);
             let delay = self.base.saturating_mul(1u32 << exp).min(self.max);
-            entry.1 = Some(Instant::now() + delay);
+            entry.2 = Some(now + delay);
         }
         if map.len() > 20_000 {
-            map.retain(|_, (_, until)| until.is_some_and(|u| u > Instant::now()));
+            let decay = self.decay;
+            map.retain(|_, (_, last, until)| {
+                until.is_some_and(|u| u > now) || now.duration_since(*last) < decay
+            });
         }
     }
 
@@ -471,22 +501,35 @@ impl BackoffLimiter {
     }
 }
 
+/// Backoff key for agent authentication failures: client address **and** device id, so a few
+/// retired machines behind one NAT cannot lock out every other agent at that site.
+pub fn agent_auth_key(ip: &str, device_id: &str) -> String {
+    let device: String = device_id.chars().take(64).collect();
+    format!("{ip}|{device}")
+}
+
 /// All request limiters, keyed by client IP / account / token.
 pub struct Limits {
     /// Failed logins per IP.
     pub login_ip: LoginLimiter,
     /// Failed logins per account (email), exponential backoff.
     pub login_account: BackoffLimiter,
-    /// Enrollment attempts per IP.
+    /// Enrollment attempts per IP (`ENROLL_RATE_LIMIT_PER_MIN`).
     pub enroll_ip: RateLimiter,
-    /// Enrollment attempts per token hash.
+    /// **Failed** enrollment attempts per token hash (a valid token is never throttled).
     pub enroll_token: RateLimiter,
-    /// Agent downloads (bakes) per IP.
+    /// Token-authenticated agent downloads (bakes) per IP (`DOWNLOAD_RATE_LIMIT_PER_MIN`).
     pub download_ip: RateLimiter,
-    /// Failed agent WebSocket hellos per IP.
-    pub agent_hello_ip: BackoffLimiter,
-    /// Bound on concurrent argon2 verifications (agent hellos + logins).
+    /// Failed agent authentications (WebSocket hello, package download) per IP + device id
+    /// ([`agent_auth_key`]).
+    pub agent_hello: BackoffLimiter,
+    /// Update package downloads per device.
+    pub package_device: RateLimiter,
+    /// Bound on concurrent argon2 verifications for operator logins.
     pub verify_slots: tokio::sync::Semaphore,
+    /// Bound on concurrent argon2 verifications of legacy device secret hashes (new hashes
+    /// are SHA-256 and need no slot).
+    pub device_verify_slots: tokio::sync::Semaphore,
     /// Password-reset requests per IP.
     pub reset_ip: RateLimiter,
     /// Password-reset requests per account (lower-cased email).
@@ -499,6 +542,23 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
+        Self::with_rates(
+            crate::config::DEFAULT_ENROLL_RATE_LIMIT_PER_MIN,
+            crate::config::DEFAULT_DOWNLOAD_RATE_LIMIT_PER_MIN,
+        )
+    }
+}
+
+impl Limits {
+    /// Limits with the configurable per-IP rates from the environment.
+    pub fn from_config(config: &crate::config::Config) -> Self {
+        Self::with_rates(
+            config.enroll_rate_limit_per_min,
+            config.download_rate_limit_per_min,
+        )
+    }
+
+    fn with_rates(enroll_per_min: u32, download_per_min: u32) -> Self {
         Self {
             login_ip: LoginLimiter::default(),
             login_account: BackoffLimiter::new(
@@ -506,15 +566,17 @@ impl Default for Limits {
                 Duration::from_secs(60),
                 Duration::from_secs(60 * 60),
             ),
-            enroll_ip: RateLimiter::new(10, Duration::from_secs(60)),
+            enroll_ip: RateLimiter::new(enroll_per_min.max(1), Duration::from_secs(60)),
             enroll_token: RateLimiter::new(10, Duration::from_secs(60)),
-            download_ip: RateLimiter::new(10, Duration::from_secs(60)),
-            agent_hello_ip: BackoffLimiter::new(
+            download_ip: RateLimiter::new(download_per_min.max(1), Duration::from_secs(60)),
+            agent_hello: BackoffLimiter::new(
                 10,
                 Duration::from_secs(60),
                 Duration::from_secs(15 * 60),
             ),
+            package_device: RateLimiter::new(10, Duration::from_secs(10 * 60)),
             verify_slots: tokio::sync::Semaphore::new(4),
+            device_verify_slots: tokio::sync::Semaphore::new(2),
             reset_ip: RateLimiter::new(5, Duration::from_secs(15 * 60)),
             reset_account: RateLimiter::new(3, Duration::from_secs(15 * 60)),
             email_2fa_setup: RateLimiter::new(3, Duration::from_secs(10 * 60)),
@@ -716,6 +778,41 @@ mod tests {
         );
         l.clear("acct");
         assert!(!l.is_blocked("acct"));
+    }
+
+    #[test]
+    fn backoff_failures_decay_after_a_quiet_period() {
+        let l = BackoffLimiter::with_decay(
+            2,
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+            Duration::from_millis(40),
+        );
+        l.record_failure("k");
+        std::thread::sleep(Duration::from_millis(60));
+        // The old failure is forgotten: one more is again below the threshold.
+        l.record_failure("k");
+        assert!(!l.is_blocked("k"), "decayed failure does not count");
+        l.record_failure("k");
+        assert!(l.is_blocked("k"), "two fresh failures block");
+    }
+
+    #[test]
+    fn rate_limiter_reports_the_wait() {
+        let l = RateLimiter::new(1, Duration::from_secs(60));
+        assert!(l.hit("k").is_ok());
+        let wait = l.hit("k").expect_err("second hit rejected");
+        assert!(wait <= Duration::from_secs(60) && wait > Duration::from_secs(50));
+    }
+
+    #[test]
+    fn agent_auth_key_combines_ip_and_device() {
+        assert_eq!(agent_auth_key("10.0.0.1", "dev_a"), "10.0.0.1|dev_a");
+        assert_ne!(
+            agent_auth_key("10.0.0.1", "dev_a"),
+            agent_auth_key("10.0.0.1", "dev_b")
+        );
+        assert_eq!(agent_auth_key("ip", &"x".repeat(500)).len(), 3 + 64);
     }
 
     #[test]

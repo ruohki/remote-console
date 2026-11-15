@@ -11,7 +11,8 @@ Types written as `protocol::…` are the ts-rs generated types from
   (the server rejects others with 415 — this is the CSRF guard together with SameSite).
 * Errors: status code + `{ "error": { "code": "snake_case", "message": "human readable" } }`.
   Common codes: `unauthorized` (401), `forbidden` (403), `not_found` (404), `validation` (422),
-  `conflict` (409), `device_offline` (409), `rate_limited` (429).
+  `conflict` (409), `device_offline` (409), `rate_limited` (429, always with `Retry-After`
+  in seconds).
 * Timestamps: ISO-8601 UTC strings.
 * Roles: `admin` (everything) · `operator` (view devices, connect, rename/tag devices, own sessions).
 * Ids: UUID v4 strings; device ids are `dev_<22 base62 chars>`, tokens `enr_<…>`, sessions `ses_<…>`.
@@ -183,7 +184,7 @@ interface EnrollToken {
 | Method | Path | Body → Response |
 |--------|------|-----------------|
 | GET | `/api/enroll-tokens` | → `EnrollToken[]` |
-| POST | `/api/enroll-tokens` | `{ label, expires_in_hours?, max_uses?, default_mode, default_tags }` → `EnrollToken & { token: string, install: { macos: string, windows: string } }` — the plain token and ready-to-paste one-liners are returned **only here** |
+| POST | `/api/enroll-tokens` | `{ label, expires_in_hours?, max_uses?, default_mode, default_tags }` → `EnrollToken & { token: string, install: { macos: string, windows: string } }` — the plain token and ready-to-paste one-liners are returned **only here**. The Windows one-liner sets TLS 1.2 and `$ProgressPreference = 'SilentlyContinue'` before its `irm` (`…Tls12; $ProgressPreference = 'SilentlyContinue'; irm "<url>/install.ps1?token=T" \| iex`); the macOS one is `curl -fsSL --retry 3 "<url>/install.sh?token=T" \| sudo sh` |
 | DELETE | `/api/enroll-tokens/:id` | → 204 (revoke) |
 
 Tokens are 32 random bytes, base62; only `sha256(token)` is stored.
@@ -192,14 +193,45 @@ Tokens are 32 random bytes, base62; only `sha256(token)` is stored.
 
 | Method | Path | Body → Response |
 |--------|------|-----------------|
-| POST | `/api/enroll` | `protocol.EnrollRequest` → `protocol.EnrollResponse` · 401 `invalid_token` / 410 `token_exhausted` |
+| POST | `/api/enroll` | `protocol.EnrollRequest` → `201 protocol.EnrollResponse` (new device) or `200` (re-enrollment, see below) · 401 `invalid_token` (unknown, revoked, expired) / 410 `token_exhausted` / 429 `rate_limited` |
 | GET | `/install.sh?token=T` | `text/x-shellscript` — macOS installer with `SERVER_URL` and `TOKEN` baked in |
 | GET | `/install.ps1?token=T` | `text/plain` — Windows installer, same |
 
-Both scripts: detect arch, download `remote-agent-<os>-<arch>` (+ `SHA256SUMS`) from
-`AGENT_DOWNLOAD_BASE`, verify, install to `/usr/local/bin/remote-agent` or
-`%ProgramFiles%\RemoteAgent\remote-agent.exe`, run `enroll`, then `service install`.
-A missing/invalid token yields a script that prints a clear error and exits 1 (status 200 so `| sh` shows it).
+**Re-enrollment.** `EnrollRequest.machine_id` (protocol 2 agents: Windows `MachineGuid`, macOS
+`IOPlatformUUID`; trimmed, ignored when empty or > 128 bytes) is stored on the device. When it
+matches an existing device **with the same OS**, that device is reused instead of adding a
+duplicate: a new secret is issued, `hostname` / `arch` / `agent_version` / `enrolled_with` are
+refreshed, and id, name, tags, notes, config, groups and session history stay (the token's
+default mode / tags / group are not applied). The response is `200` with the existing
+`device_id` and its `config`; a still-connected old agent gets `goodbye { reason: "replaced by a
+re-enrolled agent" }` and its old secret stops working. Exception: when the matching device is
+**online with a different hostname** (two live machines sharing one hardware id — a cloned image)
+the newcomer is enrolled as a new device. A re-enrollment still consumes a token use. Audited
+`device.reenrolled { name, hostname, previous_hostname, os, arch, agent_version, token, ip }`.
+
+**Rate limits.** Enrollment requests per client IP: `ENROLL_RATE_LIMIT_PER_MIN` (default 120).
+Per token only **failed** attempts count (10 / min) — a rollout enrolling hundreds of machines
+with one valid token is never throttled. Token downloads (`/api/agent/download`) per IP:
+`DOWNLOAD_RATE_LIMIT_PER_MIN` (default 120). Every 429 carries `Retry-After`.
+
+**Install scripts** detect the arch, download the branded build from
+`/api/agent/download/<platform>?token=T` when the console has a base binary (else
+`remote-agent-<os>-<arch>-base` + `SHA256SUMS` from `AGENT_DOWNLOAD_BASE`, verified), install
+to `/Applications/<Product>.app` (+ `/usr/local/bin/remote-agent` link) or
+`%ProgramW6432%\RemoteAgent\remote-agent.exe` (64-bit Program Files also from 32-bit
+PowerShell hosts), run `remote-agent enroll --if-needed --server … --token …` (no console
+contact when already enrolled with this console; agents without `--if-needed` fall back to the
+old behaviour) and `remote-agent service install` (updates an existing install). They are
+written for RMM/MDM use (Intune, NinjaOne, Jamf): run as SYSTEM / root, no user profile needed
+(temp files under `%SystemRoot%\Temp` / `/tmp`), downloads retried (PowerShell: 3 attempts;
+curl: `--retry 5 --retry-delay 3`, plus `--retry-all-errors` where curl supports it), no
+progress bars or colours in captured output, every failure exits non-zero with one
+`error: remote-agent install: …` line.
+
+Install scripts and token downloads accept any **known, unrevoked** token — also expired or
+used-up ones — so a re-run on an already enrolled machine (RMM retry, upgrade) succeeds; a
+machine that is not enrolled yet then fails at `POST /api/enroll`. A missing, unknown or revoked
+token yields a script that prints a clear error and exits 1 (status 200 so `| sh` shows it).
 
 ## Devices (operator+)
 
@@ -207,6 +239,8 @@ A missing/invalid token yields a script that prints a clear error and exits 1 (s
 interface DeviceDetail extends protocol.DeviceSummary {
   notes: string; created_at: string; enrolled_with?: string;   // token label
   config: protocol.AgentConfig;
+  machine_id?: string;       // hardware id reported by protocol 2+ agents
+  agent_protocol?: number;   // protocol of the connected agent; absent while offline
 }
 ```
 
@@ -216,14 +250,21 @@ interface DeviceDetail extends protocol.DeviceSummary {
 | GET | `/api/devices/:id` | → `DeviceDetail` | operator |
 | PATCH | `/api/devices/:id` | `{ name?, tags?, notes? }` → `DeviceDetail` | operator |
 | PATCH | `/api/devices/:id/config` | `Partial<protocol.AgentConfig>` → `DeviceDetail` (merged, pushed live as `config_update` when online) | admin |
-| DELETE | `/api/devices/:id` | → 204 (agent receives `goodbye`) | admin |
+| DELETE | `/api/devices/:id` | → 204 — protocol 2+ agents receive `retire` (they forget the enrollment and stop connecting); older agents receive `goodbye`, keep reconnecting and are rejected with 4409. Session history and group memberships are deleted with the device; audit entries are kept | admin |
 | GET | `/api/devices/:id/sessions` | → `protocol.SessionSummary[]` (newest first, `?limit=`) | operator |
+| POST | `/api/devices/:id/update` | → `202 { device_id, version }` — sends the agent `update` (see [Agent updates](#agent-updates)) · 409 `device_offline` / `agent_too_old` (protocol 1: reinstall instead) / `up_to_date` / `no_agent_version` / `unsupported_platform` | manage (admin) |
+| POST | `/api/devices/update-outdated` | `{ group_id?: string }` → `202 { requested: string[], versions: { [platform]: string }, skipped: { agent_too_old?: number } }` — every online, outdated device the caller may manage (optionally one group's) | manage (admin) |
 
 `DeviceSummary.mode` always mirrors `config.mode`. `DeviceSummary.privacy_screen`
 (`protocol.PrivacyScreenSupport`: `unsupported` | `screen_only` | `standard`) is what the agent
 reported in its last `hello`; it is kept while the device is offline. Config gains
 `allow_privacy_screen: boolean` (default `false`, admin PATCH like every other flag, audited in
 `device.config`) — see [Privacy screen](#privacy-screen).
+
+`DeviceSummary.desktop` (`protocol.DesktopState`: `user` | `locked` | `sign_in` | `unknown`) is
+what the device's screen shows, from `hello` and heartbeats of protocol 2+ agents; always
+`unknown` while offline and for older agents. A signed-out (`sign_in`) or `locked` device is
+still connectable — the agent serves the sign-in screen.
 
 ## Device groups & access control (RBAC)
 
@@ -247,6 +288,7 @@ interface GroupGrant { user_id: string; user_name: string; user_email: string; p
 | PUT | `/api/groups/:id/devices` | `{ device_ids: string[] }` → 204 — replaces membership | admin |
 | GET | `/api/groups/:id/grants` | → `GroupGrant[]` | admin |
 | PUT | `/api/groups/:id/grants` | `{ grants: { user_id, permission }[] }` → `GroupGrant[]` — replaces grants | admin |
+| PATCH | `/api/groups/:id/config` | `Partial<protocol.AgentConfig>` (same rules as `PATCH /api/devices/:id/config`, without `display_name`) → `{ updated: number, online: number }` — merged into the config of every current member, pushed live as `config_update`; one-off (later members keep their own settings); validated before anything is written (422) | admin |
 | PUT | `/api/devices/:id/groups` | `{ group_ids: string[] }` → `DeviceDetail` | admin |
 | GET | `/api/users/:id/grants` | → `{ group_id, group_name, permission }[]` | admin |
 
@@ -262,7 +304,7 @@ admin → `manage`; operator → highest of their grants over the device's group
 `device_update` / `session_update` / `session_event` pushes are filtered to devices the user may
 see. `session_offer` needs `connect` (error code `forbidden`). `PATCH /api/devices/:id`
 (name/tags/notes) needs `connect`. Config, groups, delete need `manage` (admin).
-Audit actions: `group.create|update|delete|members|grants`, `device.groups`.
+Audit actions: `group.create|update|delete|members|grants|config` (`config`: `{ name, fields, devices }`), `device.groups`.
 
 ## Sessions (operator+)
 
@@ -283,16 +325,47 @@ the `settings` table); its public key is exposed as `console_public_key` in `GET
 |--------|------|-----------------|------|
 | GET | `/api/branding` | → `protocol.Branding` | public |
 | PUT | `/api/branding` | `protocol.Branding` → `protocol.Branding` (logo ≤ 512 KiB PNG, accent `#rrggbb`) | admin |
-| GET | `/api/agent/downloads` | → `{ platform, available, source: "local" \| "release", size?: number }[]` for `macos-universal`, `windows-x86_64`, `windows-aarch64` | admin |
-| GET | `/api/agent/download/:platform?token=T&quick=0\|1` | baked binary (`application/octet-stream`, `Content-Disposition: attachment; filename="<Product>-<platform>[.exe]"`) | admin cookie **or** a valid enrollment token (`?token=`) |
+| GET | `/api/agent/downloads` | → `{ platform, available, source: "local" \| "release", size?: number, version?: string }[]` for `macos-universal`, `windows-x86_64`, `windows-aarch64` | admin |
+| GET | `/api/agent/versions` | → `{ "macos-universal": string \| null, "windows-x86_64": …, "windows-aarch64": … }` — agent version each base binary carries (`null` = unknown) | operator |
+| GET | `/api/agent/package/:platform` | token-less update build (see [Agent updates](#agent-updates)) | `Authorization: Device <device_id>:<device_secret>` |
+| GET | `/api/agent/download/:platform?token=T&quick=0\|1` | baked binary (`application/octet-stream`, `Content-Disposition: attachment; filename="<Product>-<platform>[.exe]"`) | admin cookie **or** a known, unrevoked enrollment token (`?token=`; expired / used-up tokens still download) |
 
 Baking = `protocol::bakery::append_trailer(base, sign_payload(BakedConfig { server_url: CONSOLE_PUBLIC_URL, enroll_token: token?, quick_support, branding, issued_at }, key))`.
 Base binaries come from `AGENT_BINARY_DIR` (files named like the release assets) when set, else
 are fetched from `AGENT_DOWNLOAD_BASE` and cached under `data/agent-cache/` (`SHA256SUMS` verified).
 Install scripts (`/install.sh`, `/install.ps1`) download the **baked** binary from
 `/api/agent/download/<platform>?token=T` (falling back to the release URL only when no base
-binary is available) and then only run `remote-agent service install`; the agent enrolls itself
-from the trailer token when it is not enrolled yet. Audit: `branding.update`, `agent.bake`.
+binary is available), then run `enroll --if-needed` and `service install` (see
+[Enrollment & install scripts](#enrollment--install-scripts-unauthenticated)). Audit:
+`branding.update`, `agent.bake`.
+
+**Agent version.** Agent binaries carry a version marker (`protocol::bakery::find_agent_version`);
+the console reads it from each base binary (cached per file size + mtime, or per published
+checksum) and reports it as `version` in `/api/agent/downloads` and in `/api/agent/versions`.
+Base binaries built before markers existed report no version (no update badges, no updates).
+A release base binary that is not cached yet is fetched in the background on the first
+`/api/agent/versions` call.
+
+## Agent updates
+
+The console announces updates; the agent's privileged service installs them.
+
+* **Package** — `GET /api/agent/package/:platform` with `Authorization: Device <id>:<secret>`
+  (verified like the WebSocket `hello`; failures back off per IP + device, 10 downloads per
+  device per 10 minutes) returns what the bakery produces with no enrollment token, no
+  quick-support flag, the current branding and signing when configured (Windows: the `.exe`;
+  macOS: the `.zip` holding the `.app`). It is baked once per platform + base binary + branding
+  and served from memory, so the bytes — and their SHA-256 — do not change between the
+  announcement and the download. Headers: `x-agent-version`, `x-agent-sha256`, `x-agent-signed`.
+  401 without valid device credentials, 404 `no_base_binary`, 429 `rate_limited`.
+* **Announcement** — `POST /api/devices/:id/update` / `POST /api/devices/update-outdated` send
+  `ConsoleToAgent::Update { version, url: "<CONSOLE_PUBLIC_URL>/api/agent/package/<platform>",
+  sha256 }` — only to connected **protocol 2+** agents whose `agent_version` is an older semver
+  than the platform's version (unparsable versions never count as outdated). Platform:
+  macOS → `macos-universal`, Windows → `windows-x86_64` / `windows-aarch64` by arch. The package
+  is prepared and the messages sent in the background (the first signed macOS package may wait
+  for notarization); bulk requests go out in batches of 25 every 15 s. Audited per device:
+  `device.update_requested { name, platform, from, version, bulk }`.
 
 ## Device-side overrides
 
@@ -381,7 +454,7 @@ Transfers, clipboard syncs and privacy screen changes additionally create audit 
 ## Audit log (admin)
 
 `GET /api/audit?limit=100&before=<id>` → `{ id, ts, user_id?, user_name?, action, target?, details }[]`
-Actions: `login`, `login_failed`, `user.create|update|delete`, `token.create|revoke`, `device.update|config|delete`,
+Actions: `login`, `login_failed`, `user.create|update|delete`, `token.create|revoke`, `device.update|config|delete|reenrolled|update_requested`,
 `session.start|approve|deny|end|transfer|clipboard|privacy_screen`, `enroll`.
 
 ## WebSocket `/ws/ui` (cookie auth)
@@ -399,10 +472,33 @@ Browser → console: `protocol.UiToConsole`; console → browser: `protocol.Cons
 ## WebSocket `/ws/agent`
 
 Agent → console: `protocol.AgentToConsole`; console → agent: `protocol.ConsoleToAgent`.
-First frame must be `hello`; the console verifies `device_secret` (argon2id) and replies `hello_ack`
-or closes with code 4401 (bad credentials) / 4409 (device deleted) / 4426 (protocol version).
+First frame must be `hello`; the console accepts `protocol_version` in
+`MIN_PROTOCOL_VERSION..=PROTOCOL_VERSION` (currently 1–2), verifies `device_secret` and replies
+`hello_ack { protocol_version: min(agent, console) }` or closes with code 4401 (bad
+credentials) / 4409 (device deleted / unknown) / 4426 (protocol version) / 4429 (too many
+failures). Failed hellos back off per client IP **and** device id (10 failures, then 1 min
+doubling to 15 min; forgotten after 30 quiet minutes), so a few retired machines behind one NAT
+do not lock out the rest of the site.
 A second connection for the same device replaces the first (old one gets `goodbye`).
 Missing heartbeats for `3 × heartbeat_interval_s` mark the device offline.
+
+Device secrets are 32 random bytes; the console stores `sha256$<hex>` and checks it with a
+constant-time compare. Hashes written by older consoles (argon2id) still verify — on their own
+two blocking slots, never the operator-login slots — and are rewritten to SHA-256 after the
+first successful hello.
+
+Protocol 2 (additive; the console remembers each connection's version):
+
+* `hello.machine_id` is stored on the device; `hello.desktop` and `heartbeat.desktop` (sent on
+  change) become `DeviceSummary.desktop`; `heartbeat.capabilities` (sent on change) replaces
+  codecs, displays and privacy-screen support like the `hello` capabilities.
+* `retire { reason }` (device deleted) and `update { … }` are only sent to protocol 2+ agents.
+  Protocol 1 agents get `goodbye { reason: "device deleted" }` on deletion and never `update`.
+
+Console shutdown (SIGTERM / Ctrl-C): every connected agent gets
+`goodbye { reason: "console restarting" }` followed by a normal close (1000); agents reconnect
+quickly on that reason. An agent that completes `hello` while the console is shutting down gets
+the same `goodbye` and close code 1012.
 
 ## TURN credentials
 

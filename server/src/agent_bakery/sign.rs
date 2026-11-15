@@ -150,13 +150,16 @@ fn p12_file(cfg: &SignConfig, work_dir: &Path) -> Result<(PathBuf, bool)> {
             decode_base64_text(b64).context("MACOS_SIGN_P12_BASE64 is not valid base64")?
         }
         (None, Some(path)) => {
-            let bytes = std::fs::read(path)
-                .with_context(|| format!("reading {}", path.display()))?;
+            let bytes =
+                std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
             if looks_like_pkcs12(&bytes) {
                 return Ok((path.to_path_buf(), false));
             }
             let text = std::str::from_utf8(&bytes).map_err(|_| {
-                anyhow!("{} is neither a PKCS#12 file nor base64 text", path.display())
+                anyhow!(
+                    "{} is neither a PKCS#12 file nor base64 text",
+                    path.display()
+                )
             })?;
             decode_base64_text(text)
                 .with_context(|| format!("{} is not a PKCS#12 file", path.display()))?

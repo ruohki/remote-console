@@ -2,15 +2,17 @@ import { useState } from 'react'
 
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Eye, FolderKanban, MonitorPlay, Save, Trash2 } from 'lucide-react'
+import { ArrowLeft, CircleArrowUp, Eye, FolderKanban, MonitorPlay, Save, Trash2 } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
-import type { DeviceDetail as Detail, Group } from '@/lib/types'
+import type { DeviceDetail as Detail, Group, UpdateRequested } from '@/lib/types'
 import { canConnect } from '@/lib/access'
 import type { AgentConfig, SessionSummary } from '@/protocol'
 import { useLive } from '@/store/live'
 import { useAuth, useIsAdmin } from '@/store/auth'
-import { InfoTip, Badge, Button, DangerConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, Toggle, cx } from '@/components/ui'
-import { CodecBadge, GroupChips, ModeBadge, OsIcon, OverrideBadge, SessionStateBadge, StatusLed } from '@/components/badges'
+import { InfoTip, Badge, Button, DangerConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Skeleton, Table, Td, Textarea, Th, cx } from '@/components/ui'
+import { CodecBadge, DesktopBadge, GroupChips, ModeBadge, OsIcon, OverrideBadge, SessionStateBadge, StatusLed, UpdateBadge } from '@/components/badges'
+import { useAgentVersions } from '@/hooks/useAgentVersions'
+import { availableUpdate } from '@/lib/agentUpdate'
 import { RECENT_SESSIONS, allSessionsHref, truncateRecent } from '@/lib/sessionsList'
 import { hasOverrides, overrideLabels } from '@/lib/overrides'
 import { ShieldAlert } from 'lucide-react'
@@ -18,6 +20,7 @@ import { NotFound } from './NotFound'
 import { dateTime, duration, END_REASON_LABEL, OS_LABEL, relativeTime, CODEC_LABEL } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { SessionDetailDialog } from '@/components/SessionDetailDialog'
+import { AgentConfigFields } from '@/components/AgentConfigFields'
 
 export function DeviceDetail() {
   const { id = '' } = useParams()
@@ -41,6 +44,13 @@ export function DeviceDetail() {
   })
   const recent = truncateRecent(sessions.data ?? [])
   const sessionRows: SessionSummary[] = recent.rows
+
+  const versions = useAgentVersions()
+  const update = useMutation({
+    mutationFn: () => api.post<UpdateRequested>(`/api/devices/${id}/update`),
+    onSuccess: (r) => toast.success('Update requested', `Agent ${r.version}`),
+    onError: (e) => toast.error('Could not request the update', errorMessage(e)),
+  })
 
   const [deleting, setDeleting] = useState(false)
   const remove = useMutation({
@@ -72,6 +82,10 @@ export function DeviceDetail() {
   // Live fields win over the fetched snapshot.
   const d: Detail = { ...detail.data, ...(live ?? {}) }
   const mayConnect = canConnect(d, user)
+  const updateTo = availableUpdate(d, versions.data)
+  // Protocol 1 agents cannot update from the service; the detail fetch knows the version.
+  const tooOld = d.online && d.agent_protocol !== undefined && d.agent_protocol < 2
+  const updateBlocked = !d.online ? 'Device is offline.' : tooOld ? 'This agent cannot update itself; reinstall it.' : undefined
 
   return (
     <div className="w-full">
@@ -97,6 +111,14 @@ export function DeviceDetail() {
                 Remove
               </Button>
             )}
+            {isAdmin && updateTo && (
+              // Disabled buttons swallow hover in some browsers: the wrapper carries the tooltip.
+              <span title={updateBlocked ?? `Install agent ${updateTo} and restart it.`}>
+                <Button icon={<CircleArrowUp size={14} />} disabled={!!updateBlocked} loading={update.isPending} onClick={() => update.mutate()}>
+                  Update agent
+                </Button>
+              </span>
+            )}
             {mayConnect ? (
               <Link to={`/viewer/${d.id}`}>
                 <Button variant="primary" icon={<MonitorPlay size={14} />} disabled={!d.online}>
@@ -118,7 +140,11 @@ export function DeviceDetail() {
             <div className="border-b border-line px-4 py-2.5 font-medium">Status</div>
             <dl className="grid grid-cols-2 gap-x-6 gap-y-2.5 px-4 py-3 sm:grid-cols-3">
               <Item label="State">
-                {d.online ? <Badge tone="live">Online</Badge> : <Badge>Offline · {relativeTime(d.last_seen_at)}</Badge>}
+                <span className="inline-flex flex-wrap items-center gap-1">
+                  {d.online ? <Badge tone="live">Online</Badge> : <Badge>Offline · {relativeTime(d.last_seen_at)}</Badge>}
+                  <DesktopBadge device={d} />
+                  <UpdateBadge version={updateTo} />
+                </span>
               </Item>
               <Item label="Mode">
                 <span className="inline-flex flex-wrap items-center gap-1">
@@ -264,9 +290,9 @@ export function DeviceDetail() {
               )}
             </div>
             <ul className="list-disc pl-5 text-[12.5px]">
-              <li>Stops the agent and ends any session.</li>
-              <li>Removes its enrollment — re-enroll with a new token.</li>
-              <li>Deletes its session history and audit entries.</li>
+              <li>Ends any session and removes the enrollment.</li>
+              <li>Current agents stop; older ones keep retrying and are rejected.</li>
+              <li>Deletes session history and group memberships. Audit log is kept.</li>
             </ul>
           </div>
         }
@@ -434,80 +460,7 @@ function ConfigForm({ device, editable, onSaved }: { device: Detail; editable: b
         }}
       >
         <fieldset disabled={!editable} className="contents">
-          <div className="eyebrow">Access</div>
-          <div className="rounded-md border border-line bg-raised p-2.5">
-            <div className="mb-1.5 font-medium">Access mode</div>
-            <div className="flex gap-1">
-              {(['unattended', 'help_me'] as const).map((m) => (
-                <button
-                  type="button"
-                  key={m}
-                  onClick={() => set('mode', m)}
-                  className={cx(
-                    'flex-1 rounded-md border px-2 py-1.5 text-left',
-                    cfg.mode === m ? 'border-accent bg-accent-soft' : 'border-line bg-surface hover:bg-raised',
-                  )}
-                >
-                  <div className="text-[12.5px] font-medium">{m === 'unattended' ? 'Unattended' : 'Help me'}</div>
-                  <div className="text-[11.5px] text-ink-muted">{m === 'unattended' ? 'Connect any time' : 'User approves each session'}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-          {cfg.mode === 'help_me' && (
-            <Field label="Approval timeout (seconds)">
-              <Input type="number" min={10} max={600} value={cfg.approval_timeout_s} onChange={(e) => set('approval_timeout_s', Number(e.target.value))} />
-            </Field>
-          )}
-          <div className="eyebrow pt-2">Permissions</div>
-          <div className="flex flex-col gap-2">
-            <Toggle checked={cfg.allow_input} onChange={(v) => set('allow_input', v)} label="Allow mouse & keyboard" />
-            <Toggle checked={cfg.allow_clipboard} onChange={(v) => set('allow_clipboard', v)} label="Allow clipboard sync" />
-            <Toggle checked={cfg.allow_file_transfer} onChange={(v) => set('allow_file_transfer', v)} label="Allow file transfer" />
-            <Toggle checked={cfg.allow_audio} onChange={(v) => set('allow_audio', v)} label="Allow audio" />
-            <Toggle checked={cfg.allow_annotations ?? true} onChange={(v) => set('allow_annotations', v)} label="Allow on-screen annotations" tip="Works even while input control is off" />
-            <Toggle
-              checked={cfg.allow_privacy_screen ?? false}
-              onChange={(v) => set('allow_privacy_screen', v)}
-              label="Allow privacy screen"
-              tip="Operators with manage permission can hide the device's displays during a session. The person at the device can always lift it."
-            />
-          </div>
-          {cfg.allow_file_transfer && (
-            <Field label="Upload folder">
-              <Input value={cfg.transfer_dir ?? ''} placeholder="~/Downloads/RemoteAgent" onChange={(e) => set('transfer_dir', e.target.value.trim() ? e.target.value : undefined)} />
-            </Field>
-          )}
-          <div className="eyebrow pt-2">Video</div>
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Max frame rate">
-              <Select value={cfg.max_fps} onChange={(v) => set('max_fps', v)} options={[15, 30, 60].map((v) => ({ value: v, label: `${v} fps` }))} />
-            </Field>
-            <Field label="Max bitrate">
-              <Select
-                value={cfg.max_bitrate_kbps}
-                onChange={(v) => set('max_bitrate_kbps', v)}
-                options={[2000, 4000, 8000, 15000, 30000].map((v) => ({ value: v, label: `${v / 1000} Mb/s` }))}
-              />
-            </Field>
-          </div>
-          <Field label="Preferred codec" tip="H.265 needs hardware support on both ends; H.264 is the fallback">
-            <Select
-              value={cfg.preferred_codec}
-              onChange={(v) => set('preferred_codec', v)}
-              options={[
-                { value: 'h265', label: 'H.265 (HEVC)' },
-                { value: 'h264', label: 'H.264' },
-              ]}
-            />
-          </Field>
-          <div className="eyebrow pt-2">Agent</div>
-          <Field label="Heartbeat (seconds)">
-            <Input type="number" min={5} max={300} value={cfg.heartbeat_interval_s} onChange={(e) => set('heartbeat_interval_s', Number(e.target.value))} />
-          </Field>
-          <Field label="Display name" tip="Shown on the device">
-            <Input value={cfg.display_name} onChange={(e) => set('display_name', e.target.value)} />
-          </Field>
+          <AgentConfigFields cfg={cfg} set={set} />
         </fieldset>
         {editable && (
           <div className="flex justify-end">

@@ -60,7 +60,13 @@ pub async fn load_detail(
         None => None,
     };
     let groups = db::groups::groups_for_device(&state.db, id).await?;
-    Ok(row.detail(state.hub.active_session_id(id), label, groups, permission))
+    Ok(row.detail(
+        state.hub.active_session_id(id),
+        label,
+        groups,
+        permission,
+        state.hub.agent_protocol(id),
+    ))
 }
 
 pub async fn get_one(
@@ -118,7 +124,7 @@ pub async fn update(
 }
 
 /// `Partial<AgentConfig>`: every field optional, merged onto the stored config.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 pub struct ConfigPatch {
     pub display_name: Option<String>,
     pub mode: Option<protocol::common::DeviceMode>,
@@ -139,7 +145,31 @@ pub struct ConfigPatch {
 }
 
 impl ConfigPatch {
-    fn apply(self, mut cfg: AgentConfig) -> Result<AgentConfig, ApiError> {
+    /// Names of the fields this patch sets (for audit entries).
+    pub fn fields(&self) -> Vec<&'static str> {
+        let set = [
+            ("display_name", self.display_name.is_some()),
+            ("mode", self.mode.is_some()),
+            ("heartbeat_interval_s", self.heartbeat_interval_s.is_some()),
+            ("ice_servers", self.ice_servers.is_some()),
+            ("max_fps", self.max_fps.is_some()),
+            ("max_bitrate_kbps", self.max_bitrate_kbps.is_some()),
+            ("preferred_codec", self.preferred_codec.is_some()),
+            ("allow_input", self.allow_input.is_some()),
+            ("allow_clipboard", self.allow_clipboard.is_some()),
+            ("approval_timeout_s", self.approval_timeout_s.is_some()),
+            ("allow_file_transfer", self.allow_file_transfer.is_some()),
+            ("transfer_dir", self.transfer_dir.is_some()),
+            ("allow_audio", self.allow_audio.is_some()),
+            ("allow_annotations", self.allow_annotations.is_some()),
+            ("allow_privacy_screen", self.allow_privacy_screen.is_some()),
+        ];
+        set.into_iter()
+            .filter_map(|(name, present)| present.then_some(name))
+            .collect()
+    }
+
+    pub fn apply(self, mut cfg: AgentConfig) -> Result<AgentConfig, ApiError> {
         if let Some(v) = self.display_name {
             if v.trim().is_empty() {
                 return Err(ApiError::validation("display_name must not be empty"));
@@ -262,7 +292,8 @@ pub async fn delete(
             .end_session(&sid, EndReason::Error, Some(admin.actor()))
             .await;
     }
-    state.hub.disconnect_device(&id, "device deleted").await;
+    // Protocol 2+ agents forget the enrollment and stop; older ones keep retrying (4409).
+    state.hub.retire_device(&id, "device deleted").await;
     db::devices::delete(&state.db, &id).await?;
     db::audit::record(
         &state.db,

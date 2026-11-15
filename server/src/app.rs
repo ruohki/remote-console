@@ -96,12 +96,13 @@ impl AppState {
             db.clone(),
             Arc::clone(&config),
         ));
+        let limits = Arc::new(Limits::from_config(&config));
         Ok(Self {
             config,
             db,
             hub,
             limiter: Arc::new(LoginLimiter::default()),
-            limits: Arc::new(Limits::default()),
+            limits,
             bakery: Bakery::new(),
             auth,
             mailer,

@@ -6,7 +6,7 @@ import type { AgentDownload, AgentPlatform } from '@/lib/types'
 import { bytes } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { agentDownloadUrl, isInFlight, phaseHint, phaseLabel, startAgentDownload, useAgentDownload, useAgentDownloadStore, type DownloadOutcome } from '@/lib/agentDownload'
-import { Badge, Button, EmptyState, Skeleton, Table, Td, Th, Toggle, cx } from './ui'
+import { Badge, Button, EmptyState, InfoTip, Skeleton, Table, Td, Th, Toggle, cx } from './ui'
 
 export { agentDownloadUrl }
 
@@ -255,6 +255,7 @@ export function AgentDownloadsPanel() {
               <tr>
                 <Th>Platform</Th>
                 <Th>Status</Th>
+                <Th>Version</Th>
                 <Th>Signing</Th>
                 <Th className="text-right">Size</Th>
                 <Th className="w-44" />
@@ -273,6 +274,15 @@ export function AgentDownloadsPanel() {
                       </div>
                     </Td>
                     <Td>{ok ? <Badge tone="live">Available</Badge> : <Badge tone="warn">Not available</Badge>}</Td>
+                    <Td className="mono text-ink-muted">
+                      {d?.version ? (
+                        `v${d.version}`
+                      ) : (
+                        <span className="inline-flex items-center gap-1 text-ink-faint">
+                          —{ok && <InfoTip text="This binary carries no version, so devices are not offered updates from it." />}
+                        </span>
+                      )}
+                    </Td>
                     <Td>
                       <SigningBadge d={d} platform={p.id} />
                     </Td>

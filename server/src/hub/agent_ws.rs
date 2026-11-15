@@ -45,12 +45,6 @@ pub async fn upgrade(
 }
 
 async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSocket, ip: String) {
-    if let Some(wait) = limits.agent_hello_ip.blocked_for(&ip) {
-        tracing::warn!(%ip, ?wait, "agent hello rate limited");
-        let (mut sink, _) = socket.split();
-        let _ = close(&mut sink, CLOSE_RATE_LIMITED, "too many failed connections").await;
-        return;
-    }
     let (mut sink, mut stream) = socket.split();
 
     // ── hello ────────────────────────────────────────────────────────────────
@@ -83,6 +77,8 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
             capabilities,
             logged_in_user,
             local_overrides,
+            machine_id,
+            desktop,
         }) => Hello {
             protocol_version,
             device_id,
@@ -95,6 +91,9 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
             capabilities,
             logged_in_user,
             local_overrides,
+            machine_id: crate::api::enroll::normalize_machine_id(machine_id.as_deref())
+                .map(str::to_string),
+            desktop: desktop.unwrap_or_default(),
         },
         Ok(_) => {
             let _ = close(
@@ -115,7 +114,9 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
             return;
         }
     };
-    if hello.protocol_version != protocol::PROTOCOL_VERSION {
+    if !(protocol::MIN_PROTOCOL_VERSION..=protocol::PROTOCOL_VERSION)
+        .contains(&hello.protocol_version)
+    {
         let _ = close(
             &mut sink,
             CLOSE_PROTOCOL_VERSION,
@@ -125,30 +126,52 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
         return;
     }
 
-    let device = match db::devices::by_id(&hub.db, &hello.device_id).await {
-        Ok(Some(d)) => d,
-        Ok(None) => {
-            limits.agent_hello_ip.record_failure(&ip);
+    // Failures back off per address *and* device: one retired machine behind a NAT must not
+    // lock out the other agents at that site.
+    let auth_key = auth::agent_auth_key(&ip, &hello.device_id);
+    if let Some(wait) = limits.agent_hello.blocked_for(&auth_key) {
+        tracing::warn!(%ip, device = %hello.device_id, ?wait, "agent hello rate limited");
+        let _ = close(&mut sink, CLOSE_RATE_LIMITED, "too many failed connections").await;
+        return;
+    }
+    let device = match auth::device::authenticate(
+        &hub.db,
+        &limits.device_verify_slots,
+        &hello.device_id,
+        &hello.device_secret,
+    )
+    .await
+    {
+        Ok(d) => d,
+        Err(auth::device::DeviceAuthError::UnknownDevice) => {
+            limits.agent_hello.record_failure(&auth_key);
             let _ = close(&mut sink, CLOSE_DEVICE_DELETED, "unknown device").await;
             return;
         }
-        Err(err) => {
+        Err(auth::device::DeviceAuthError::BadSecret) => {
+            limits.agent_hello.record_failure(&auth_key);
+            tracing::warn!(device = %hello.device_id, %ip, "agent hello with bad secret");
+            let _ = close(&mut sink, CLOSE_BAD_CREDENTIALS, "bad credentials").await;
+            return;
+        }
+        Err(auth::device::DeviceAuthError::Internal(err)) => {
             tracing::error!("device lookup failed: {err}");
             let _ = close(&mut sink, 1011, "internal error").await;
             return;
         }
     };
-    let verified = {
-        let _slot = limits.verify_slots.acquire().await;
-        auth::verify_password_async(hello.device_secret.clone(), device.secret_hash.clone()).await
-    };
-    if !verified {
-        limits.agent_hello_ip.record_failure(&ip);
-        tracing::warn!(device = %hello.device_id, %ip, "agent hello with bad secret");
-        let _ = close(&mut sink, CLOSE_BAD_CREDENTIALS, "bad credentials").await;
+    limits.agent_hello.clear(&auth_key);
+    if hub.is_shutting_down() {
+        let _ = send_now(
+            &mut sink,
+            &ConsoleToAgent::Goodbye {
+                reason: super::GOODBYE_RESTARTING.into(),
+            },
+        )
+        .await;
+        let _ = close(&mut sink, 1012, "console restarting").await;
         return;
     }
-    limits.agent_hello_ip.clear(&ip);
 
     let config = device.config();
     let device_id = device.id.clone();
@@ -170,6 +193,8 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
             ip: &ip,
             local_overrides: &hello.local_overrides,
             privacy_screen: hello.capabilities.privacy_screen,
+            machine_id: hello.machine_id.as_deref(),
+            desktop: hello.desktop,
         },
     )
     .await
@@ -181,6 +206,7 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
         &device_id,
         AgentConn {
             conn_id,
+            protocol_version: hello.protocol_version,
             tx: tx.clone(),
             cancel: cancel.clone(),
             heartbeat_interval: Duration::from_secs(u64::from(config.heartbeat_interval_s.max(1))),
@@ -191,13 +217,15 @@ async fn handle(hub: Arc<Hub>, limits: Arc<crate::auth::Limits>, socket: WebSock
         device = %device_id,
         host = %hello.hostname,
         version = %hello.agent_version,
+        protocol = hello.protocol_version,
         %ip,
         reported_mode = ?hello.mode,
         "agent connected"
     );
 
     let _ = tx.send(ConsoleToAgent::HelloAck {
-        protocol_version: protocol::PROTOCOL_VERSION,
+        // The version both sides speak: an older agent gets its own version back.
+        protocol_version: hello.protocol_version.min(protocol::PROTOCOL_VERSION),
         server_time_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
         config: config.clone(),
     });
@@ -305,6 +333,8 @@ struct Hello {
     capabilities: protocol::agent::AgentCapabilities,
     logged_in_user: Option<String>,
     local_overrides: protocol::config::LocalOverrides,
+    machine_id: Option<String>,
+    desktop: protocol::common::DesktopState,
 }
 
 async fn handle_message(
@@ -322,14 +352,20 @@ async fn handle_message(
             logged_in_user,
             displays,
             local_overrides,
+            desktop,
+            capabilities,
             ..
         } => {
             if let Err(err) = db::devices::heartbeat(
                 &hub.db,
                 device_id,
-                logged_in_user.as_deref(),
-                displays.as_deref(),
-                local_overrides.as_ref(),
+                db::devices::HeartbeatUpdate {
+                    logged_in_user: logged_in_user.as_deref(),
+                    displays: displays.as_deref(),
+                    local_overrides: local_overrides.as_ref(),
+                    desktop,
+                    capabilities: capabilities.as_ref(),
+                },
             )
             .await
             {
@@ -348,7 +384,16 @@ async fn handle_message(
                 }
                 *last_overrides = o;
             }
-            if displays.is_some() || user_changed || overrides_changed {
+            if let Some(d) = desktop {
+                tracing::debug!(device = %device_id, desktop = ?d, "desktop state changed");
+            }
+            // `desktop` and `capabilities` are only sent when they changed.
+            if displays.is_some()
+                || user_changed
+                || overrides_changed
+                || desktop.is_some()
+                || capabilities.is_some()
+            {
                 hub.broadcast_device(device_id).await;
             }
         }
@@ -473,6 +518,15 @@ async fn handle_message(
             }
         }
     }
+}
+
+/// Write one message straight to the socket (before the writer task exists).
+async fn send_now(
+    sink: &mut futures_util::stream::SplitSink<WebSocket, Message>,
+    msg: &ConsoleToAgent,
+) -> Result<(), axum::Error> {
+    let text = serde_json::to_string(msg).map_err(axum::Error::new)?;
+    sink.send(Message::Text(text.into())).await
 }
 
 async fn close(

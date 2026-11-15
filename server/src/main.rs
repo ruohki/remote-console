@@ -71,22 +71,51 @@ async fn serve(config: Config) -> Result<()> {
     config.validate_for_serve()?;
     let listen = config.listen_addr.clone();
     let public_url = config.public_url.clone();
+    tokio::spawn(remote_console::turn::run_cloudflare_refresher(
+        config.clone(),
+    ));
     let state = AppState::init(config).await?;
+    let hub = state.hub.clone();
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
         .with_context(|| format!("binding {listen}"))?;
     tracing::info!(version = remote_console::VERSION, %listen, %public_url, "remote-console listening");
+
+    // On SIGTERM / Ctrl-C the listener stops accepting and, in parallel, every agent is told
+    // `goodbye { reason: "console restarting" }` and closed cleanly — agents then reconnect
+    // within seconds instead of backing off. Upgraded WebSockets are not tracked by the
+    // server's graceful shutdown, so the hub closes them itself.
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move {
+            shutdown_signal().await;
+            shutdown.cancel();
+        }
+    });
+    let agents_closed = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move {
+            shutdown.cancelled().await;
+            let n = hub.shutdown_agents(AGENT_SHUTDOWN_GRACE).await;
+            tracing::info!("said goodbye to {n} agent(s)");
+        }
+    });
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
+    .with_graceful_shutdown(shutdown.clone().cancelled_owned())
     .await
     .context("server error")?;
+    let _ = agents_closed.await;
     tracing::info!("shutdown complete");
     Ok(())
 }
+
+/// How long shutdown waits for agent sockets to flush their goodbye and close.
+const AGENT_SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 async fn shutdown_signal() {
     let ctrl_c = async {

@@ -422,6 +422,19 @@ async fn enrollment_and_download_rate_limits() {
         vec![401, 401, 401, 429],
         "fourth enrollment attempt is rate limited"
     );
+    let r = anon
+        .post(format!("{}/api/enroll", app.base))
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 429);
+    let retry: u64 = r.headers()["retry-after"]
+        .to_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!((1..=60).contains(&retry), "Retry-After {retry}");
 
     let mut statuses = vec![];
     for _ in 0..3 {
@@ -440,14 +453,104 @@ async fn enrollment_and_download_rate_limits() {
         vec![401, 401, 429],
         "token downloads are rate limited per IP"
     );
+    let r = anon
+        .get(format!(
+            "{}/api/agent/download/macos-universal?token=nope",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 429);
+    assert!(r.headers().contains_key("retry-after"));
 }
 
 #[tokio::test]
-async fn agent_hello_failures_back_off_per_ip() {
+async fn a_valid_token_is_never_throttled_but_failures_are() {
     let dir = tempfile::tempdir().unwrap();
     let config = test_config(&dir);
     let limits = Limits {
-        agent_hello_ip: BackoffLimiter::new(2, Duration::from_secs(60), Duration::from_secs(60)),
+        enroll_token: RateLimiter::new(2, Duration::from_secs(60)),
+        ..Limits::default()
+    };
+    let app = spawn_with(config, dir, Some(limits)).await;
+    let c = client();
+    assert_eq!(setup_admin(&app, &c).await.status(), 201);
+    let tok: Value = c
+        .post(format!("{}/api/enroll-tokens", app.base))
+        .json(&json!({ "label": "rollout", "default_mode": "unattended", "default_tags": [] }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = tok["token"].as_str().unwrap();
+    let anon = reqwest::Client::new();
+    // a rollout: many machines, one token, well past the per-token failure budget
+    for i in 0..5 {
+        let r = anon
+            .post(format!("{}/api/enroll", app.base))
+            .json(&json!({ "token": token, "hostname": format!("pc-{i}"), "os": "windows", "arch": "x86_64", "agent_version": "0.1.0" }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 201, "enrollment {i}");
+    }
+    // guessing with one bogus token runs into the per-token failure limit
+    let mut statuses = vec![];
+    for _ in 0..3 {
+        let r = anon
+            .post(format!("{}/api/enroll", app.base))
+            .json(&json!({ "token": "bogus-token", "hostname": "h", "os": "macos", "arch": "aarch64", "agent_version": "0.1.0" }))
+            .send()
+            .await
+            .unwrap();
+        statuses.push(r.status().as_u16());
+    }
+    assert_eq!(statuses, vec![401, 401, 429]);
+}
+
+#[tokio::test]
+async fn configured_enroll_and_download_rates_apply() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut config = test_config(&dir);
+    config.enroll_rate_limit_per_min = 2;
+    config.download_rate_limit_per_min = 1;
+    let app = spawn_with(config, dir, None).await;
+    let anon = reqwest::Client::new();
+    let mut statuses = vec![];
+    for _ in 0..3 {
+        let r = anon
+            .post(format!("{}/api/enroll", app.base))
+            .json(&json!({ "token": "x", "hostname": "h", "os": "macos", "arch": "aarch64", "agent_version": "0" }))
+            .send()
+            .await
+            .unwrap();
+        statuses.push(r.status().as_u16());
+    }
+    assert_eq!(statuses, vec![401, 401, 429]);
+    let mut statuses = vec![];
+    for _ in 0..2 {
+        let r = anon
+            .get(format!(
+                "{}/api/agent/download/windows-x86_64?token=x",
+                app.base
+            ))
+            .send()
+            .await
+            .unwrap();
+        statuses.push(r.status().as_u16());
+    }
+    assert_eq!(statuses, vec![401, 429]);
+}
+
+#[tokio::test]
+async fn agent_hello_failures_back_off_per_ip_and_device() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = test_config(&dir);
+    let limits = Limits {
+        agent_hello: BackoffLimiter::new(2, Duration::from_secs(60), Duration::from_secs(60)),
         ..Limits::default()
     };
     let app = spawn_with(config, dir, Some(limits)).await;
@@ -487,7 +590,32 @@ async fn agent_hello_failures_back_off_per_ip() {
     assert_eq!(codes[1], 4409);
     assert_eq!(
         codes[2], 4429,
-        "third attempt from the same IP is rate limited"
+        "third attempt for the same device from the same IP is rate limited"
+    );
+
+    // Another device behind the same address is not affected by the retired one.
+    let mut other = hello.clone();
+    other["device_id"] = json!("dev_someotherdevice");
+    let (mut ws, _) = tokio_tungstenite::connect_async(format!("{}/ws/agent", app.ws_base))
+        .await
+        .expect("ws");
+    ws.send(Message::Text(other.to_string().into()))
+        .await
+        .unwrap();
+    let mut code = 0u16;
+    for _ in 0..5 {
+        match tokio::time::timeout(Duration::from_secs(3), ws.next()).await {
+            Ok(Some(Ok(Message::Close(Some(f))))) => {
+                code = f.code.into();
+                break;
+            }
+            Ok(None) | Ok(Some(Err(_))) | Err(_) => break,
+            _ => continue,
+        }
+    }
+    assert_eq!(
+        code, 4409,
+        "other devices at the site are judged on their own"
     );
 }
 

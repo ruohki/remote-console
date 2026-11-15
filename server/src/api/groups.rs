@@ -1,6 +1,6 @@
 //! Device groups, memberships and grants (`API.md` → "Device groups & access control").
 
-use crate::api::devices::summaries_for;
+use crate::api::devices::{summaries_for, ConfigPatch};
 use crate::app::AppState;
 use crate::auth::access::{self, AccessMap};
 use crate::auth::{AdminUser, AuthUser};
@@ -10,8 +10,9 @@ use crate::error::{ApiError, ApiResult};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::Json;
+use protocol::config::AgentConfig;
 use protocol::ui::DeviceSummary;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 fn validate_name(name: &str) -> ApiResult<&str> {
@@ -319,4 +320,62 @@ pub async fn user_grants(
         .ok_or_else(|| ApiError::not_found("user"))?;
     let rows = db::groups::grants_for_user(&state.db, &id).await?;
     Ok(Json(rows.iter().map(|g| g.public()).collect()))
+}
+
+#[derive(Serialize)]
+pub struct PolicyApplied {
+    /// Member devices whose config was written.
+    pub updated: usize,
+    /// Of those, connected right now (they received `config_update`).
+    pub online: usize,
+}
+
+/// `PATCH /api/groups/{id}/config` (admin): merge a device `ConfigPatch` into the config of
+/// every member device and push it to the connected ones. One-off: devices that join the group
+/// later keep their own settings.
+pub async fn update_config(
+    State(state): State<AppState>,
+    admin: AdminUser,
+    Path(id): Path<String>,
+    Json(patch): Json<ConfigPatch>,
+) -> ApiResult<Json<PolicyApplied>> {
+    let group = db::groups::by_id(&state.db, &id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("group"))?;
+    if patch.display_name.is_some() {
+        return Err(ApiError::validation(
+            "display_name is per device and cannot be set for a group",
+        ));
+    }
+    let fields = patch.fields();
+    if fields.is_empty() {
+        return Err(ApiError::validation("no settings given"));
+    }
+    // Validate once up front so a bad value never half-applies across the group.
+    patch.clone().apply(AgentConfig::default())?;
+
+    let mut updated = 0;
+    let mut online = 0;
+    for device_id in db::groups::member_device_ids(&state.db, &id).await? {
+        let Some(row) = db::devices::by_id(&state.db, &device_id).await? else {
+            continue;
+        };
+        let config = patch.clone().apply(row.config())?;
+        db::devices::update_config(&state.db, &device_id, &config).await?;
+        updated += 1;
+        if state.hub.is_online(&device_id) {
+            online += 1;
+            state.hub.push_config(&device_id, &config).await;
+        }
+        state.hub.broadcast_device(&device_id).await;
+    }
+    db::audit::record(
+        &state.db,
+        Some(admin.actor()),
+        "group.config",
+        Some(&id),
+        json!({ "name": group.name, "fields": fields, "devices": updated }),
+    )
+    .await?;
+    Ok(Json(PolicyApplied { updated, online }))
 }

@@ -68,8 +68,9 @@ export function Tags({ tags }: { tags: string[] }) {
   )
 }
 
-import { ShieldAlert } from 'lucide-react'
+import { CircleArrowUp, Lock, LogIn, ShieldAlert } from 'lucide-react'
 import { hasOverrides, overrideLabels } from '@/lib/overrides'
+import { desktopBadge } from '@/lib/agentUpdate'
 import type { LocalOverrides } from '@/protocol'
 
 /** Shown when the person at the device restricted what operators may do. */
@@ -79,6 +80,32 @@ export function OverrideBadge({ overrides, className }: { overrides: LocalOverri
     <Badge tone="warn" className={className}>
       <span className="inline-flex items-center gap-1" title={overrideLabels(overrides).join(' · ')}>
         <ShieldAlert size={11} /> Restricted by user
+      </span>
+    </Badge>
+  )
+}
+
+/** "Signed out" / "Locked" for an online device; nothing while a user's desktop shows. */
+export function DesktopBadge({ device, className }: { device: Pick<DeviceSummary, 'online' | 'desktop'>; className?: string }) {
+  const badge = desktopBadge(device)
+  if (!badge) return null
+  const Icon = device.desktop === 'locked' ? Lock : LogIn
+  return (
+    <Badge className={className}>
+      <span className="inline-flex items-center gap-1" title={badge.tip}>
+        <Icon size={11} /> {badge.label}
+      </span>
+    </Badge>
+  )
+}
+
+/** Shown when the console hands out a newer agent than the device runs. */
+export function UpdateBadge({ version, className }: { version: string | null; className?: string }) {
+  if (!version) return null
+  return (
+    <Badge tone="accent" className={className}>
+      <span className="inline-flex items-center gap-1" title={`Agent ${version} is available.`}>
+        <CircleArrowUp size={11} /> Update available
       </span>
     </Badge>
   )

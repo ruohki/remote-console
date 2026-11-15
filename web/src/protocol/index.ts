@@ -12,6 +12,7 @@ export type { ClipboardKind } from './ClipboardKind';
 export type { ConsoleToAgent } from './ConsoleToAgent';
 export type { ConsoleToUi } from './ConsoleToUi';
 export type { ControlMessage } from './ControlMessage';
+export type { DesktopState } from './DesktopState';
 export type { DeviceMode } from './DeviceMode';
 export type { DevicePermission } from './DevicePermission';
 export type { DeviceSummary } from './DeviceSummary';

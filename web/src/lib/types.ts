@@ -224,6 +224,23 @@ export interface DeviceDetail extends DeviceSummary {
   created_at: string
   enrolled_with?: string
   config: AgentConfig
+  /** hardware id reported by protocol 2+ agents */
+  machine_id?: string
+  /** protocol of the connected agent (absent while offline); 2+ can update itself */
+  agent_protocol?: number
+}
+
+/** `POST /api/devices/:id/update` */
+export interface UpdateRequested {
+  device_id: string
+  version: string
+}
+
+/** `POST /api/devices/update-outdated` */
+export interface BulkUpdateRequested {
+  requested: string[]
+  versions: Partial<Record<AgentPlatform, string>>
+  skipped: { agent_too_old?: number }
 }
 
 export interface AuditEntry {
@@ -261,6 +278,8 @@ export interface AgentDownload {
   notarized?: boolean
   /** a signing identity is configured on the console */
   signing_configured?: boolean
+  /** agent version embedded in the base binary (absent when unknown) */
+  version?: string
 }
 
 export interface ApiErrorBody {

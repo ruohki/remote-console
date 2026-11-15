@@ -101,6 +101,7 @@ async fn enroll(app: &TestApp, token: &str) -> EnrollResponse {
             arch: Arch::Aarch64,
             agent_version: "0.1.0".into(),
             display_name: None,
+            machine_id: None,
         })
         .send()
         .await
@@ -217,6 +218,8 @@ async fn agent_hello_with(
             capabilities,
             logged_in_user: Some("alice".into()),
             local_overrides: LocalOverrides::default(),
+            machine_id: None,
+            desktop: None,
         },
     )
     .await;
@@ -1066,7 +1069,7 @@ async fn second_agent_connection_replaces_first() {
         .unwrap();
     assert_eq!(devices[0]["online"], true);
 
-    // delete device → second connection is told goodbye and closed
+    // delete device → the (protocol 2) second connection is retired and closed
     let r = c
         .delete(format!("{}/api/devices/{}", app.base, enrolled.device_id))
         .send()
@@ -1074,8 +1077,14 @@ async fn second_agent_connection_replaces_first() {
         .unwrap();
     assert_eq!(r.status(), 204);
     let bye: ConsoleToAgent =
-        recv_until(&mut second, |m| matches!(m, ConsoleToAgent::Goodbye { .. })).await;
-    assert!(matches!(bye, ConsoleToAgent::Goodbye { .. }));
+        recv_until(&mut second, |m| matches!(m, ConsoleToAgent::Retire { .. })).await;
+    assert_eq!(
+        bye,
+        ConsoleToAgent::Retire {
+            reason: "device deleted".into()
+        }
+    );
+    assert_eq!(expect_close(&mut second).await, 1000);
     let devices: Vec<Value> = c
         .get(format!("{}/api/devices", app.base))
         .send()
@@ -2153,7 +2162,8 @@ async fn branding_and_agent_bakery() {
         .unwrap();
     assert_eq!(r.status(), 404);
 
-    // exhausted token → 410
+    // a used-up token still downloads (installer re-runs on enrolled machines); enrolling
+    // with it is what fails
     let one_use = create_token_max1(&app, &admin).await;
     let _ = enroll(&app, &one_use).await; // consumes the single use
     let r = anon
@@ -2164,7 +2174,31 @@ async fn branding_and_agent_bakery() {
         .send()
         .await
         .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = anon
+        .post(format!("{}/api/enroll", app.base))
+        .json(&json!({ "token": one_use, "hostname": "h", "os": "macos", "arch": "aarch64", "agent_version": "0.1.0" }))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(r.status(), 410);
+    // a revoked token does not
+    let id = token["id"].as_str().unwrap();
+    let r = admin
+        .delete(format!("{}/api/enroll-tokens/{id}", app.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let r = anon
+        .get(format!(
+            "{}/api/agent/download/macos-universal?token={token_str}",
+            app.base
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
 
     // branding.update + agent.bake audited
     let audit: Vec<Value> = admin
@@ -2182,9 +2216,19 @@ async fn branding_and_agent_bakery() {
         );
     }
 
-    // install.sh renders the console download URL when a base binary is available
-    let script = anon
+    // install.sh renders the console download URL when a base binary is available — also
+    // for a used-up token (re-runs), but not for a revoked one
+    let revoked = anon
         .get(format!("{}/install.sh?token={token_str}", app.base))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(revoked.contains("exit 1") && revoked.contains("revoked"));
+    let script = anon
+        .get(format!("{}/install.sh?token={one_use}", app.base))
         .send()
         .await
         .unwrap()
@@ -2262,6 +2306,8 @@ async fn device_overrides_from_hello_and_heartbeat() {
                 mode: Some(DeviceMode::HelpMe),
                 ..Default::default()
             },
+            machine_id: None,
+            desktop: None,
         },
     )
     .await;
@@ -2305,6 +2351,8 @@ async fn device_overrides_from_hello_and_heartbeat() {
                 allow_audio: Some(false),
                 ..Default::default()
             }),
+            desktop: None,
+            capabilities: None,
         },
     )
     .await;
@@ -2329,6 +2377,8 @@ async fn device_overrides_from_hello_and_heartbeat() {
             mem_percent: None,
             displays: None,
             local_overrides: None,
+            desktop: None,
+            capabilities: None,
         },
     )
     .await;
@@ -2774,4 +2824,784 @@ async fn hello_reports_privacy_screen_support() {
     let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
     assert_eq!(devices[0]["online"], false);
     assert_eq!(devices[0]["privacy_screen"], "screen_only");
+}
+
+// ── fleet readiness: protocol 2, re-enrollment, secrets, shutdown, updates ───────
+
+/// `hello` as JSON so a test can tweak single fields (protocol version, os, desktop…).
+fn hello_json(enrolled: &EnrollResponse, secret: &str) -> Value {
+    serde_json::to_value(AgentToConsole::Hello {
+        protocol_version: protocol::PROTOCOL_VERSION,
+        device_id: enrolled.device_id.clone(),
+        device_secret: secret.to_string(),
+        agent_version: "0.1.0".into(),
+        hostname: "test-host".into(),
+        os: Os::Macos,
+        arch: Arch::Aarch64,
+        mode: DeviceMode::Unattended,
+        capabilities: default_capabilities(),
+        logged_in_user: None,
+        local_overrides: LocalOverrides::default(),
+        machine_id: None,
+        desktop: None,
+    })
+    .unwrap()
+}
+
+async fn agent_connect(app: &TestApp, hello: &Value) -> Ws {
+    let mut ws = connect_ws(&format!("{}/ws/agent", app.ws_base), None).await;
+    send(&mut ws, hello).await;
+    ws
+}
+
+fn enroll_body(token: &str, hostname: &str, os: Os, machine_id: Option<&str>) -> EnrollRequest {
+    EnrollRequest {
+        token: token.to_string(),
+        hostname: hostname.into(),
+        os,
+        arch: if os == Os::Windows {
+            Arch::X86_64
+        } else {
+            Arch::Aarch64
+        },
+        agent_version: "0.1.0".into(),
+        display_name: None,
+        machine_id: machine_id.map(String::from),
+    }
+}
+
+async fn enroll_raw(app: &TestApp, body: &EnrollRequest) -> reqwest::Response {
+    reqwest::Client::new()
+        .post(format!("{}/api/enroll", app.base))
+        .json(body)
+        .send()
+        .await
+        .expect("enroll")
+}
+
+async fn audit_actions(app: &TestApp, admin: &reqwest::Client) -> Vec<Value> {
+    get_json(admin, &format!("{}/api/audit?limit=200", app.base)).await
+}
+
+#[tokio::test]
+async fn protocol_1_agents_are_accepted_and_never_get_protocol_2_messages() {
+    let app = spawn_app().await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    // out-of-range versions are refused
+    for v in [0, protocol::PROTOCOL_VERSION + 1] {
+        let mut h = hello_json(&enrolled, &enrolled.device_secret);
+        h["protocol_version"] = json!(v);
+        let mut ws = agent_connect(&app, &h).await;
+        assert_eq!(expect_close(&mut ws).await, 4426, "protocol {v}");
+    }
+
+    // a protocol-1 hello (no machine_id / desktop) is accepted and acknowledged as 1
+    let mut h = hello_json(&enrolled, &enrolled.device_secret);
+    h["protocol_version"] = json!(1);
+    let mut agent = agent_connect(&app, &h).await;
+    match recv::<ConsoleToAgent>(&mut agent).await {
+        ConsoleToAgent::HelloAck {
+            protocol_version, ..
+        } => assert_eq!(protocol_version, 1),
+        other => panic!("expected hello_ack, got {other:?}"),
+    }
+    let detail: Value = get_json(
+        &admin,
+        &format!("{}/api/devices/{}", app.base, enrolled.device_id),
+    )
+    .await;
+    assert_eq!(detail["agent_protocol"], 1);
+    assert_eq!(detail["desktop"], "unknown");
+
+    // deleting the device sends the old-style goodbye, not retire
+    let r = admin
+        .delete(format!("{}/api/devices/{}", app.base, enrolled.device_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 204);
+    let bye: ConsoleToAgent = recv_until(&mut agent, |m: &ConsoleToAgent| {
+        !matches!(m, ConsoleToAgent::Ping { .. })
+    })
+    .await;
+    assert_eq!(
+        bye,
+        ConsoleToAgent::Goodbye {
+            reason: "device deleted".into()
+        }
+    );
+    assert_eq!(expect_close(&mut agent).await, 1000);
+    // the old agent keeps retrying and is rejected
+    let mut again = agent_connect(&app, &h).await;
+    assert_eq!(expect_close(&mut again).await, 4409);
+}
+
+#[tokio::test]
+async fn desktop_state_and_capabilities_follow_hello_and_heartbeats() {
+    let app = spawn_app().await;
+    let admin = client();
+    let cookie = setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+
+    let mut ui = connect_ws(&format!("{}/ws/ui", app.ws_base), Some(&cookie)).await;
+    send(&mut ui, &UiToConsole::Subscribe).await;
+    let _snap: ConsoleToUi = recv(&mut ui).await;
+
+    // signed out at the sign-in screen: still online and connectable
+    let mut h = hello_json(&enrolled, &enrolled.device_secret);
+    h["desktop"] = json!("sign_in");
+    h["machine_id"] = json!("MACHINE-1");
+    let mut agent = agent_connect(&app, &h).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+    let update: ConsoleToUi = recv_until(
+        &mut ui,
+        |m: &ConsoleToUi| matches!(m, ConsoleToUi::DeviceUpdate { device } if device.online),
+    )
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = update else {
+        unreachable!()
+    };
+    assert_eq!(device.desktop, DesktopState::SignIn);
+    let detail: Value = get_json(
+        &admin,
+        &format!("{}/api/devices/{}", app.base, enrolled.device_id),
+    )
+    .await;
+    assert_eq!(detail["desktop"], "sign_in");
+    assert_eq!(
+        detail["machine_id"], "MACHINE-1",
+        "machine id stored from hello"
+    );
+    assert_eq!(detail["agent_protocol"], protocol::PROTOCOL_VERSION);
+
+    // locked, reported in a heartbeat
+    send(
+        &mut agent,
+        &json!({ "type": "heartbeat", "uptime_s": 5, "desktop": "locked" }),
+    )
+    .await;
+    let update: ConsoleToUi = recv_until(&mut ui, |m: &ConsoleToUi| {
+        matches!(m, ConsoleToUi::DeviceUpdate { device } if device.desktop == DesktopState::Locked)
+    })
+    .await;
+    assert!(matches!(update, ConsoleToUi::DeviceUpdate { .. }));
+
+    // capabilities re-reported in a heartbeat (e.g. the user desktop became reachable)
+    send(
+        &mut agent,
+        &AgentToConsole::Heartbeat {
+            uptime_s: 6,
+            logged_in_user: Some("bob".into()),
+            cpu_percent: None,
+            mem_percent: None,
+            displays: None,
+            local_overrides: None,
+            desktop: Some(DesktopState::User),
+            capabilities: Some(AgentCapabilities {
+                codecs: vec![VideoCodec::H264],
+                displays: vec![],
+                input: true,
+                clipboard: true,
+                privacy_screen: PrivacyScreenSupport::Standard,
+            }),
+        },
+    )
+    .await;
+    let update: ConsoleToUi = recv_until(&mut ui, |m: &ConsoleToUi| {
+        matches!(m, ConsoleToUi::DeviceUpdate { device } if device.desktop == DesktopState::User)
+    })
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = update else {
+        unreachable!()
+    };
+    assert_eq!(device.codecs, vec![VideoCodec::H264]);
+    assert!(device.displays.is_empty());
+    assert_eq!(device.privacy_screen, PrivacyScreenSupport::Standard);
+    assert_eq!(device.logged_in_user.as_deref(), Some("bob"));
+
+    // offline: the desktop is unknown again
+    drop(agent);
+    let offline: ConsoleToUi = recv_until(
+        &mut ui,
+        |m: &ConsoleToUi| matches!(m, ConsoleToUi::DeviceUpdate { device } if !device.online),
+    )
+    .await;
+    let ConsoleToUi::DeviceUpdate { device } = offline else {
+        unreachable!()
+    };
+    assert_eq!(device.desktop, DesktopState::Unknown);
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices[0]["desktop"], "unknown");
+}
+
+#[tokio::test]
+async fn reenrollment_with_the_same_machine_id_reuses_the_device() {
+    let app = spawn_app().await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let tok: Value = admin
+        .post(format!("{}/api/enroll-tokens", app.base))
+        .json(&json!({ "label": "rollout", "default_mode": "unattended", "default_tags": [], "max_uses": 6 }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let token = tok["token"].as_str().unwrap().to_string();
+
+    let r = enroll_raw(
+        &app,
+        &enroll_body(&token, "host-a", Os::Macos, Some("MID-1")),
+    )
+    .await;
+    assert_eq!(r.status(), 201);
+    let first: EnrollResponse = r.json().await.unwrap();
+    // operators organise the device
+    let group = create_group(&app, &admin, "Berlin").await;
+    let r = put_json(
+        &admin,
+        &format!("{}/api/devices/{}/groups", app.base, first.device_id),
+        json!({ "group_ids": [group] }),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let r = admin
+        .patch(format!("{}/api/devices/{}", app.base, first.device_id))
+        .json(&json!({ "name": "Reception Mac", "notes": "front desk", "tags": ["reception"] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let r = admin
+        .patch(format!(
+            "{}/api/devices/{}/config",
+            app.base, first.device_id
+        ))
+        .json(&json!({ "max_fps": 24 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // reinstall: same machine id + OS → same device, new secret
+    let r = enroll_raw(
+        &app,
+        &enroll_body(&token, "host-a2", Os::Macos, Some("MID-1")),
+    )
+    .await;
+    assert_eq!(r.status(), 200, "re-enrollment reuses the row");
+    let second: EnrollResponse = r.json().await.unwrap();
+    assert_eq!(second.device_id, first.device_id);
+    assert_ne!(second.device_secret, first.device_secret);
+    assert_eq!(second.config.max_fps, 24, "existing config returned");
+    let detail: Value = get_json(
+        &admin,
+        &format!("{}/api/devices/{}", app.base, first.device_id),
+    )
+    .await;
+    assert_eq!(detail["name"], "Reception Mac");
+    assert_eq!(detail["hostname"], "host-a2");
+    assert_eq!(detail["notes"], "front desk");
+    assert_eq!(detail["tags"], json!(["reception"]));
+    assert_eq!(detail["groups"][0]["id"], group);
+    assert_eq!(detail["machine_id"], "MID-1");
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices.len(), 1);
+    // the old secret is dead, the new one works
+    let mut old = agent_hello(&app, &first, &first.device_secret).await;
+    assert_eq!(expect_close(&mut old).await, 4401);
+    let mut agent = agent_hello(&app, &second, &second.device_secret).await;
+    assert!(matches!(
+        recv::<ConsoleToAgent>(&mut agent).await,
+        ConsoleToAgent::HelloAck { .. }
+    ));
+
+    // re-enrolling while that agent is connected (same host — "test-host" from its hello)
+    // replaces its connection
+    let r = enroll_raw(
+        &app,
+        &enroll_body(&token, "test-host", Os::Macos, Some("MID-1")),
+    )
+    .await;
+    assert_eq!(r.status(), 200);
+    let third: EnrollResponse = r.json().await.unwrap();
+    assert_eq!(third.device_id, first.device_id);
+    let bye: ConsoleToAgent =
+        recv_until(&mut agent, |m| matches!(m, ConsoleToAgent::Goodbye { .. })).await;
+    assert_eq!(
+        bye,
+        ConsoleToAgent::Goodbye {
+            reason: "replaced by a re-enrolled agent".into()
+        }
+    );
+    assert_eq!(expect_close(&mut agent).await, 1000);
+
+    // a connected device with a *different* hostname is a cloned image, not a reinstall
+    let mut agent = agent_hello(&app, &third, &third.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+    let r = enroll_raw(
+        &app,
+        &enroll_body(&token, "clone-b", Os::Macos, Some("MID-1")),
+    )
+    .await;
+    assert_eq!(r.status(), 201, "clone becomes its own device");
+    let clone: EnrollResponse = r.json().await.unwrap();
+    assert_ne!(clone.device_id, first.device_id);
+
+    // same machine id on another OS → new device
+    let r = enroll_raw(
+        &app,
+        &enroll_body(&token, "host-a", Os::Windows, Some("MID-1")),
+    )
+    .await;
+    assert_eq!(r.status(), 201);
+    let windows: EnrollResponse = r.json().await.unwrap();
+    assert_ne!(windows.device_id, first.device_id);
+    // no machine id → new device (old behaviour)
+    let r = enroll_raw(&app, &enroll_body(&token, "host-a2", Os::Macos, None)).await;
+    assert_eq!(r.status(), 201);
+    let anon: EnrollResponse = r.json().await.unwrap();
+    assert_ne!(anon.device_id, first.device_id);
+    let devices: Vec<Value> = get_json(&admin, &format!("{}/api/devices", app.base)).await;
+    assert_eq!(devices.len(), 4);
+
+    // every enrollment consumed a token use: 1 + 2 re-enrollments + 3 new devices
+    let tokens: Vec<Value> = get_json(&admin, &format!("{}/api/enroll-tokens", app.base)).await;
+    assert_eq!(tokens[0]["uses"], 6);
+    let r = enroll_raw(
+        &app,
+        &enroll_body(&token, "host-a2", Os::Macos, Some("MID-1")),
+    )
+    .await;
+    assert_eq!(r.status(), 410, "re-enrollment still needs a token use");
+
+    let audit = audit_actions(&app, &admin).await;
+    let reenrolled: Vec<&Value> = audit
+        .iter()
+        .filter(|a| a["action"] == "device.reenrolled")
+        .collect();
+    assert_eq!(reenrolled.len(), 2);
+    assert_eq!(reenrolled[0]["target"], first.device_id);
+    assert_eq!(
+        reenrolled.last().unwrap()["details"]["previous_hostname"],
+        "host-a"
+    );
+}
+
+#[tokio::test]
+async fn device_secrets_use_sha256_and_legacy_hashes_are_upgraded() {
+    let app = spawn_app().await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+    let stored = || async {
+        remote_console::db::devices::by_id(&app.state.db, &enrolled.device_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .secret_hash
+    };
+    assert!(
+        stored().await.starts_with("sha256$"),
+        "new secrets are sha256"
+    );
+
+    // a device enrolled by an older console: argon2 hash
+    let legacy = remote_console::auth::hash_password(&enrolled.device_secret).unwrap();
+    sqlx::query("UPDATE devices SET secret_hash = ? WHERE id = ?")
+        .bind(&legacy)
+        .bind(&enrolled.device_id)
+        .execute(&app.state.db)
+        .await
+        .unwrap();
+    let mut agent = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    assert!(matches!(
+        recv::<ConsoleToAgent>(&mut agent).await,
+        ConsoleToAgent::HelloAck { .. }
+    ));
+    let upgraded = stored().await;
+    assert!(
+        upgraded.starts_with("sha256$"),
+        "rehashed after a good hello: {upgraded}"
+    );
+    drop(agent);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut agent = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    assert!(matches!(
+        recv::<ConsoleToAgent>(&mut agent).await,
+        ConsoleToAgent::HelloAck { .. }
+    ));
+    let mut bad = agent_hello(&app, &enrolled, "wrong").await;
+    assert_eq!(expect_close(&mut bad).await, 4401);
+}
+
+#[tokio::test]
+async fn console_shutdown_says_goodbye_to_agents() {
+    let app = spawn_app().await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let enrolled = enroll(&app, tok["token"].as_str().unwrap()).await;
+    let mut agent = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+
+    let closed = app.state.hub.shutdown_agents(Duration::from_secs(3)).await;
+    assert_eq!(closed, 1);
+    let bye: ConsoleToAgent =
+        recv_until(&mut agent, |m| matches!(m, ConsoleToAgent::Goodbye { .. })).await;
+    assert_eq!(
+        bye,
+        ConsoleToAgent::Goodbye {
+            reason: "console restarting".into()
+        }
+    );
+    assert_eq!(expect_close(&mut agent).await, 1000, "clean close frame");
+    assert!(!app.state.hub.is_online(&enrolled.device_id));
+
+    // an agent that connects during shutdown is turned away the same way
+    let mut late = agent_hello(&app, &enrolled, &enrolled.device_secret).await;
+    let bye: ConsoleToAgent = recv(&mut late).await;
+    assert!(matches!(bye, ConsoleToAgent::Goodbye { reason } if reason.contains("restart")));
+    assert_eq!(expect_close(&mut late).await, 1012);
+}
+
+/// Console with a Windows x86_64 base binary that carries version `version`.
+async fn spawn_app_with_windows_base(version: &str) -> TestApp {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("console.db");
+    let bin_dir = dir.path().join("bins");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let mut base = b"MZ fake windows agent".to_vec();
+    base.extend_from_slice(protocol::bakery::VERSION_MARKER_PREFIX);
+    base.extend_from_slice(version.as_bytes());
+    base.extend_from_slice(b"\0rest of the binary");
+    std::fs::write(bin_dir.join("remote-agent-windows-x86_64-base.exe"), &base).unwrap();
+    let mut config = Config::for_tests(format!("sqlite://{}?mode=rwc", db_path.display()));
+    config.agent_binary_dir = Some(bin_dir);
+    let state = AppState::init(config).await.expect("state");
+    let app = build_router(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+        .expect("serve");
+    });
+    TestApp {
+        base: format!("http://{addr}"),
+        ws_base: format!("ws://{addr}"),
+        state,
+        _dir: dir,
+    }
+}
+
+/// Enroll a Windows x86_64 device running `agent_version` and connect it with `protocol`.
+async fn windows_agent(
+    app: &TestApp,
+    token: &str,
+    host: &str,
+    agent_version: &str,
+    protocol_version: u32,
+) -> (EnrollResponse, Ws) {
+    let mut body = enroll_body(token, host, Os::Windows, None);
+    body.agent_version = agent_version.into();
+    let r = enroll_raw(app, &body).await;
+    assert_eq!(r.status(), 201);
+    let enrolled: EnrollResponse = r.json().await.unwrap();
+    let mut h = hello_json(&enrolled, &enrolled.device_secret);
+    h["protocol_version"] = json!(protocol_version);
+    h["os"] = json!("windows");
+    h["arch"] = json!("x86_64");
+    h["hostname"] = json!(host);
+    h["agent_version"] = json!(agent_version);
+    let mut ws = agent_connect(app, &h).await;
+    assert!(matches!(
+        recv::<ConsoleToAgent>(&mut ws).await,
+        ConsoleToAgent::HelloAck { .. }
+    ));
+    (enrolled, ws)
+}
+
+#[tokio::test]
+async fn fleet_updates_announce_a_stable_package() {
+    use sha2::{Digest, Sha256};
+
+    let app = spawn_app_with_windows_base("0.2.0").await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let token = tok["token"].as_str().unwrap().to_string();
+
+    // the console knows what it hands out
+    let versions: Value = get_json(&admin, &format!("{}/api/agent/versions", app.base)).await;
+    assert_eq!(versions["windows-x86_64"], "0.2.0");
+    assert_eq!(versions["macos-universal"], Value::Null);
+    let downloads: Vec<Value> =
+        get_json(&admin, &format!("{}/api/agent/downloads", app.base)).await;
+    let win = downloads
+        .iter()
+        .find(|d| d["platform"] == "windows-x86_64")
+        .unwrap();
+    assert_eq!(win["version"], "0.2.0");
+
+    let (dev, mut agent) = windows_agent(&app, &token, "win-1", "0.1.0", 2).await;
+    let r = admin
+        .post(format!("{}/api/devices/{}/update", app.base, dev.device_id))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202, "{}", r.text().await.unwrap_or_default());
+    let update: ConsoleToAgent =
+        recv_until(&mut agent, |m| matches!(m, ConsoleToAgent::Update { .. })).await;
+    let ConsoleToAgent::Update {
+        version,
+        url,
+        sha256,
+    } = update
+    else {
+        unreachable!()
+    };
+    assert_eq!(version, "0.2.0");
+    assert_eq!(
+        url,
+        "http://localhost:8080/api/agent/package/windows-x86_64"
+    );
+
+    // the package endpoint serves exactly the announced bytes, every time
+    let package_url = format!("{}/api/agent/package/windows-x86_64", app.base);
+    let auth = format!("Device {}:{}", dev.device_id, dev.device_secret);
+    let anon = reqwest::Client::new();
+    let mut bodies = Vec::new();
+    for _ in 0..2 {
+        let r = anon
+            .get(&package_url)
+            .header("authorization", &auth)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 200);
+        assert_eq!(r.headers()["x-agent-version"], "0.2.0");
+        bodies.push(r.bytes().await.unwrap().to_vec());
+    }
+    assert_eq!(bodies[0], bodies[1], "stable bytes");
+    assert_eq!(hex::encode(Sha256::digest(&bodies[0])), sha256);
+    let trailer = protocol::bakery::read_trailer(&bodies[0])
+        .unwrap()
+        .expect("baked trailer");
+    assert_eq!(
+        trailer.config.enroll_token, None,
+        "no enrollment token in updates"
+    );
+    assert!(!trailer.config.quick_support);
+    // credentials are required and checked
+    let r = anon.get(&package_url).send().await.unwrap();
+    assert_eq!(r.status(), 401);
+    let r = anon
+        .get(&package_url)
+        .header("authorization", format!("Device {}:wrong", dev.device_id))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+    let r = anon
+        .get(format!("{}/api/agent/package/linux-x86_64", app.base))
+        .header("authorization", &auth)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404);
+
+    // up to date / too old / offline are refused with a reason
+    let (current, _current_ws) = windows_agent(&app, &token, "win-2", "0.2.0", 2).await;
+    let (old, mut old_ws) = windows_agent(&app, &token, "win-3", "0.1.0", 1).await;
+    for (id, code) in [
+        (&current.device_id, "up_to_date"),
+        (&old.device_id, "agent_too_old"),
+    ] {
+        let r = admin
+            .post(format!("{}/api/devices/{id}/update", app.base))
+            .json(&json!({}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 409);
+        let body: Value = r.json().await.unwrap();
+        assert_eq!(body["error"]["code"], code);
+    }
+
+    // bulk: only the outdated protocol-2 device is asked; the old agent is counted
+    let r = admin
+        .post(format!("{}/api/devices/update-outdated", app.base))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202);
+    let bulk: Value = r.json().await.unwrap();
+    assert_eq!(bulk["requested"], json!([dev.device_id]));
+    assert_eq!(bulk["versions"]["windows-x86_64"], "0.2.0");
+    assert_eq!(bulk["skipped"]["agent_too_old"], 1);
+    let again: ConsoleToAgent =
+        recv_until(&mut agent, |m| matches!(m, ConsoleToAgent::Update { .. })).await;
+    assert!(matches!(again, ConsoleToAgent::Update { sha256: s, .. } if s == sha256));
+    // nothing protocol-2-only reaches the old agent
+    let quiet = tokio::time::timeout(Duration::from_millis(300), async {
+        loop {
+            let m: ConsoleToAgent = recv(&mut old_ws).await;
+            if !matches!(m, ConsoleToAgent::Ping { .. }) {
+                return m;
+            }
+        }
+    })
+    .await;
+    assert!(quiet.is_err(), "old agent got {quiet:?}");
+
+    // bulk limited to a group with no members → nothing to do
+    let group = create_group(&app, &admin, "Empty").await;
+    let r = admin
+        .post(format!("{}/api/devices/update-outdated", app.base))
+        .json(&json!({ "group_id": group }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 202);
+    let bulk: Value = r.json().await.unwrap();
+    assert_eq!(bulk["requested"], json!([]));
+
+    // operators cannot trigger updates
+    let r = admin
+        .post(format!("{}/api/users", app.base))
+        .json(&json!({ "email": "op@example.com", "name": "Op", "password": "operator-password-1", "role": "operator" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let (op, _) = login(&app, "op@example.com", "operator-password-1").await;
+    let r = op
+        .post(format!("{}/api/devices/{}/update", app.base, dev.device_id))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 404, "invisible to an operator without grants");
+    let r = op
+        .post(format!("{}/api/devices/update-outdated", app.base))
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+
+    let audit = audit_actions(&app, &admin).await;
+    let requested = audit
+        .iter()
+        .filter(|a| a["action"] == "device.update_requested")
+        .count();
+    assert_eq!(requested, 2);
+}
+
+#[tokio::test]
+async fn group_policy_applies_a_config_patch_to_every_member() {
+    let app = spawn_app().await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let tok = create_token(&app, &admin, "unattended").await;
+    let token = tok["token"].as_str().unwrap();
+    let a = enroll(&app, token).await;
+    let b = enroll(&app, token).await;
+    let outside = enroll(&app, token).await;
+    let group = create_group(&app, &admin, "Kiosks").await;
+    let r = put_json(
+        &admin,
+        &format!("{}/api/groups/{group}/devices", app.base),
+        json!({ "device_ids": [a.device_id, b.device_id] }),
+    )
+    .await;
+    assert_eq!(r.status(), 204);
+    // a is online and gets the change live; give it a distinct setting that must survive
+    let r = admin
+        .patch(format!("{}/api/devices/{}/config", app.base, a.device_id))
+        .json(&json!({ "max_fps": 24 }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let mut agent = agent_hello(&app, &a, &a.device_secret).await;
+    let _ack: ConsoleToAgent = recv(&mut agent).await;
+
+    let url = format!("{}/api/groups/{group}/config", app.base);
+    // validation happens before anything is written
+    for (body, code) in [
+        (json!({ "display_name": "x" }), 422),
+        (json!({}), 422),
+        (json!({ "allow_audio": false, "max_fps": 1000 }), 422),
+    ] {
+        let r = admin.patch(&url).json(&body).send().await.unwrap();
+        assert_eq!(r.status(), code, "{body}");
+    }
+    let r = admin
+        .patch(&url)
+        .json(&json!({ "allow_audio": false, "mode": "help_me" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+    let applied: Value = r.json().await.unwrap();
+    assert_eq!(applied["updated"], 2);
+    assert_eq!(applied["online"], 1);
+    let pushed: ConsoleToAgent = recv_until(&mut agent, |m| {
+        matches!(m, ConsoleToAgent::ConfigUpdate { .. })
+    })
+    .await;
+    let ConsoleToAgent::ConfigUpdate { config } = pushed else {
+        unreachable!()
+    };
+    assert!(!config.allow_audio);
+    assert_eq!(config.mode, DeviceMode::HelpMe);
+    assert_eq!(config.max_fps, 24, "untouched settings stay per device");
+    for (id, expect_audio) in [
+        (&a.device_id, false),
+        (&b.device_id, false),
+        (&outside.device_id, true),
+    ] {
+        let d: Value = get_json(&admin, &format!("{}/api/devices/{id}", app.base)).await;
+        assert_eq!(d["config"]["allow_audio"], expect_audio, "{id}");
+    }
+    let audit = audit_actions(&app, &admin).await;
+    let entry = audit
+        .iter()
+        .find(|a| a["action"] == "group.config")
+        .unwrap();
+    assert_eq!(entry["details"]["devices"], 2);
+    assert_eq!(entry["details"]["fields"], json!(["mode", "allow_audio"]));
+
+    // operators may not
+    let r = admin
+        .post(format!("{}/api/users", app.base))
+        .json(&json!({ "email": "op2@example.com", "name": "Op", "password": "operator-password-1", "role": "operator" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let (op, _) = login(&app, "op2@example.com", "operator-password-1").await;
+    let r = op
+        .patch(&url)
+        .json(&json!({ "allow_audio": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
 }

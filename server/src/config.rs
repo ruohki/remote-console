@@ -21,6 +21,11 @@ pub struct Config {
     /// instead of accepting the `use-auth-secret` scheme. Ignored when `turn_secret` is set.
     pub turn_username: Option<String>,
     pub turn_password: Option<String>,
+    /// Cloudflare Realtime TURN (anycast: every peer reaches the nearest relay). When both are
+    /// set the console fetches short-lived credentials from Cloudflare and offers them on
+    /// every session; `TURN_URLS` and friends are then not needed.
+    pub cloudflare_turn_key_id: Option<String>,
+    pub cloudflare_turn_api_token: Option<String>,
     /// STUN URLs, always included in ICE server lists.
     pub stun_urls: Vec<String>,
     /// Base URL the install scripts download agent binaries from (no trailing slash).
@@ -41,6 +46,11 @@ pub struct Config {
     pub require_2fa: TwoFactorPolicy,
     /// `LOCAL_LOGIN=1|0`: password login for non-break-glass accounts.
     pub local_login: bool,
+    /// `ENROLL_RATE_LIMIT_PER_MIN`: enrollment requests per client IP and minute.
+    pub enroll_rate_limit_per_min: u32,
+    /// `DOWNLOAD_RATE_LIMIT_PER_MIN`: token-authenticated agent downloads per client IP and
+    /// minute (admin downloads are not limited).
+    pub download_rate_limit_per_min: u32,
 }
 
 /// Who must have a second factor enrolled before using the console.
@@ -88,6 +98,10 @@ pub const DEFAULT_AGENT_DOWNLOAD_BASE: &str =
 pub const DEFAULT_SESSION_TTL_HOURS: i64 = 168;
 /// Login sessions not used for this long are invalidated even before `SESSION_TTL_HOURS`.
 pub const SESSION_IDLE_HOURS: i64 = 12;
+/// Per-IP enrollment budget: an office rolling out behind one NAT must not hit it.
+pub const DEFAULT_ENROLL_RATE_LIMIT_PER_MIN: u32 = 120;
+/// Per-IP budget for token-authenticated agent downloads (install scripts behind one NAT).
+pub const DEFAULT_DOWNLOAD_RATE_LIMIT_PER_MIN: u32 = 120;
 
 impl Config {
     /// Read configuration from the process environment.
@@ -126,6 +140,15 @@ impl Config {
             (None, None) => None,
         };
 
+        let enroll_rate_limit_per_min = env_u32(
+            "ENROLL_RATE_LIMIT_PER_MIN",
+            DEFAULT_ENROLL_RATE_LIMIT_PER_MIN,
+        )?;
+        let download_rate_limit_per_min = env_u32(
+            "DOWNLOAD_RATE_LIMIT_PER_MIN",
+            DEFAULT_DOWNLOAD_RATE_LIMIT_PER_MIN,
+        )?;
+
         Ok(Self {
             public_url,
             database_url: env_or("DATABASE_URL", DEFAULT_DATABASE_URL),
@@ -140,6 +163,11 @@ impl Config {
             turn_password: std::env::var("TURN_PASSWORD")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            cloudflare_turn_key_id: std::env::var("CLOUDFLARE_TURN_KEY_ID")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()),
+            cloudflare_turn_api_token: env_secret("CLOUDFLARE_TURN_API_TOKEN")?,
             stun_urls: split_list(&env_or("STUN_URLS", DEFAULT_STUN_URLS)),
             agent_download_base: env_or("AGENT_DOWNLOAD_BASE", DEFAULT_AGENT_DOWNLOAD_BASE)
                 .trim_end_matches('/')
@@ -158,6 +186,8 @@ impl Config {
             local_login: std::env::var("LOCAL_LOGIN")
                 .map(|v| !matches!(v.trim(), "0" | "false" | "no" | "off"))
                 .unwrap_or(true),
+            enroll_rate_limit_per_min,
+            download_rate_limit_per_min,
         })
     }
 
@@ -171,6 +201,8 @@ impl Config {
             turn_secret: None,
             turn_username: None,
             turn_password: None,
+            cloudflare_turn_key_id: None,
+            cloudflare_turn_api_token: None,
             stun_urls: split_list(DEFAULT_STUN_URLS),
             // Unroutable on purpose: tests must not reach the real release host. With the
             // default the bakery really downloads published binaries, and cases like
@@ -184,6 +216,8 @@ impl Config {
             tls_spki_sha256: None,
             require_2fa: TwoFactorPolicy::Off,
             local_login: true,
+            enroll_rate_limit_per_min: DEFAULT_ENROLL_RATE_LIMIT_PER_MIN,
+            download_rate_limit_per_min: DEFAULT_DOWNLOAD_RATE_LIMIT_PER_MIN,
         }
     }
 
@@ -218,9 +252,15 @@ impl Config {
     }
 
     pub fn turn_enabled(&self) -> bool {
-        !self.turn_urls.is_empty()
-            && (self.turn_secret.is_some()
-                || (self.turn_username.is_some() && self.turn_password.is_some()))
+        self.cloudflare_turn()
+            || (!self.turn_urls.is_empty()
+                && (self.turn_secret.is_some()
+                    || (self.turn_username.is_some() && self.turn_password.is_some())))
+    }
+
+    /// Whether Cloudflare TURN is configured (key id and API token).
+    pub fn cloudflare_turn(&self) -> bool {
+        self.cloudflare_turn_key_id.is_some() && self.cloudflare_turn_api_token.is_some()
     }
 
     /// Filesystem path of the SQLite database, if the URL points to a file.
@@ -260,12 +300,17 @@ impl Config {
                 bail!("{reason}");
             }
         }
+        if self.cloudflare_turn_key_id.is_some() != self.cloudflare_turn_api_token.is_some() {
+            tracing::warn!(
+                "CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN must both be set: no Cloudflare relay will be offered"
+            );
+        }
         if self.turn_username.is_some() != self.turn_password.is_some() {
             tracing::warn!(
                 "TURN_USERNAME and TURN_PASSWORD must both be set: no relay will be offered"
             );
         }
-        if self.turn_secret.is_some() || self.turn_enabled() {
+        if !self.cloudflare_turn() && (self.turn_secret.is_some() || self.turn_enabled()) {
             if self.turn_urls.is_empty() {
                 tracing::warn!(
                     "TURN credentials are set but TURN_URLS is empty: no relay will be offered"
@@ -358,10 +403,44 @@ pub fn spki_sha256_from_pem(pem: &[u8]) -> Result<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(digest))
 }
 
+/// A secret from `KEY`, or from the file named by `KEY_FILE` (Docker / Coolify secrets).
+/// Empty values count as unset.
+fn env_secret(key: &str) -> Result<Option<String>> {
+    if let Ok(path) = std::env::var(format!("{key}_FILE")) {
+        if !path.trim().is_empty() {
+            let value = std::fs::read_to_string(path.trim())
+                .with_context(|| format!("reading {key}_FILE ({})", path.trim()))?;
+            let value = value.trim().to_string();
+            return Ok((!value.is_empty()).then_some(value));
+        }
+    }
+    Ok(std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty()))
+}
+
 fn env_or(key: &str, default: &str) -> String {
     match std::env::var(key) {
         Ok(v) if !v.trim().is_empty() => v.trim().to_string(),
         _ => default.to_string(),
+    }
+}
+
+/// A positive integer from the environment (`default` when unset or empty).
+fn env_u32(key: &str, default: u32) -> Result<u32> {
+    match std::env::var(key) {
+        Ok(v) if !v.trim().is_empty() => {
+            let n = v
+                .trim()
+                .parse::<u32>()
+                .with_context(|| format!("{key} must be a positive integer"))?;
+            if n == 0 {
+                bail!("{key} must be at least 1");
+            }
+            Ok(n)
+        }
+        _ => Ok(default),
     }
 }
 

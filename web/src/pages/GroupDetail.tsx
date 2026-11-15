@@ -1,10 +1,12 @@
 import { type FormEvent, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, FolderKanban, Save, Search, Trash2 } from 'lucide-react'
+import { ArrowLeft, FolderKanban, RotateCcw, Save, Search, SlidersHorizontal, Trash2 } from 'lucide-react'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import type { Group, GroupGrant, User } from '@/lib/types'
-import type { DeviceSummary } from '@/protocol'
+import type { AgentConfig, DeviceSummary } from '@/protocol'
+import { AgentConfigFields } from '@/components/AgentConfigFields'
+import { AGENT_CONFIG_DEFAULTS, changedLabels, policyPayload, type PolicyPatch } from '@/lib/groupPolicy'
 import { useLive } from '@/store/live'
 import { InfoTip, Badge, Button, ConfirmDialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Textarea, Th, cx } from '@/components/ui'
 import { OsIcon, StatusLed } from '@/components/badges'
@@ -98,6 +100,7 @@ export function GroupDetail() {
         </div>
         <div className="flex flex-col gap-4">
           <MetaForm key={`${g.id}|${g.name}|${g.description}`} group={g} onSaved={invalidateAll} />
+          <PolicyPanel groupId={id} deviceCount={members.data?.length ?? g.device_count} onApplied={invalidateAll} />
         </div>
       </div>
 
@@ -353,6 +356,70 @@ function AccessPanel({ groupId, grants, users, loading, onSaved }: { groupId: st
           </tbody>
         </Table>
       )}
+    </section>
+  )
+}
+
+/** One-off: write the changed agent settings to every device in the group. */
+function PolicyPanel({ groupId, deviceCount, onApplied }: { groupId: string; deviceCount: number; onApplied: () => void }) {
+  const qc = useQueryClient()
+  const [patch, setPatch] = useState<PolicyPatch>({})
+  const [confirming, setConfirming] = useState(false)
+  const cfg: AgentConfig = { ...AGENT_CONFIG_DEFAULTS, ...patch }
+  const set = <K extends keyof AgentConfig>(k: K, v: AgentConfig[K]) => setPatch((p) => ({ ...p, [k]: v }))
+  const changed = changedLabels(patch)
+  const apply = useMutation({
+    mutationFn: () => api.patch<{ updated: number; online: number }>(`/api/groups/${groupId}/config`, policyPayload(patch)),
+    onSuccess: (r) => {
+      toast.success(`Policy applied to ${r.updated} device${r.updated === 1 ? '' : 's'}`, r.online < r.updated ? 'Offline devices get it when they reconnect' : undefined)
+      setPatch({})
+      setConfirming(false)
+      qc.invalidateQueries({ queryKey: ['device'] })
+      onApplied()
+    },
+    onError: (e) => toast.error('Could not apply the policy', errorMessage(e)),
+  })
+
+  return (
+    <section className="panel">
+      <div className="flex items-center gap-2 border-b border-line px-4 py-2.5">
+        <SlidersHorizontal size={14} className="text-ink-muted" />
+        <span className="font-medium">Apply policy</span>
+        <InfoTip text="Changed settings are written to every device in this group now; other settings and later members are not affected." />
+      </div>
+      <form
+        className="flex flex-col gap-3 px-4 py-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          setConfirming(true)
+        }}
+      >
+        <AgentConfigFields cfg={cfg} set={set} hideDisplayName />
+        <div className="flex flex-wrap items-center gap-1 border-t border-line pt-3 text-[12px] text-ink-muted">
+          {changed.length === 0 ? <span className="text-ink-faint">No changes</span> : changed.map((l) => <Badge key={l} tone="accent">{l}</Badge>)}
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button type="button" variant="ghost" icon={<RotateCcw size={13} />} disabled={changed.length === 0} onClick={() => setPatch({})}>
+            Reset
+          </Button>
+          <Button type="submit" variant="primary" disabled={changed.length === 0 || deviceCount === 0}>
+            Apply to {deviceCount} device{deviceCount === 1 ? '' : 's'}
+          </Button>
+        </div>
+      </form>
+      <ConfirmDialog
+        open={confirming}
+        onClose={() => setConfirming(false)}
+        onConfirm={() => apply.mutate()}
+        title="Apply policy?"
+        confirmLabel="Apply"
+        loading={apply.isPending}
+        body={
+          <span>
+            Writes {changed.join(', ')} to {deviceCount} device{deviceCount === 1 ? '' : 's'}.
+          </span>
+        }
+      />
     </section>
   )
 }

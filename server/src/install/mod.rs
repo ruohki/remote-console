@@ -38,8 +38,8 @@ impl TokenProblem {
     }
 }
 
-/// Validate an enrollment token against the database.
-pub async fn validate_token(
+/// Look a token up: it must exist and not be revoked (expiry and uses are not checked).
+async fn known_token(
     dbp: &db::Db,
     token: Option<&str>,
 ) -> Result<db::models::EnrollTokenRow, TokenProblem> {
@@ -57,6 +57,15 @@ pub async fn validate_token(
     if row.revoked {
         return Err(TokenProblem::Revoked);
     }
+    Ok(row)
+}
+
+/// Validate an enrollment token against the database (enrollment: unexpired, uses left).
+pub async fn validate_token(
+    dbp: &db::Db,
+    token: Option<&str>,
+) -> Result<db::models::EnrollTokenRow, TokenProblem> {
+    let row = known_token(dbp, token).await?;
     if let Some(exp) = row.expires_at.as_deref().and_then(db::parse_ts) {
         if exp < chrono::Utc::now() {
             return Err(TokenProblem::Expired);
@@ -68,6 +77,19 @@ pub async fn validate_token(
         }
     }
     Ok(row)
+}
+
+/// Token check for install scripts and token downloads: known and not revoked is enough.
+///
+/// An RMM re-running the installer on an already enrolled machine (retry, upgrade) still
+/// holds the original — by now possibly expired or used-up — token; the script then installs
+/// and runs `enroll --if-needed`, which does not contact the console. A machine that is not
+/// enrolled yet fails at `POST /api/enroll`, which keeps checking expiry and uses.
+pub async fn token_for_install(
+    dbp: &db::Db,
+    token: Option<&str>,
+) -> Result<db::models::EnrollTokenRow, TokenProblem> {
+    known_token(dbp, token).await
 }
 
 fn render(
@@ -121,7 +143,7 @@ fn script_response(body: String, content_type: &'static str) -> Response {
 
 pub async fn install_sh(State(state): State<AppState>, Query(q): Query<InstallQuery>) -> Response {
     let token = q.token.as_deref().map(str::trim).unwrap_or("");
-    let body = match validate_token(&state.db, Some(token)).await {
+    let body = match token_for_install(&state.db, Some(token)).await {
         Ok(_) if is_safe_token(token) => render(
             SH_TEMPLATE,
             &state.config.public_url,
@@ -137,7 +159,7 @@ pub async fn install_sh(State(state): State<AppState>, Query(q): Query<InstallQu
 
 pub async fn install_ps1(State(state): State<AppState>, Query(q): Query<InstallQuery>) -> Response {
     let token = q.token.as_deref().map(str::trim).unwrap_or("");
-    let body = match validate_token(&state.db, Some(token)).await {
+    let body = match token_for_install(&state.db, Some(token)).await {
         Ok(_) if is_safe_token(token) => render(
             PS1_TEMPLATE,
             &state.config.public_url,
@@ -166,10 +188,19 @@ fn error_ps1(message: &str) -> String {
 }
 
 /// Ready-to-paste one-liners shown in the UI after creating a token.
+///
+/// The Windows line sets TLS 1.2 and silences the progress bar *before* the first `irm`:
+/// Windows PowerShell 5.1 may still default to TLS 1.0, and the progress bar slows
+/// `Invoke-WebRequest` down badly (and writes noise into RMM logs). The script sets both again
+/// for hosts that pipe it in differently.
 pub fn one_liners(public_url: &str, token: &str) -> (String, String) {
     (
-        format!("curl -fsSL \"{public_url}/install.sh?token={token}\" | sudo sh"),
-        format!("irm \"{public_url}/install.ps1?token={token}\" | iex"),
+        format!("curl -fsSL --retry 3 \"{public_url}/install.sh?token={token}\" | sudo sh"),
+        format!(
+            "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12; \
+             $ProgressPreference = 'SilentlyContinue'; \
+             irm \"{public_url}/install.ps1?token={token}\" | iex"
+        ),
     )
 }
 
@@ -193,6 +224,48 @@ mod tests {
         assert!(is_safe_token("abcDEF123"));
         assert!(!is_safe_token("abc\"; rm -rf /"));
         assert!(!is_safe_token(""));
+    }
+
+    #[test]
+    fn windows_one_liner_sets_tls_and_progress_before_irm() {
+        let (mac, win) = one_liners("https://c.example", "tok123");
+        assert!(mac.contains("https://c.example/install.sh?token=tok123"));
+        let irm = win.find("irm ").expect("irm");
+        let tls = win.find("Tls12").expect("tls");
+        let progress = win
+            .find("$ProgressPreference = 'SilentlyContinue'")
+            .expect("progress");
+        assert!(tls < irm && progress < irm, "{win}");
+        assert!(!win.contains('\n'), "one line: {win}");
+    }
+
+    #[test]
+    fn scripts_are_rmm_safe() {
+        let ps = render(
+            PS1_TEMPLATE,
+            "https://c.example",
+            "tok",
+            "https://dl.example",
+            "x86_64",
+        );
+        assert!(
+            ps.contains("ProgramW6432"),
+            "64-bit Program Files from 32-bit hosts"
+        );
+        assert!(ps.contains("enroll --if-needed"));
+        assert!(
+            ps.contains("SystemRoot"),
+            "temp files under the system temp dir"
+        );
+        let sh = render(
+            SH_TEMPLATE,
+            "https://c.example",
+            "tok",
+            "https://dl.example",
+            "1",
+        );
+        assert!(sh.contains("enroll --if-needed"));
+        assert!(sh.contains("--retry-all-errors"));
     }
 
     #[test]
