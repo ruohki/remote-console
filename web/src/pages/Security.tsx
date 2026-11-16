@@ -1,7 +1,7 @@
 import { type FormEvent, useState } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Fingerprint, KeyRound, Mail, Pencil, Plus, RefreshCw, ShieldCheck, ShieldOff, Trash2 } from 'lucide-react'
+import { Fingerprint, KeyRound, Lock, Mail, Pencil, Plus, RefreshCw, Replace, ShieldCheck, ShieldOff, Trash2 } from 'lucide-react'
 import { useAuth } from '@/store/auth'
 import { api, ApiError, errorMessage } from '@/lib/api'
 import type { AuthMethod, Passkey } from '@/lib/types'
@@ -31,7 +31,8 @@ export function SecurityPage() {
     },
   })
   const providers = useAuthProviders()
-  const [totpDialog, setTotpDialog] = useState<'closed' | 'enroll' | 'codes'>('closed')
+  const [totpDialog, setTotpDialog] = useState<'closed' | 'enroll' | 'replace' | 'codes'>('closed')
+  const [passwordDialog, setPasswordDialog] = useState(false)
   const [emailDialog, setEmailDialog] = useState<'closed' | 'enroll' | 'codes'>('closed')
   const [codes, setCodes] = useState<string[]>([])
   const [disableDialog, setDisableDialog] = useState(false)
@@ -80,7 +81,9 @@ export function SecurityPage() {
   })
 
   if (!user) return null
-  const totpOn = !!user.two_factor_enabled
+  // `two_factor_enabled` means any factor; servers before `totp_enabled` only had the app.
+  const totpOn = user.totp_enabled ?? !!user.two_factor_enabled
+  const hasPassword = !user.auth_methods || user.auth_methods.includes('password')
   const emailOn = !!user.email_2fa_enabled
   const keyCount = passkeys.data?.length ?? 0
   const policyApplies = !!user.two_factor_required || (user.role === 'admin' && (totpOn || emailOn)) // best effort: the server decides on disable
@@ -118,6 +121,26 @@ export function SecurityPage() {
         )}
       </section>
 
+      {/* ── password ── */}
+      {hasPassword && (
+        <section className="panel p-4">
+          <div className="flex items-start gap-3">
+            <span className="text-ink-faint">
+              <Lock size={20} />
+            </span>
+            <div className="min-w-0 flex-1">
+              <h2 className="font-semibold">Password</h2>
+              <p className="mt-1 text-[12.5px] text-ink-muted">Changing it signs out your other sessions.</p>
+              <div className="mt-3">
+                <Button size="sm" icon={<KeyRound size={13} />} onClick={() => setPasswordDialog(true)}>
+                  Change password
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
+
       {/* ── authenticator app ── */}
       <section className="panel p-4">
         <div className="flex items-start gap-3">
@@ -134,12 +157,18 @@ export function SecurityPage() {
             <div className="mt-3 flex flex-wrap gap-2">
               {totpOn ? (
                 <>
+                  <Button size="sm" icon={<Replace size={13} />} onClick={() => setTotpDialog('replace')} title="Move to a new phone or app">
+                    Replace app
+                  </Button>
                   <Button size="sm" icon={<RefreshCw size={13} />} onClick={() => setRegenDialog(true)}>
                     New recovery codes
                   </Button>
-                  <Button size="sm" variant="danger" icon={<ShieldOff size={13} />} onClick={() => setDisableDialog(true)} disabled={policyApplies && keyCount === 0 && !emailOn}>
-                    Turn off
-                  </Button>
+                  {/* Disabled buttons swallow hover in some browsers: the wrapper carries the tooltip. */}
+                  <span title={policyApplies && keyCount === 0 && !emailOn ? 'Required for your account: replace it, or add a passkey first' : undefined}>
+                    <Button size="sm" variant="danger" icon={<ShieldOff size={13} />} onClick={() => setDisableDialog(true)} disabled={policyApplies && keyCount === 0 && !emailOn}>
+                      Turn off
+                    </Button>
+                  </span>
                 </>
               ) : (
                 <Button size="sm" variant="primary" icon={<KeyRound size={13} />} onClick={() => setTotpDialog('enroll')}>
@@ -267,9 +296,15 @@ export function SecurityPage() {
       </div>
 
       {/* dialogs */}
-      <Dialog open={totpDialog !== 'closed'} onClose={() => setTotpDialog('closed')} title={totpDialog === 'codes' ? 'Recovery codes' : 'Set up an authenticator app'} width="max-w-md">
-        {totpDialog === 'enroll' ? (
-          <TotpEnroll onCodes={setCodes} onDone={() => setTotpDialog('codes')} />
+      <ChangePasswordDialog open={passwordDialog} onClose={() => setPasswordDialog(false)} />
+      <Dialog
+        open={totpDialog !== 'closed'}
+        onClose={() => setTotpDialog('closed')}
+        title={totpDialog === 'codes' ? 'Recovery codes' : totpDialog === 'replace' ? 'Replace authenticator app' : 'Set up an authenticator app'}
+        width="max-w-md"
+      >
+        {totpDialog === 'enroll' || totpDialog === 'replace' ? (
+          <TotpEnroll replacing={totpDialog === 'replace'} onCodes={setCodes} onDone={() => setTotpDialog('codes')} />
         ) : (
           <RecoveryCodes
             codes={codes}
@@ -453,6 +488,68 @@ function RenameDialog({ passkey, onClose, onSubmit, loading }: { passkey: Passke
           </Button>
           <Button type="submit" variant="primary" loading={loading}>
             Save
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  )
+}
+
+/** Own password: the current one, then the new one twice (a typo here locks you out). */
+function ChangePasswordDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const email = useAuth().user?.email ?? ''
+  const [current, setCurrent] = useState('')
+  const [next, setNext] = useState('')
+  const [repeat, setRepeat] = useState('')
+  const [error, setError] = useState<string | null>(null)
+  const close = () => {
+    setCurrent('')
+    setNext('')
+    setRepeat('')
+    setError(null)
+    onClose()
+  }
+  const change = useMutation({
+    mutationFn: () => api.post('/api/auth/password/change', { current_password: current, new_password: next.trim() }),
+    onSuccess: () => {
+      toast.success('Password changed', 'Your other sessions are signed out.')
+      close()
+    },
+    onError: (e) => setError(e instanceof ApiError && e.code === 'wrong_password' ? 'The current password is not correct.' : errorMessage(e)),
+  })
+  const mismatch = repeat.length > 0 && next.trim() !== repeat.trim()
+  return (
+    <Dialog open={open} onClose={close} title="Change password" width="max-w-md">
+      <form
+        className="flex flex-col gap-3"
+        onSubmit={(e) => {
+          e.preventDefault()
+          setError(null)
+          if (!mismatch) change.mutate()
+        }}
+      >
+        {/* lets password managers update the right saved entry */}
+        <input type="text" name="username" autoComplete="username" value={email} readOnly hidden />
+        <Field label="Current password">
+          <Input type="password" required autoFocus autoComplete="current-password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+        </Field>
+        <Field label="New password" hint="At least 10 characters.">
+          <Input type="password" required minLength={10} autoComplete="new-password" value={next} onChange={(e) => setNext(e.target.value)} />
+        </Field>
+        <Field label="Repeat new password">
+          <Input type="password" required autoComplete="new-password" value={repeat} onChange={(e) => setRepeat(e.target.value)} aria-invalid={mismatch} />
+        </Field>
+        {(mismatch || error) && (
+          <div role="alert" className="rounded-md bg-danger-soft px-3 py-2 text-[12.5px] text-danger">
+            {mismatch ? 'The new passwords do not match.' : error}
+          </div>
+        )}
+        <div className="mt-1 flex justify-end gap-2">
+          <Button type="button" onClick={close}>
+            Cancel
+          </Button>
+          <Button type="submit" variant="primary" loading={change.isPending} disabled={mismatch}>
+            Change password
           </Button>
         </div>
       </form>

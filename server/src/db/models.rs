@@ -123,6 +123,7 @@ impl UserRow {
             created_at: self.created_at.clone(),
             last_login_at: self.last_login_at.clone(),
             two_factor_enabled: self.two_factor_enabled(),
+            totp_enabled: self.totp_enabled,
             email_2fa_enabled: self.email_2fa_enabled,
             passkeys: self.passkeys,
             auth_methods: self.auth_methods(),
@@ -146,7 +147,9 @@ pub struct UserPublic {
     pub created_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_login_at: Option<String>,
+    /// any second factor (authenticator app, email codes or a passkey)
     pub two_factor_enabled: bool,
+    pub totp_enabled: bool,
     pub email_2fa_enabled: bool,
     pub passkeys: i64,
     pub auth_methods: Vec<AuthMethod>,

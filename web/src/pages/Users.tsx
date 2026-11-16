@@ -1,13 +1,16 @@
 import { type FormEvent, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { FolderKanban, KeyRound, Plus, ShieldAlert, ShieldCheck, ShieldOff, Trash2, UserX, UserCheck } from 'lucide-react'
+import { Check, FolderKanban, KeyRound, LifeBuoy, Plus, ShieldCheck, ShieldOff, Trash2, UserX, UserCheck } from 'lucide-react'
 import { Link } from 'react-router'
 import { api, errorMessage } from '@/lib/api'
 import type { Role, User, UserGrant } from '@/lib/types'
 import { GROUP_PERMISSION_LABEL } from '@/lib/access'
 import { useAuth } from '@/store/auth'
-import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Th } from '@/components/ui'
+import { Badge, Button, ConfirmDialog, CopyButton, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Th } from '@/components/ui'
+import { PasswordSetField } from '@/components/PasswordSetField'
+import { RowMenu } from '@/components/RowMenu'
 import { compactDateTime, dateTime, relativeTime } from '@/lib/format'
+import { signInDetails } from '@/lib/password'
 import { toast } from '@/lib/toast'
 
 export function UsersPage() {
@@ -19,6 +22,7 @@ export function UsersPage() {
   const [deleting, setDeleting] = useState<User | null>(null)
   const [accessFor, setAccessFor] = useState<User | null>(null)
   const [reset2fa, setReset2fa] = useState<User | null>(null)
+  const [breakGlass, setBreakGlass] = useState<User | null>(null)
 
   const invalidate = () => qc.invalidateQueries({ queryKey: ['users'] })
 
@@ -124,36 +128,41 @@ export function UsersPage() {
                 </Td>
                 <Td className="hidden whitespace-nowrap text-ink-muted md:table-cell">{relativeTime(u.last_login_at)}</Td>
                 <Td className="hidden lg:table-cell text-ink-muted whitespace-nowrap" title={dateTime(u.created_at)}>{compactDateTime(u.created_at)}</Td>
-                <Td>
-                  <div className="flex justify-end gap-1">
-                    <Button size="sm" variant="ghost" icon={<KeyRound size={13} />} title="Reset password" onClick={() => setResetFor(u)} />
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={<ShieldOff size={13} />}
-                      title="Reset two-factor"
-                      disabled={!u.two_factor_enabled && !u.passkeys}
-                      onClick={() => setReset2fa(u)}
-                    />
-                    {u.role === 'admin' && (
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        icon={<ShieldAlert size={13} className={u.break_glass ? 'text-warn' : undefined} />}
-                        title={u.break_glass ? 'Break-glass account: password sign-in always allowed (click to remove)' : 'Mark as break-glass account (password sign-in stays possible when local login is disabled)'}
-                        onClick={() => patch.mutate({ id: u.id, body: { break_glass: !u.break_glass } })}
-                      />
-                    )}
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon={u.disabled ? <UserCheck size={13} /> : <UserX size={13} />}
-                      title={u.disabled ? 'Enable' : 'Disable'}
-                      disabled={u.id === me?.id}
-                      onClick={() => patch.mutate({ id: u.id, body: { disabled: !u.disabled } })}
-                    />
-                    <Button size="sm" variant="ghost" icon={<Trash2 size={13} />} title="Delete" disabled={u.id === me?.id} onClick={() => setDeleting(u)} />
-                  </div>
+                <Td className="text-right">
+                  <RowMenu
+                    label={`Actions for ${u.name}`}
+                    items={[
+                      { label: 'Set password…', icon: <KeyRound size={14} />, onSelect: () => setResetFor(u) },
+                      {
+                        label: 'Reset two-factor…',
+                        icon: <ShieldOff size={14} />,
+                        onSelect: () => setReset2fa(u),
+                        disabled: !u.two_factor_enabled && !u.passkeys,
+                        title: !u.two_factor_enabled && !u.passkeys ? 'No second factor to reset' : 'Remove their authenticator, email codes and passkeys',
+                      },
+                      u.role === 'admin' && {
+                        label: u.break_glass ? 'Remove break-glass…' : 'Make break-glass…',
+                        icon: <LifeBuoy size={14} />,
+                        onSelect: () => setBreakGlass(u),
+                        title: 'Break-glass admins can always sign in with a password, even when single sign-on is enforced',
+                      },
+                      {
+                        label: u.disabled ? 'Enable' : 'Disable',
+                        icon: u.disabled ? <UserCheck size={14} /> : <UserX size={14} />,
+                        onSelect: () => patch.mutate({ id: u.id, body: { disabled: !u.disabled } }),
+                        disabled: u.id === me?.id,
+                        title: u.id === me?.id ? 'You cannot disable yourself' : undefined,
+                      },
+                      {
+                        label: 'Delete…',
+                        icon: <Trash2 size={14} />,
+                        onSelect: () => setDeleting(u),
+                        danger: true,
+                        disabled: u.id === me?.id,
+                        title: u.id === me?.id ? 'You cannot delete yourself' : undefined,
+                      },
+                    ]}
+                  />
                 </Td>
               </tr>
             ))}
@@ -163,7 +172,28 @@ export function UsersPage() {
 
       <CreateUserDialog open={creating} onClose={() => setCreating(false)} onCreated={invalidate} />
       <UserAccessDialog user={accessFor} onClose={() => setAccessFor(null)} />
-      <ResetPasswordDialog user={resetFor} onClose={() => setResetFor(null)} onSubmit={(pw) => patch.mutateAsync({ id: resetFor!.id, body: { password: pw } })} />
+      <ResetPasswordDialog user={resetFor} onClose={() => setResetFor(null)} onDone={invalidate} />
+      <ConfirmDialog
+        open={!!breakGlass}
+        onClose={() => setBreakGlass(null)}
+        onConfirm={() => {
+          if (breakGlass) patch.mutate({ id: breakGlass.id, body: { break_glass: !breakGlass.break_glass } })
+          setBreakGlass(null)
+        }}
+        title={breakGlass?.break_glass ? 'Remove break-glass?' : 'Make break-glass account?'}
+        body={
+          breakGlass?.break_glass ? (
+            <>
+              <b>{breakGlass?.name}</b> can no longer sign in with a password once single sign-on is enforced (<span className="mono">LOCAL_LOGIN=0</span>).
+            </>
+          ) : (
+            <>
+              <b>{breakGlass?.name}</b> can always sign in with a password, even when single sign-on is enforced. Keep it for emergency access.
+            </>
+          )
+        }
+        confirmLabel={breakGlass?.break_glass ? 'Remove' : 'Make break-glass'}
+      />
       <ConfirmDialog
         open={!!reset2fa}
         onClose={() => setReset2fa(null)}
@@ -171,7 +201,7 @@ export function UsersPage() {
         title="Reset two-factor authentication?"
         body={
           <>
-            <b>{reset2fa?.name}</b>’s authenticator app and recovery codes are removed and every passkey is unlinked. They will be asked to enroll again at their next sign-in. Do this only after verifying their identity.
+            <b>{reset2fa?.name}</b>’s authenticator app, email codes, recovery codes and passkeys are removed and they are signed out. They set up a new second factor at their next sign-in. Verify who is asking first.
           </>
         }
         confirmLabel="Reset two-factor"
@@ -239,21 +269,49 @@ function UserAccessDialog({ user, onClose }: { user: User | null; onClose: () =>
   )
 }
 
+/** After a password is set: the details to send, exactly as stored. */
+function Handover({ name, email, password, onClose }: { name: string; email: string; password: string; onClose: () => void }) {
+  const details = signInDetails(email, password)
+  return (
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center gap-2 text-live">
+        <Check size={16} />
+        <span className="font-medium text-ink">Password set for {name}</span>
+      </div>
+      <pre className="mono rounded-md border border-line bg-raised px-3 py-2 break-all whitespace-pre-wrap select-all">{details}</pre>
+      <p className="text-[12.5px] text-ink-muted">Send it through a channel you trust. It is not shown again.</p>
+      <div className="flex justify-end gap-2">
+        <CopyButton text={details} label="Copy details" size="md" />
+        <Button variant="primary" onClick={onClose}>
+          Done
+        </Button>
+      </div>
+    </div>
+  )
+}
+
 function CreateUserDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
   const [password, setPassword] = useState('')
   const [role, setRole] = useState<Role>('operator')
+  const [done, setDone] = useState<{ name: string; email: string; password: string } | null>(null)
+  const reset = () => {
+    setEmail('')
+    setName('')
+    setPassword('')
+    setRole('operator')
+    setDone(null)
+  }
+  const close = () => {
+    reset()
+    onClose()
+  }
   const create = useMutation({
-    mutationFn: () => api.post<User>('/api/users', { email: email.trim(), name: name.trim(), password, role }),
-    onSuccess: () => {
-      toast.success('User created', `${name} can sign in now.`)
+    mutationFn: () => api.post<User>('/api/users', { email: email.trim(), name: name.trim(), password: password.trim(), role }),
+    onSuccess: (u) => {
       onCreated()
-      onClose()
-      setEmail('')
-      setName('')
-      setPassword('')
-      setRole('operator')
+      setDone({ name: u.name, email: u.email, password: password.trim() })
     },
     onError: (e) => toast.error('Could not create the user', errorMessage(e)),
   })
@@ -262,72 +320,85 @@ function CreateUserDialog({ open, onClose, onCreated }: { open: boolean; onClose
     create.mutate()
   }
   return (
-    <Dialog open={open} onClose={onClose} title="Add user">
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <Field label="Name">
-          <Input required autoFocus value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
-        <Field label="Email">
-          <Input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
-        </Field>
-        <Field label="Password" hint="At least 10 characters.">
-          <Input type="password" required minLength={10} autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
-        </Field>
-        <Field label="Role" hint={role === 'operator' ? 'Operators see nothing until you grant them a device group.' : undefined}>
-          <Select
-            value={role}
-            onChange={setRole}
-            options={[
-              { value: 'operator', label: 'Operator', description: 'Connects to granted device groups' },
-              { value: 'admin', label: 'Admin', description: 'Full access' },
-            ]}
-          />
-        </Field>
-        <div className="mt-2 flex justify-end gap-2">
-          <Button type="button" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" loading={create.isPending}>
-            Create user
-          </Button>
-        </div>
-      </form>
+    <Dialog open={open} onClose={close} title="Add user">
+      {done ? (
+        <Handover {...done} onClose={close} />
+      ) : (
+        // autoComplete off: a name / email / password form looks like a sign-in form, and the
+        // browser would fill in the admin's own saved credentials.
+        <form onSubmit={submit} autoComplete="off" className="flex flex-col gap-3">
+          <Field label="Name">
+            <Input required autoFocus autoComplete="off" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="Email">
+            <Input type="email" required autoComplete="off" data-1p-ignore data-lpignore="true" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </Field>
+          <PasswordSetField value={password} onChange={setPassword} />
+          <Field label="Role" hint={role === 'operator' ? 'Sees nothing until granted a device group.' : undefined}>
+            <Select
+              value={role}
+              onChange={setRole}
+              options={[
+                { value: 'operator', label: 'Operator', description: 'Connects to granted device groups' },
+                { value: 'admin', label: 'Admin', description: 'Full access' },
+              ]}
+            />
+          </Field>
+          <div className="mt-2 flex justify-end gap-2">
+            <Button type="button" onClick={close}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={create.isPending}>
+              Create user
+            </Button>
+          </div>
+        </form>
+      )}
     </Dialog>
   )
 }
 
-function ResetPasswordDialog({ user, onClose, onSubmit }: { user: User | null; onClose: () => void; onSubmit: (pw: string) => Promise<unknown> }) {
+function ResetPasswordDialog({ user, onClose, onDone }: { user: User | null; onClose: () => void; onDone: () => void }) {
   const [pw, setPw] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState<{ name: string; email: string; password: string } | null>(null)
+  const close = () => {
+    setPw('')
+    setDone(null)
+    onClose()
+  }
+  const set = useMutation({
+    mutationFn: (password: string) => api.patch<User>(`/api/users/${user!.id}`, { password }),
+    onSuccess: (u, password) => {
+      onDone()
+      setDone({ name: u.name, email: u.email, password })
+    },
+    onError: (e) => toast.error('Could not set the password', errorMessage(e)),
+  })
   return (
-    <Dialog open={!!user} onClose={onClose} title={`Reset password for ${user?.name ?? ''}`} width="max-w-md">
-      <form
-        onSubmit={async (e) => {
-          e.preventDefault()
-          setBusy(true)
-          try {
-            await onSubmit(pw)
-            toast.success('Password updated')
-            setPw('')
-            onClose()
-          } finally {
-            setBusy(false)
-          }
-        }}
-        className="flex flex-col gap-3"
-      >
-        <Field label="New password" hint="At least 10 characters.">
-          <Input type="password" required minLength={10} autoFocus autoComplete="new-password" value={pw} onChange={(e) => setPw(e.target.value)} />
-        </Field>
-        <div className="mt-2 flex justify-end gap-2">
-          <Button type="button" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button type="submit" variant="primary" loading={busy}>
-            Set password
-          </Button>
-        </div>
-      </form>
+    <Dialog open={!!user} onClose={close} title={`Set password for ${user?.name ?? ''}`} width="max-w-md">
+      {done ? (
+        <Handover {...done} onClose={close} />
+      ) : (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            set.mutate(pw.trim())
+          }}
+          autoComplete="off"
+          className="flex flex-col gap-3"
+        >
+          <PasswordSetField value={pw} onChange={setPw} autoFocus />
+          <p className="text-[12.5px] text-ink-muted">They are signed out everywhere. Their second factor stays.</p>
+          <div className="mt-1 flex justify-end gap-2">
+            <Button type="button" onClick={close}>
+              Cancel
+            </Button>
+            <Button type="submit" variant="primary" loading={set.isPending}>
+              Set password
+            </Button>
+          </div>
+        </form>
+      )}
     </Dialog>
   )
 }
@@ -335,15 +406,15 @@ function ResetPasswordDialog({ user, onClose, onSubmit }: { user: User | null; o
 function TwoFactorCell({ user: u }: { user: User }) {
   if (u.two_factor_enabled === undefined && u.passkeys === undefined) return <span className="text-ink-faint">—</span>
   const keys = u.passkeys ?? 0
+  // Older servers report only "some factor": call it that rather than guess which.
+  const app = u.totp_enabled ?? (!!u.two_factor_enabled && !u.email_2fa_enabled && keys === 0)
+  const parts = [app && 'App', u.email_2fa_enabled && 'Email', keys > 0 && `${keys} passkey${keys === 1 ? '' : 's'}`].filter(Boolean) as string[]
   const on = !!u.two_factor_enabled || keys > 0
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex items-center gap-1.5 whitespace-nowrap">
       {on ? <ShieldCheck size={14} className="text-live" /> : <ShieldOff size={14} className="text-ink-faint" />}
       <span className="text-[12.5px]">
-        {u.two_factor_enabled ? 'App' : null}
-        {u.two_factor_enabled && keys > 0 ? ' + ' : null}
-        {keys > 0 ? `${keys} passkey${keys === 1 ? '' : 's'}` : null}
-        {!on && (u.two_factor_required ? <Badge tone="warn">Pending</Badge> : <span className="text-ink-faint">off</span>)}
+        {on ? parts.join(' + ') || 'On' : u.two_factor_required ? <Badge tone="warn">Pending</Badge> : <span className="text-ink-faint">off</span>}
       </span>
     </span>
   )

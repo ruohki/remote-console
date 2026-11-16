@@ -29,6 +29,7 @@ pub fn router() -> Router<AppState> {
         // password reset (local accounts, needs SMTP)
         .route("/auth/password/forgot", post(auth::password_forgot))
         .route("/auth/password/reset", post(auth::password_reset))
+        .route("/auth/password/change", post(auth::password_change))
         // second factor
         .route("/auth/2fa/verify", post(auth::two_factor_verify))
         .route("/auth/2fa/email/start", post(auth::two_factor_email_start))

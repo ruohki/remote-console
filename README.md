@@ -66,6 +66,13 @@ codes) or a passkey / FIDO2 security key (WebAuthn; the RP id is the host of
 `CONSOLE_PUBLIC_URL`, so decide on the public hostname before people enrol keys). Passkeys
 with user verification can also sign in on their own.
 
+Everyone can change their own password and move their authenticator to a new phone under
+*Account security* (replacing it needs a code from the current app or a recovery code). Admins
+set passwords for others from *Users → ⋯ → Set password*: the password is shown, can be
+generated, and the dialog ends with the sign-in details to send. Passwords cannot start or end
+with a space, and sign-in ignores one that was pasted along. *Reset two-factor* removes a
+user's app, email codes, recovery codes and passkeys; they enrol again at the next sign-in.
+
 Single sign-on is configured by an administrator under *Settings → Authentication*
 (`/api/auth/{oidc,saml,ldap}/config`); secrets are stored encrypted with `CONSOLE_MASTER_KEY`:
 

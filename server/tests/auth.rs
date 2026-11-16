@@ -1788,3 +1788,152 @@ async fn ldap_config_and_unreachable_directory() {
         .unwrap();
     assert_eq!(r.status(), 422);
 }
+
+// ── self-service password change, pasted spaces, admin resets, authenticator swap ─────
+
+#[tokio::test]
+async fn password_change_needs_the_current_one_and_signs_out_other_sessions() {
+    let app = spawn().await;
+    let c = client();
+    setup_admin(&app, &c).await;
+    let other = client();
+    assert_eq!(
+        login(&app, &other, ADMIN_EMAIL, ADMIN_PASS).await.status(),
+        200
+    );
+
+    let change = |current: &'static str, new: &'static str| {
+        c.post(format!("{}/api/auth/password/change", app.base))
+            .json(&json!({ "current_password": current, "new_password": new }))
+            .send()
+    };
+    let wrong = change("not-the-password", "a-brand-new-secret")
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 403);
+    assert_eq!(body_json(wrong).await["error"]["code"], "wrong_password");
+    let spaced = change(ADMIN_PASS, " leading-space-secret").await.unwrap();
+    assert_eq!(spaced.status(), 422, "surrounding spaces are refused");
+    let ok = change(ADMIN_PASS, "a-brand-new-secret").await.unwrap();
+    assert_eq!(ok.status(), 204);
+
+    // This session survives, the other one is signed out, only the new password works.
+    assert_eq!(me(&app, &c).await.status(), 200);
+    assert_eq!(me(&app, &other).await.status(), 401);
+    assert_eq!(
+        login(&app, &client(), ADMIN_EMAIL, ADMIN_PASS)
+            .await
+            .status(),
+        401
+    );
+    assert_eq!(
+        login(&app, &client(), ADMIN_EMAIL, "a-brand-new-secret")
+            .await
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn admin_set_password_signs_in_even_when_pasted_with_spaces() {
+    let app = spawn().await;
+    let admin = client();
+    setup_admin(&app, &admin).await;
+    let r = admin
+        .post(format!("{}/api/users", app.base))
+        .json(&json!({ "email": "ops@example.com", "name": "Ops", "password": "first-handover-1", "role": "operator" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 201);
+    let id = body_json(r).await["id"].as_str().unwrap().to_string();
+    let set = |pw: &'static str| {
+        admin
+            .patch(format!("{}/api/users/{id}", app.base))
+            .json(&json!({ "password": pw }))
+            .send()
+    };
+    assert_eq!(set("trailing-space-1 ").await.unwrap().status(), 422);
+    assert_eq!(set("second-handover-2").await.unwrap().status(), 200);
+
+    assert_eq!(
+        login(&app, &client(), "ops@example.com", "first-handover-1")
+            .await
+            .status(),
+        401
+    );
+    // Copied from a chat: a trailing space and a line break do not lock the person out.
+    assert_eq!(
+        login(&app, &client(), " Ops@Example.com ", "second-handover-2 \n")
+            .await
+            .status(),
+        200
+    );
+    assert_eq!(
+        login(&app, &client(), "ops@example.com", "second-handover-")
+            .await
+            .status(),
+        401
+    );
+}
+
+#[tokio::test]
+async fn replacing_an_authenticator_needs_a_current_code() {
+    let app = spawn().await;
+    let c = client();
+    setup_admin(&app, &c).await;
+    let (old_secret, codes) = enrol_totp(&app, &c).await;
+
+    let setup = body_json(
+        c.post(format!("{}/api/auth/2fa/setup", app.base))
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let new_secret = setup["secret"].as_str().unwrap().to_string();
+    let new_code = totp::code_at(&new_secret, now_unix()).unwrap();
+    let enable = |body: Value| {
+        c.post(format!("{}/api/auth/2fa/enable", app.base))
+            .json(&body)
+            .send()
+    };
+    let missing = enable(json!({ "code": new_code })).await.unwrap();
+    assert_eq!(missing.status(), 401);
+    assert_eq!(
+        body_json(missing).await["error"]["code"],
+        "current_code_required"
+    );
+    let wrong = enable(json!({ "code": new_code, "current_code": "000001" }))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), 401);
+
+    // A recovery code stands in for a lost phone; it is used up.
+    let ok = enable(json!({ "code": new_code, "current_code": codes[0] }))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+
+    // Only the new authenticator signs in now.
+    let fresh = client();
+    let pending = body_json(login(&app, &fresh, ADMIN_EMAIL, ADMIN_PASS).await).await;
+    let challenge_id = pending["challenge_id"].as_str().unwrap().to_string();
+    let verify = |code: String| {
+        fresh
+            .post(format!("{}/api/auth/2fa/verify", app.base))
+            .json(&json!({ "challenge_id": challenge_id, "code": code }))
+            .send()
+    };
+    let old = totp::code_at(&old_secret, now_unix()).unwrap();
+    if old != totp::code_at(&new_secret, now_unix()).unwrap() {
+        assert_eq!(verify(old).await.unwrap().status(), 401);
+    }
+    assert_eq!(
+        verify(totp::code_at(&new_secret, now_unix()).unwrap())
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}

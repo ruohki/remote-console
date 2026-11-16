@@ -263,6 +263,16 @@ pub async fn delete_login_sessions_for_user(db: &Db, user_id: &str) -> Result<()
     Ok(())
 }
 
+/// Sign the user out everywhere except `keep` (the session that changed the password).
+pub async fn delete_other_login_sessions(db: &Db, user_id: &str, keep: Option<&str>) -> Result<()> {
+    sqlx::query("DELETE FROM user_sessions WHERE user_id = ? AND id != ?")
+        .bind(user_id)
+        .bind(keep.unwrap_or(""))
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
 pub async fn purge_expired_login_sessions(db: &Db) -> Result<u64> {
     let res = sqlx::query("DELETE FROM user_sessions WHERE expires_at <= ?")
         .bind(now())

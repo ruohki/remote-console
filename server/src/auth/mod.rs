@@ -128,6 +128,13 @@ pub fn validate_password(password: &str) -> Result<(), ApiError> {
     if password.chars().count() > 256 {
         return Err(ApiError::validation("password is too long"));
     }
+    // Pasted passwords pick up stray spaces and line breaks; sign-in forgives them (see
+    // `api::auth::login`), which is only unambiguous if no password begins or ends with one.
+    if password.trim() != password {
+        return Err(ApiError::validation(
+            "password must not start or end with a space",
+        ));
+    }
     Ok(())
 }
 

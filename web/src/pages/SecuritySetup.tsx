@@ -137,10 +137,15 @@ function ChoiceButton({ icon, title, detail, onClick, disabled, testId }: { icon
 }
 
 /** QR + secret + code confirmation. Reused by the account security page. */
-export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; onBack?: () => void; onCodes: (codes: string[]) => void }) {
+/**
+ * Authenticator app setup. `replacing`: an app is already on — the new one only takes over after
+ * a code from the current app (or a recovery code), so a stolen session cannot move it.
+ */
+export function TotpEnroll({ onDone, onBack, onCodes, replacing }: { onDone: () => void; onBack?: () => void; onCodes: (codes: string[]) => void; replacing?: boolean }) {
   const [setup, setSetup] = useState<TotpSetup | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [code, setCode] = useState('')
+  const [currentCode, setCurrentCode] = useState('')
   const [showSecret, setShowSecret] = useState(false)
 
   useEffect(() => {
@@ -155,7 +160,11 @@ export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; on
   }, [])
 
   const enable = useMutation({
-    mutationFn: () => api.post<{ recovery_codes: string[] }>('/api/auth/2fa/enable', { code: code.replace(/\s+/g, '') }),
+    mutationFn: () =>
+      api.post<{ recovery_codes: string[] }>('/api/auth/2fa/enable', {
+        code: code.replace(/\s+/g, ''),
+        ...(replacing ? { current_code: currentCode.trim().replace(/^(\d{3})\s+(\d{3})$/, '$1$2') } : {}),
+      }),
     onSuccess: (r) => {
       onCodes(r.recovery_codes)
       onDone()
@@ -175,7 +184,7 @@ export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; on
   return (
     <form onSubmit={submit} className="flex flex-col gap-3">
       <ol className="list-decimal space-y-1 pl-4 text-[12.5px] text-ink-muted">
-        <li>Scan the code with your authenticator app.</li>
+        <li>Scan the code with your {replacing ? 'new ' : ''}authenticator app.</li>
         <li>Enter the 6-digit code to confirm.</li>
       </ol>
       <div className="flex items-center justify-center rounded-lg border border-line bg-white p-3" data-testid="totp-qr">
@@ -198,7 +207,21 @@ export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; on
           )}
         </div>
       )}
-      <Field label="Code from the app">
+      {replacing && (
+        <Field label="Code from your current app" hint="Lost it? Use a recovery code.">
+          <Input
+            required
+            autoComplete="off"
+            placeholder="123 456"
+            value={currentCode}
+            onChange={(e) => setCurrentCode(e.target.value)}
+            className="mono tracking-widest"
+            data-testid="totp-current-code"
+            disabled={!setup}
+          />
+        </Field>
+      )}
+      <Field label={replacing ? 'Code from the new app' : 'Code from the app'}>
         <Input
           required
           inputMode="numeric"
@@ -224,7 +247,7 @@ export function TotpEnroll({ onDone, onBack, onCodes }: { onDone: () => void; on
           </Button>
         )}
         <Button type="submit" variant="primary" loading={enable.isPending} disabled={!setup} className="ml-auto">
-          Turn on
+          {replacing ? 'Replace' : 'Turn on'}
         </Button>
       </div>
     </form>

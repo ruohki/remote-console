@@ -15,7 +15,10 @@ export interface User {
   created_at: string
   last_login_at?: string
   // ── authentication pass (optional: older servers omit them) ──
+  /** any second factor (authenticator app, email codes or a passkey) */
   two_factor_enabled?: boolean
+  /** the authenticator app specifically; absent on older servers */
+  totp_enabled?: boolean
   /** true while the 2FA policy applies and enrollment is still pending */
   two_factor_required?: boolean
   passkeys?: number

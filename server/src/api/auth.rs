@@ -353,15 +353,28 @@ pub async fn login(
     // Always run the hash to keep timing uniform for unknown emails; bound concurrency so
     // a flood of logins cannot exhaust the CPU with argon2.
     let _slot = state.limits.verify_slots.acquire().await;
+    // A password pasted from a chat or a document often carries a space or line break at an
+    // end. New passwords cannot start or end with whitespace, so a second try without it is
+    // unambiguous (older passwords that do are still matched exactly first).
+    let trimmed = body.password.trim();
+    let retry_trimmed = trimmed.len() != body.password.len() && !trimmed.is_empty();
     let (ok, user) = match user {
         Some(u) => {
-            let ok =
+            let mut ok =
                 auth::verify_password_async(body.password.clone(), u.password_hash.clone()).await;
+            if !ok && retry_trimmed {
+                ok =
+                    auth::verify_password_async(trimmed.to_string(), u.password_hash.clone()).await;
+            }
             (ok && !u.disabled, Some(u))
         }
         None => {
             let _ =
                 auth::verify_password_async(body.password.clone(), dummy_hash().to_string()).await;
+            if retry_trimmed {
+                let _ = auth::verify_password_async(trimmed.to_string(), dummy_hash().to_string())
+                    .await;
+            }
             (false, None)
         }
     };
@@ -593,6 +606,81 @@ pub async fn password_reset(
         }
     }
     Ok(Json(json!({})))
+}
+
+#[derive(Deserialize)]
+pub struct ChangePasswordBody {
+    pub current_password: String,
+    pub new_password: String,
+}
+
+/// Change the signed-in user's own password. Needs the current one (rate-limited like a
+/// sign-in); every other session of the account is signed out.
+pub async fn password_change(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    AuthUser(user): AuthUser,
+    Json(body): Json<ChangePasswordBody>,
+) -> ApiResult<StatusCode> {
+    let ip = state.client_ip(&headers, Some(&ConnectInfo(peer)));
+    let account = user.email.to_lowercase();
+    check_login_limits(&state, &ip, &account)?;
+    if !user.auth_methods().contains(&AuthMethod::Password) {
+        return Err(ApiError::conflict(
+            "no_password",
+            "this account signs in through your identity provider",
+        ));
+    }
+    let ok = {
+        let _slot = state.limits.verify_slots.acquire().await;
+        auth::verify_password_async(body.current_password.clone(), user.password_hash.clone()).await
+    };
+    if !ok {
+        record_login_failure(&state, &ip, &account);
+        return Err(ApiError::new(
+            StatusCode::FORBIDDEN,
+            "wrong_password",
+            "the current password is not correct",
+        ));
+    }
+    auth::validate_password(&body.new_password)?;
+    let hash = auth::hash_password(&body.new_password)?;
+    db::users::update(
+        &state.db,
+        &user.id,
+        db::users::UserUpdate {
+            name: None,
+            role: None,
+            password_hash: Some(&hash),
+            disabled: None,
+        },
+    )
+    .await?;
+    let current = jar.get(auth::SESSION_COOKIE).map(|c| c.value().to_string());
+    db::users::delete_other_login_sessions(&state.db, &user.id, current.as_deref()).await?;
+    clear_login_failures(&state, &ip, &account);
+    db::audit::record(
+        &state.db,
+        Some(Actor {
+            id: &user.id,
+            name: &user.name,
+        }),
+        "password.change",
+        Some(&user.id),
+        json!({ "ip": ip }),
+    )
+    .await?;
+    if let Ok(branding) = settings::branding(&state.db).await {
+        let when = Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
+        let message = templates::password_changed(&branding, &state.config.public_url, &when)
+            .to(Recipient::new(&user.email, Some(user.name.clone())));
+        if let Err(err) = state.mailer.send(message).await {
+            tracing::warn!(email = %user.email, "password changed notice failed: {err:#}");
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// A valid argon2id hash of a random string, used to equalize timing for unknown users.
@@ -915,6 +1003,10 @@ pub async fn two_factor_setup(
 #[derive(Deserialize)]
 pub struct CodeBody {
     pub code: String,
+    /// Replacing an authenticator that is already on: a code from the current app or a
+    /// recovery code, so a stolen session alone cannot move the second factor elsewhere.
+    #[serde(default)]
+    pub current_code: Option<String>,
 }
 
 /// Confirm the code from the app; returns the recovery codes (shown once).
@@ -939,6 +1031,26 @@ pub async fn two_factor_enable(
             "incorrect code — check the time on your device",
         ));
     }
+    let replacing = user.totp_enabled;
+    if replacing {
+        let current = body.current_code.as_deref().unwrap_or("").trim();
+        // Six digits are an app code; anything else can only be a recovery code (checking
+        // those hashes is slow, so a mistyped app code does not pay for it).
+        let digits: String = current.chars().filter(|c| !c.is_whitespace()).collect();
+        let app_code = digits.len() == 6 && digits.chars().all(|c| c.is_ascii_digit());
+        let confirmed = if app_code {
+            totp_secret(&state, &user).is_ok_and(|s| totp::verify(&s, &digits))
+        } else {
+            !current.is_empty() && consume_recovery_code(&state, &user, current).await?
+        };
+        if !confirmed {
+            return Err(ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "current_code_required",
+                "enter a code from your current authenticator app, or a recovery code",
+            ));
+        }
+    }
     db::users::set_totp(&state.db, &user.id, Some(&setup.secret_enc), true).await?;
     db::auth::delete_state(&state.db, &id).await?;
     let codes = issue_recovery_codes(&state, &user.id).await?;
@@ -948,7 +1060,11 @@ pub async fn two_factor_enable(
             id: &user.id,
             name: &user.name,
         }),
-        "2fa.enable",
+        if replacing {
+            "2fa.replace"
+        } else {
+            "2fa.enable"
+        },
         Some(&user.id),
         json!({ "method": "totp" }),
     )
