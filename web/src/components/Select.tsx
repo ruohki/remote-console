@@ -41,6 +41,16 @@ const TRIGGER_SIZE: Record<Size, string> = {
   md: 'h-8 text-[13px]',
 }
 
+/**
+ * Where the option list is rendered. A modal `<dialog>` (opened with `showModal()`) lives in the
+ * browser's top layer, above every z-index on the page: a list portaled into `document.body`
+ * would open *behind* it and be unreachable. Inside an open dialog the list goes into the
+ * dialog itself (its `position: fixed` still places it against the viewport).
+ */
+function portalTarget(trigger: HTMLElement | null): Element {
+  return trigger?.closest('dialog[open]') ?? document.body
+}
+
 export function Select<T extends string | number>({
   value,
   onChange,
@@ -90,7 +100,7 @@ export function Select<T extends string | number>({
   }, [options, value])
 
   // Position the portal menu under (or above) the trigger.
-  const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight: number; above: boolean } | null>(null)
+  const [pos, setPos] = useState<{ left: number; top: number; width: number; maxHeight: number; above: boolean; target: Element } | null>(null)
   const place = useCallback(() => {
     const el = triggerRef.current
     if (!el) return
@@ -99,7 +109,7 @@ export function Select<T extends string | number>({
     const above = r.top
     const openAbove = below < 240 && above > below
     const maxHeight = Math.max(140, Math.min(320, (openAbove ? above : below) - 12))
-    setPos({ left: r.left, top: openAbove ? r.top : r.bottom, width: r.width, maxHeight, above: openAbove })
+    setPos({ left: r.left, top: openAbove ? r.top : r.bottom, width: r.width, maxHeight, above: openAbove, target: portalTarget(el) })
   }, [])
 
   useLayoutEffect(() => {
@@ -283,7 +293,7 @@ export function Select<T extends string | number>({
               })}
             </div>
           </div>,
-          document.body,
+          pos.target,
         )}
     </>
   )

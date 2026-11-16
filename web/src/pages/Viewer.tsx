@@ -24,6 +24,8 @@ import {
   MousePointer2,
   PenLine,
   RefreshCw,
+  Type,
+  Gamepad2,
   Square,
   Volume2,
   VolumeX,
@@ -33,7 +35,7 @@ import { useViewerSession, type AgentStats, type ChatLine, type ViewerState } fr
 import { useSessionEvents } from '@/hooks/useSessionEvents'
 import { useLive } from '@/store/live'
 import { toRemotePixels } from '@/lib/geometry'
-import { keyboardToInput, mouseButton, RESERVED_SHORTCUTS, shortcutKey, wheelToInput } from '@/lib/input'
+import { KeyboardTranslator, mouseButton, RESERVED_SHORTCUTS, shortcutKey, wheelToInput, type KeyboardMode } from '@/lib/input'
 import { tileGrid } from '@/lib/displays'
 import { api } from '@/lib/api'
 import { Button, Select, cx } from '@/components/ui'
@@ -60,6 +62,15 @@ import { LatencyProbe, rvfcSupported } from '@/lib/latencyProbe'
 
 const FPS_PRESETS = [15, 30, 60]
 const REMOTE_CURSOR_KEY = 'viewer.remoteCursor'
+const KEYBOARD_MODE_KEY = 'viewer.keyboardMode'
+
+function storedKeyboardMode(): KeyboardMode {
+  try {
+    return localStorage.getItem(KEYBOARD_MODE_KEY) === 'physical' ? 'physical' : 'text'
+  } catch {
+    return 'text'
+  }
+}
 const perfProbeRequested = () => new URLSearchParams(window.location.search).get('perf') === '1'
 const BITRATE_PRESETS = [2000, 4000, 8000, 15000, 30000]
 
@@ -112,6 +123,8 @@ export function Viewer() {
   const [inputEnabled, setInputEnabled] = useState(true)
   const [showStats, setShowStats] = useState(false)
   const [showRemoteCursor, setShowRemoteCursor] = useState(() => localStorage.getItem(REMOTE_CURSOR_KEY) !== '0')
+  const [keyboardMode, setKeyboardMode] = useState<KeyboardMode>(storedKeyboardMode)
+  const keyboard = useRef<KeyboardTranslator>(new KeyboardTranslator(keyboardMode))
   const probeRef = useRef<LatencyProbe | null>(null)
   const perfEnabled = useMemo(() => perfProbeRequested() || import.meta.env.DEV || new URLSearchParams(window.location.search).get('debug') === '1', [])
   const [fullscreen, setFullscreen] = useState(false)
@@ -348,6 +361,19 @@ export function Viewer() {
   /* ───── keyboard (global while the surface is focused) ───── */
   const lastHint = useRef(0)
   useEffect(() => {
+    keyboard.current.mode = keyboardMode
+    keyboard.current.reset()
+  }, [keyboardMode])
+  // Mouse buttons and the wheel first send the modifiers the keyboard is holding back, so
+  // Ctrl+click and Ctrl+wheel reach the device.
+  const sendPointerInput = useCallback(
+    (ev: InputEvent) => {
+      if (ev.t === 'md' || ev.t === 'mw') keyboard.current.flushPending().forEach(sendInput)
+      return sendInput(ev)
+    },
+    [sendInput],
+  )
+  useEffect(() => {
     if (!controlling) return
     const target = surfaceRef.current
     const onKey = (e: KeyboardEvent) => {
@@ -356,17 +382,22 @@ export function Viewer() {
         target?.blur()
         return
       }
-      const ev = keyboardToInput(e, e.type === 'keydown')
-      if (!ev) return
+      const events = e.type === 'keydown' ? keyboard.current.keyDown(e) : keyboard.current.keyUp(e)
+      // Dead keys and IME composition belong to the browser; the composed character arrives
+      // with the next key.
+      if (e.isComposing || e.key === 'Process' || e.key === 'Dead') return
       e.preventDefault()
       e.stopPropagation()
       if (e.type === 'keydown' && RESERVED_SHORTCUTS.has(shortcutKey(e)) && Date.now() - lastHint.current > 4000) {
         lastHint.current = Date.now()
         toast.info('That shortcut may be caught by your browser', 'Use the toolbar for Ctrl+Alt+Del and similar keys.')
       }
-      sendInput(ev)
+      events.forEach(sendInput)
     }
-    const release = () => sendInput({ t: 'rel' })
+    const release = () => {
+      keyboard.current.reset()
+      sendInput({ t: 'rel' })
+    }
     window.addEventListener('keydown', onKey, true)
     window.addEventListener('keyup', onKey, true)
     window.addEventListener('blur', release)
@@ -613,11 +644,30 @@ export function Viewer() {
             onClick={() => {
               if (control.toggleLocked) return
               setInputEnabled((v) => !v)
-              if (inputEnabled) sendInput({ t: 'rel' })
+              if (inputEnabled) {
+                keyboard.current.reset()
+                sendInput({ t: 'rel' })
+              }
             }}
             title={control.toggleTitle}
           >
             {inputEnabled && !control.toggleLocked ? <Keyboard size={14} /> : <KeyboardOff size={14} />}
+          </HudButton>
+          <HudButton
+            active={keyboardMode === 'physical'}
+            onClick={() => {
+              const next: KeyboardMode = keyboardMode === 'text' ? 'physical' : 'text'
+              try {
+                localStorage.setItem(KEYBOARD_MODE_KEY, next)
+              } catch {
+                /* per-viewer convenience only */
+              }
+              sendInput({ t: 'rel' })
+              setKeyboardMode(next)
+            }}
+            title={keyboardMode === 'text' ? 'Typing: characters (click for physical keys)' : 'Typing: physical keys (click for characters)'}
+          >
+            {keyboardMode === 'text' ? <Type size={14} /> : <Gamepad2 size={14} />}
           </HudButton>
           <HudButton
             active={showRemoteCursor}
@@ -768,7 +818,7 @@ export function Viewer() {
                 }}
                 onFocusRequest={() => focusDisplay(index)}
                 onPointerDownFocus={() => surfaceRef.current?.focus()}
-                sendInput={sendInput}
+                sendInput={sendPointerInput}
                 setViewport={setViewport}
                 cursorStore={cursorStore}
                 showRemoteCursor={showRemoteCursor}
