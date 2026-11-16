@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ControlMessage } from '@/protocol'
+import type { AnnotationsUnavailable, ControlMessage } from '@/protocol'
 import {
   ANNOTATE_COLORS,
   type AnnotateColorId,
@@ -23,15 +23,15 @@ interface AnnotateStore {
   tool: AnnotateTool
   color: AnnotateColorId
   width: StrokeWidth
-  /** the agent refused annotations (policy or device setting) */
-  disabledByDevice: boolean
+  /** the agent refused annotations: not allowed (`policy`) or nobody signed in (`no_desktop`) */
+  disabledByDevice: AnnotationsUnavailable | null
   layer: AnnotationLayer
 
   setEnabled: (on: boolean) => void
   setTool: (tool: AnnotateTool) => void
   setColor: (color: AnnotateColorId) => void
   setWidth: (width: StrokeWidth) => void
-  setDisabledByDevice: (v: boolean) => void
+  setDisabledByDevice: (v: AnnotationsUnavailable | null) => void
 
   /** Apply a message we are sending (or replaying) to the local layer. */
   applyLocal: (msg: ControlMessage, now?: number) => void
@@ -48,7 +48,7 @@ export const useAnnotate = create<AnnotateStore>((set, get) => ({
   tool: 'pen',
   color: 'red',
   width: 'thin',
-  disabledByDevice: false,
+  disabledByDevice: null,
   layer: emptyLayer,
 
   setEnabled: (enabled) => set({ enabled }),
@@ -90,7 +90,7 @@ export const useAnnotate = create<AnnotateStore>((set, get) => ({
     return [{ t: 'annotate_clear' }, ...replayMessages(next, now)]
   },
   clear: () => set({ layer: layerClear() }),
-  reset: () => set({ layer: layerClear(), enabled: false, disabledByDevice: false }),
+  reset: () => set({ layer: layerClear(), enabled: false, disabledByDevice: null }),
 }))
 
 export function colorValue(id: AnnotateColorId): string {

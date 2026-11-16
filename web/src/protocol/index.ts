@@ -2,6 +2,7 @@
 export type { AgentCapabilities } from './AgentCapabilities';
 export type { AgentConfig } from './AgentConfig';
 export type { AgentToConsole } from './AgentToConsole';
+export type { AnnotationsUnavailable } from './AnnotationsUnavailable';
 export type { Arch } from './Arch';
 export type { BakedConfig } from './BakedConfig';
 export type { BakedPayload } from './BakedPayload';

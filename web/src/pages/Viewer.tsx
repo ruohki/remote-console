@@ -174,11 +174,15 @@ export function Viewer() {
   const privacyAvailable = connected && privacyDisabledReason === null
 
   /* ───── annotations: agent refusal, session lifecycle, keyboard ───── */
+  const annotationsRefused = useRef(false)
   useEffect(() => {
-    if (!state.annotationsDisabled) return
-    useAnnotate.getState().setDisabledByDevice(true)
-    toast.error('Annotations are not allowed on this device', 'Blocked by the console policy or a device-side setting.')
-  }, [state.annotationsDisabled])
+    const reason = state.annotationsUnavailable
+    useAnnotate.getState().setDisabledByDevice(reason)
+    if (reason === 'policy') toast.error('Annotations are off', 'Turned off for this device in the console or on the device.')
+    else if (reason === 'no_desktop') toast.info('Nobody signed in', 'Annotations work once a user desktop is showing.')
+    else if (annotationsRefused.current) toast.success('Annotations available')
+    annotationsRefused.current = reason !== null
+  }, [state.annotationsUnavailable])
   useEffect(() => {
     // New session (or session end): forget the drawings; a fresh session starts clean on the device too.
     useAnnotate.getState().reset()
@@ -629,9 +633,11 @@ export function Viewer() {
                 ? 'Annotate'
                 : !allowAnnotations
                   ? 'Annotations are disabled for this device'
-                  : annotateDisabledByDevice
-                    ? 'Annotations are not allowed on this device (policy or device setting)'
-                    : annotating
+                  : annotateDisabledByDevice === 'no_desktop'
+                    ? 'Annotate: available once a user is signed in'
+                    : annotateDisabledByDevice === 'policy'
+                      ? 'Annotations are off for this device'
+                      : annotating
                       ? 'Leave annotate mode (Esc)'
                       : 'Annotate: draw on the remote screen to guide the person at the device (A)'
             }

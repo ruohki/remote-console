@@ -2,7 +2,7 @@ import { reduceControlPaused } from '@/lib/controlPause'
 import { initialPrivacyScreen, reducePrivacyScreen, type PrivacyScreenState } from '@/lib/privacyScreen'
 import { toast } from '@/lib/toast'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
+import type { AnnotationsUnavailable, ClipboardKind, ConsoleToUi, ControlMessage, DisplayInfo, EndReason, IceServer, InputEvent, SessionState, VideoCodec } from '@/protocol'
 import { applyChatLine, mergeChatSeed, type ChatLine } from '@/features/chat/transcript'
 import { uiSocket } from '@/lib/ws'
 
@@ -76,8 +76,8 @@ export interface ViewerState {
   observers: string[]
   /** the person at the device paused remote control (only they can resume) */
   controlPaused: boolean
-  /** the agent refused annotations (policy or device-side setting) */
-  annotationsDisabled: boolean
+  /** the agent refused annotations, and why (cleared when it says they work again) */
+  annotationsUnavailable: AnnotationsUnavailable | null
   /** the device's own displays are hidden behind a notice (follows the agent's echo, not the button) */
   privacyScreen: PrivacyScreenState
   /** the agent opened the unreliable pointer-move channel */
@@ -108,7 +108,7 @@ const initial: ViewerState = {
   filesOpen: false,
   observers: [],
   controlPaused: false,
-  annotationsDisabled: false,
+  annotationsUnavailable: null,
   privacyScreen: initialPrivacyScreen,
   fastInput: 'closed',
 }
@@ -345,7 +345,11 @@ export function useViewerSession(deviceId: string, options: ViewerSessionOptions
           patch({ phase: 'ended', endReason: 'device_user_closed' })
           break
         case 'annotations_disabled':
-          patch({ annotationsDisabled: true })
+          // Agents before the reason field only refused on policy.
+          patch({ annotationsUnavailable: msg.reason ?? 'policy' })
+          break
+        case 'annotations_available':
+          patch({ annotationsUnavailable: null })
           break
         case 'control_paused': {
           const next = reduceControlPaused({ controlPaused: controlPausedRef.current }, msg.paused)
