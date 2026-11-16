@@ -1,14 +1,14 @@
 import { useState } from 'react'
 import { Link } from 'react-router'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, ShieldOff } from 'lucide-react'
+import { Download, Plus, ShieldOff } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
 import type { EnrollToken, ServerInfo } from '@/lib/types'
 import { useIsAdmin } from '@/store/auth'
 import { Badge, Button, ConfirmDialog, EmptyState, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
 import { GroupChips, ModeBadge, Tags } from '@/components/badges'
 import { AddDeviceDialog } from '@/components/AddDeviceDialog'
-import { dateTime, relativeTime } from '@/lib/format'
+import { compactDateTime, dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { useNow } from '@/hooks/useNow'
 import { BrandingTab } from './settings/BrandingTab'
@@ -22,9 +22,10 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
   const isAdmin = useIsAdmin()
   const current: SettingsTab = isAdmin || tab === 'info' ? tab : 'info'
   return (
-    <div className="w-full">
+    <div className="w-full max-w-6xl">
       <PageHeader title="Settings" />
-      <div className="mb-4 flex flex-wrap gap-1 border-b border-line">
+      {/* one scrollable row on phones instead of wrapping into two */}
+      <nav aria-label="Settings sections" className="mb-5 flex gap-1 overflow-x-auto border-b border-line [scrollbar-width:none]">
         <TabLink to="/settings" active={current === 'info'}>
           Console
         </TabLink>
@@ -47,7 +48,7 @@ export function Settings({ tab = 'info' }: { tab?: SettingsTab }) {
             </TabLink>
           </>
         )}
-      </div>
+      </nav>
       {current === 'tokens' ? (
         <TokensTab />
       ) : current === 'branding' ? (
@@ -69,7 +70,11 @@ function TabLink({ to, active, children }: { to: string; active: boolean; childr
   return (
     <Link
       to={to}
-      className={cx('-mb-px border-b-2 px-3 py-2 text-[13px]', active ? 'border-accent text-ink font-medium' : 'border-transparent text-ink-muted hover:text-ink')}
+      aria-current={active ? 'page' : undefined}
+      className={cx(
+        'shrink-0 border-b-2 px-3 py-2 text-[13px] whitespace-nowrap focus-visible:outline-offset-[-2px]',
+        active ? 'border-accent font-medium text-ink' : 'border-transparent text-ink-muted hover:text-ink',
+      )}
     >
       {children}
     </Link>
@@ -178,23 +183,25 @@ function TokensTab() {
           <thead>
             <tr>
               <Th>Label</Th>
-              <Th>Status</Th>
+              <Th className="hidden sm:table-cell">Status</Th>
               <Th>Uses</Th>
               <Th className="hidden md:table-cell">Defaults</Th>
               <Th className="hidden lg:table-cell">Expires</Th>
               <Th className="hidden lg:table-cell">Created</Th>
-              <Th className="w-56" />
+              <Th className="text-right">
+                <span className="sr-only">Actions</span>
+              </Th>
             </tr>
           </thead>
           <tbody>
             {tokens.data.map((t) => (
               <tr key={t.id} className="row-hover">
-                <Td>
-                  <div className="font-medium">{t.label}</div>
-                  <div className="mono text-ink-faint">{t.token_prefix}…</div>
+                <Td className="w-full max-w-0">
+                  <div className="truncate font-medium">{t.label}</div>
+                  <div className="mono truncate text-ink-faint">{t.token_prefix}…</div>
                 </Td>
-                <Td>{status(t)}</Td>
-                <Td className="mono">
+                <Td className="hidden sm:table-cell">{status(t)}</Td>
+                <Td className="whitespace-nowrap tabular-nums">
                   {t.uses}
                   {t.max_uses !== undefined && t.max_uses !== null ? ` / ${t.max_uses}` : ''}
                 </Td>
@@ -206,13 +213,13 @@ function TokensTab() {
                   </div>
                 </Td>
                 <Td className="hidden lg:table-cell text-ink-muted">{t.expires_at ? relativeTime(t.expires_at) : 'never'}</Td>
-                <Td className="hidden lg:table-cell text-ink-muted">{dateTime(t.created_at)}</Td>
+                <Td className="hidden lg:table-cell text-ink-muted whitespace-nowrap" title={dateTime(t.created_at)}>{compactDateTime(t.created_at)}</Td>
                 <Td className="text-right">
                   <div className="flex items-center justify-end gap-1">
                     {!t.revoked && <TokenDownload token={t} />}
                     {!t.revoked && (
-                      <Button size="sm" variant="ghost" icon={<ShieldOff size={13} />} onClick={() => setRevoking(t)}>
-                        Revoke
+                      <Button size="sm" variant="ghost" icon={<ShieldOff size={13} />} onClick={() => setRevoking(t)} aria-label="Revoke" title="Revoke">
+                        <span className="max-sm:hidden">Revoke</span>
                       </Button>
                     )}
                   </div>
@@ -250,8 +257,10 @@ function TokenDownload({ token }: { token: EnrollToken }) {
   const plain = readPlainToken(token.id)
   if (!plain) {
     return (
-      <span className="text-[11.5px] text-ink-faint" title="Token shown only at creation">
-        token not on hand
+      <span title="The token is shown only when created. Create a new one to download installers.">
+        <Button size="sm" variant="ghost" disabled icon={<Download size={13} />} aria-label="Agent downloads unavailable">
+          <span className="max-sm:hidden">Agent</span>
+        </Button>
       </span>
     )
   }

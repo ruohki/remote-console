@@ -147,14 +147,16 @@ export function EmptyState({ title, detail, action }: { title: string; detail?: 
   )
 }
 
+/** Page title row. The title line is as tall as a button, so the title sits at the same height
+ *  on every page whether or not it has actions; actions align with the title, not the subtitle. */
 export function PageHeader({ title, subtitle, actions }: { title: ReactNode; subtitle?: ReactNode; actions?: ReactNode }) {
   return (
-    <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 className="text-[18px] font-semibold tracking-tight">{title}</h1>
+    <div className="mb-5 flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
+      <div className="min-w-0">
+        <h1 className="flex min-h-8 items-center gap-2 text-[20px] leading-tight font-semibold tracking-tight">{title}</h1>
         {subtitle && <div className="mt-0.5 text-ink-muted">{subtitle}</div>}
       </div>
-      {actions && <div className="flex items-center gap-2">{actions}</div>}
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
     </div>
   )
 }
@@ -324,7 +326,7 @@ export function Table({ children, className, fixed }: { children: ReactNode; cla
 }
 
 export function Th({ children, className }: { children?: ReactNode; className?: string }) {
-  return <th className={cx('eyebrow border-b border-line px-3 py-2 font-medium', className)}>{children}</th>
+  return <th className={cx('eyebrow border-b border-line px-3 py-2 whitespace-nowrap', className)}>{children}</th>
 }
 
 export function Td({ children, className, colSpan, onClick, title }: { children?: ReactNode; className?: string; colSpan?: number; onClick?: React.MouseEventHandler<HTMLTableCellElement>; title?: string }) {

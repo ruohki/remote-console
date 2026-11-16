@@ -17,7 +17,7 @@ import { RECENT_SESSIONS, allSessionsHref, truncateRecent } from '@/lib/sessions
 import { hasOverrides, overrideLabels } from '@/lib/overrides'
 import { ShieldAlert } from 'lucide-react'
 import { NotFound } from './NotFound'
-import { dateTime, duration, END_REASON_LABEL, OS_LABEL, relativeTime, CODEC_LABEL } from '@/lib/format'
+import { CODEC_LABEL, compactDateTime, dateTime, duration, END_REASON_LABEL, OS_LABEL, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { SessionDetailDialog } from '@/components/SessionDetailDialog'
 import { AgentConfigFields } from '@/components/AgentConfigFields'
@@ -88,7 +88,7 @@ export function DeviceDetail() {
   const updateBlocked = !d.online ? 'Device is offline.' : tooOld ? 'This agent cannot update itself; reinstall it.' : undefined
 
   return (
-    <div className="w-full">
+    <div className="w-full max-w-7xl">
       <Link to="/devices" className="mb-3 inline-flex items-center gap-1 text-ink-muted hover:text-ink">
         <ArrowLeft size={14} /> Devices
       </Link>
@@ -100,8 +100,17 @@ export function DeviceDetail() {
           </span>
         }
         subtitle={
-          <span className="mono">
-            {d.hostname} · {OS_LABEL[d.os]} {d.arch === 'aarch64' ? 'arm64' : 'x64'} · agent v{d.agent_version} · {d.id}
+          <span className="flex flex-wrap items-center gap-x-4 gap-y-0.5">
+            {d.hostname && d.hostname.toLowerCase() !== d.name.toLowerCase() && <span className="mono">{d.hostname}</span>}
+            <span>
+              {OS_LABEL[d.os]} {d.arch === 'aarch64' ? 'arm64' : 'x64'}
+            </span>
+            <span>
+              Agent <span className="mono">v{d.agent_version}</span>
+            </span>
+            <span className="mono text-ink-faint" title="Device ID">
+              {d.id}
+            </span>
           </span>
         }
         actions={
@@ -160,7 +169,7 @@ export function DeviceDetail() {
                 <span className="mono">{d.codecs.length ? d.codecs.map((c) => CODEC_LABEL[c]).join(', ') : '—'}</span>
               </Item>
               <Item label="Enrolled">
-                {dateTime(d.created_at)}
+                <span title={dateTime(d.created_at)}>{compactDateTime(d.created_at)}</span>
                 {d.enrolled_with && <span className="text-ink-faint"> via {d.enrolled_with}</span>}
               </Item>
             </dl>
@@ -227,7 +236,7 @@ export function DeviceDetail() {
                         <SessionStateBadge state={s.state} />
                       </Td>
                       <Td>{s.operator_name}</Td>
-                      <Td className="text-ink-muted">{dateTime(s.started_at)}</Td>
+                      <Td className="text-ink-muted whitespace-nowrap" title={dateTime(s.started_at)}>{compactDateTime(s.started_at)}</Td>
                       <Td className="mono">{duration(s.connected_at ?? s.started_at, s.ended_at)}</Td>
                       <Td>
                         <CodecBadge codec={s.codec} />

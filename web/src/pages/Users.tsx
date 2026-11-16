@@ -7,7 +7,7 @@ import type { Role, User, UserGrant } from '@/lib/types'
 import { GROUP_PERMISSION_LABEL } from '@/lib/access'
 import { useAuth } from '@/store/auth'
 import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Select, Skeleton, Table, Td, Th } from '@/components/ui'
-import { dateTime, relativeTime } from '@/lib/format'
+import { compactDateTime, dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 
 export function UsersPage() {
@@ -68,29 +68,35 @@ export function UsersPage() {
           <thead>
             <tr>
               <Th>Name</Th>
-              <Th>Email</Th>
-              <Th>Role</Th>
+              <Th className="hidden sm:table-cell">Role</Th>
               <Th className="hidden md:table-cell">2FA</Th>
               <Th className="hidden md:table-cell">Access</Th>
               <Th className="hidden md:table-cell">Last sign-in</Th>
               <Th className="hidden lg:table-cell">Created</Th>
-              <Th className="w-40" />
+              <Th className="text-right">
+                <span className="sr-only">Actions</span>
+              </Th>
             </tr>
           </thead>
           <tbody>
             {users.data.map((u) => (
               <tr key={u.id} className={u.disabled ? 'opacity-60' : 'row-hover'}>
-                <Td>
-                  <span className="font-medium">{u.name}</span>
-                  {u.id === me?.id && <span className="ml-2 text-ink-faint">(you)</span>}
-                  {u.disabled && (
-                    <Badge tone="danger" className="ml-2">
-                      Disabled
-                    </Badge>
-                  )}
+                <Td className="w-full max-w-0">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="truncate font-medium">{u.name}</span>
+                    {u.id === me?.id && <span className="shrink-0 text-ink-faint">(you)</span>}
+                    {u.disabled && (
+                      <Badge tone="danger" className="shrink-0">
+                        Disabled
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="truncate text-[12px] text-ink-faint">
+                    {u.email}
+                    <span className="sm:hidden"> — {u.role === 'admin' ? 'Admin' : 'Operator'}</span>
+                  </div>
                 </Td>
-                <Td className="mono">{u.email}</Td>
-                <Td>
+                <Td className="hidden sm:table-cell">
                   <Select
                     value={u.role}
                     disabled={u.id === me?.id}
@@ -109,15 +115,15 @@ export function UsersPage() {
                 </Td>
                 <Td className="hidden md:table-cell">
                   {u.role === 'admin' ? (
-                    <span className="text-ink-faint">All devices</span>
+                    <span className="whitespace-nowrap text-ink-faint">All devices</span>
                   ) : (
                     <Button size="sm" variant="ghost" icon={<FolderKanban size={13} />} onClick={() => setAccessFor(u)}>
                       Groups
                     </Button>
                   )}
                 </Td>
-                <Td className="hidden md:table-cell text-ink-muted">{relativeTime(u.last_login_at)}</Td>
-                <Td className="hidden lg:table-cell text-ink-muted">{dateTime(u.created_at)}</Td>
+                <Td className="hidden whitespace-nowrap text-ink-muted md:table-cell">{relativeTime(u.last_login_at)}</Td>
+                <Td className="hidden lg:table-cell text-ink-muted whitespace-nowrap" title={dateTime(u.created_at)}>{compactDateTime(u.created_at)}</Td>
                 <Td>
                   <div className="flex justify-end gap-1">
                     <Button size="sm" variant="ghost" icon={<KeyRound size={13} />} title="Reset password" onClick={() => setResetFor(u)} />

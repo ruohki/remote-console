@@ -8,8 +8,10 @@
   defaulting to the OS preference).
 */
 @theme {
-  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  /* IBM Plex, bundled (font-src 'self'): the same face for every operator on Windows and macOS.
+     Plex Mono is for identifiers only — hostnames, IPs, IDs, versions — never for labels. */
+  --font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 
   --color-ground: var(--ground);
   --color-surface: var(--surface);
@@ -22,11 +24,12 @@
   --color-accent: var(--accent);
   --color-accent-ink: var(--accent-ink);
   --color-accent-soft: var(--accent-soft);
-  --color-live: #34d399;
+  /* status inks are text-safe (AA on surface and their soft fill); LEDs use the bright *-led */
+  --color-live: var(--live);
   --color-live-soft: var(--live-soft);
-  --color-warn: #f5b942;
+  --color-warn: var(--warn);
   --color-warn-soft: var(--warn-soft);
-  --color-danger: #f87171;
+  --color-danger: var(--danger);
   --color-danger-soft: var(--danger-soft);
 
   --radius-sm: 4px;
@@ -45,11 +48,16 @@
   --ink: #171a20;
   --ink-muted: #5b6270;
   --ink-faint: #8a919e;
-  --accent: #2f7fe0;
+  --accent: #1f6fd6;
   --accent-ink: #ffffff;
   --accent-soft: #e6f0fc;
+  --live: #0b7f55;
+  --live-led: #22b07d;
   --live-soft: #dcf5ea;
+  --warn: #8f5d00;
+  --warn-led: #f0a92e;
   --warn-soft: #fdf1d6;
+  --danger: #c22f2f;
   --danger-soft: #fde3e3;
   color-scheme: light;
 }
@@ -66,8 +74,13 @@
   --accent: #6cb6ff;
   --accent-ink: #0b1220;
   --accent-soft: #17283d;
+  --live: #34d399;
+  --live-led: #34d399;
   --live-soft: #123326;
+  --warn: #f5b942;
+  --warn-led: #f5b942;
   --warn-soft: #3a2c10;
+  --danger: #f87171;
   --danger-soft: #3b1a1a;
   color-scheme: dark;
 }
@@ -100,7 +113,7 @@
   }
   body {
     @apply bg-ground text-ink font-sans antialiased text-[13.5px] leading-snug;
-    font-feature-settings: 'tnum' 1, 'cv11' 1;
+    font-feature-settings: 'tnum' 1;
   }
   ::selection {
     background: color-mix(in oklab, var(--accent) 35%, transparent);
@@ -132,15 +145,16 @@
   .mono {
     @apply font-mono text-[12px] tracking-tight;
   }
+  /* field / column / group label: sentence case, never tracked capitals */
   .eyebrow {
-    @apply text-[11px] uppercase tracking-[0.12em] text-ink-faint font-medium;
+    @apply text-[12px] font-medium text-ink-muted;
   }
   .led {
     @apply inline-block size-2 rounded-full shrink-0;
     box-shadow: 0 0 0 2px color-mix(in oklab, currentColor 18%, transparent);
   }
   .led-live {
-    color: var(--color-live);
+    color: var(--live-led);
     background: currentColor;
     animation: led-breathe 2.4s ease-in-out infinite;
   }
@@ -150,7 +164,7 @@
     box-shadow: inset 0 0 0 1.5px currentColor;
   }
   .led-warn {
-    color: var(--color-warn);
+    color: var(--warn-led);
     background: currentColor;
     animation: led-blink 1s steps(2, start) infinite;
   }

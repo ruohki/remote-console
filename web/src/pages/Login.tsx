@@ -343,7 +343,7 @@ export function Login() {
           </Button>
         )}
         {(showSso || showPasskey) && (p.local_login || breakGlass) && (
-          <div className="my-1 flex items-center gap-3 text-[11px] uppercase tracking-wider text-ink-faint">
+          <div className="my-1 flex items-center gap-3 text-[12px] text-ink-faint">
             <span className="h-px flex-1 bg-line" /> or <span className="h-px flex-1 bg-line" />
           </div>
         )}

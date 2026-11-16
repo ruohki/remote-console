@@ -128,7 +128,7 @@ export function Layout() {
         <nav aria-label="Primary" className="min-h-0 flex-1 overflow-y-auto pb-3">
           {GROUPS.filter((g) => !g.admin || isAdmin).map((g) => (
             <div key={g.label}>
-              <div className="eyebrow px-4 pt-4 pb-1">{g.label}</div>
+              <div className="px-4 pt-4 pb-1 text-[12px] text-ink-faint">{g.label}</div>
               {g.items.map((n) => (
                 <NavLink
                   key={n.to}
@@ -226,7 +226,7 @@ function Cluster({ online, inSession, status, onNavigate }: { online: number; in
         <Readout to="/sessions" label="In session" value={inSession} tone={inSession > 0 ? 'text-live' : undefined} onClick={onNavigate} />
       </div>
       <div className="flex items-center border-t border-line px-3 py-1.5" title={link.title}>
-        <span className="text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">Link</span>
+        <span className="text-[12px] text-ink-faint">Updates</span>
         <span className="ml-auto flex items-center gap-2 text-[12px] font-medium text-ink-muted">
           <span className={cx('led', link.led)} aria-hidden />
           {link.text}
@@ -239,8 +239,8 @@ function Cluster({ online, inSession, status, onNavigate }: { online: number; in
 function Readout({ to, label, value, tone, onClick }: { to: string; label: string; value: number; tone?: string; onClick: () => void }) {
   return (
     <Link to={to} onClick={onClick} className="block px-3 py-2.5 transition-colors hover:bg-raised focus-visible:outline-offset-[-2px]">
-      <div className={cx('font-mono text-[20px] leading-none font-semibold tabular-nums', tone ?? 'text-ink')}>{value}</div>
-      <div className="mt-1 text-[10.5px] tracking-[0.1em] text-ink-faint uppercase">{label}</div>
+      <div className={cx('text-[20px] leading-none font-semibold tabular-nums', tone ?? 'text-ink')}>{value}</div>
+      <div className="mt-1 text-[12px] text-ink-faint">{label}</div>
     </Link>
   )
 }

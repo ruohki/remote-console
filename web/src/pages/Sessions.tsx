@@ -9,7 +9,7 @@ import { useAuth } from '@/store/auth'
 import { Button, ConfirmDialog, EmptyState, PageHeader, Select, Skeleton, Table, Td, Th } from '@/components/ui'
 import { Pager } from '@/components/Pager'
 import { CodecBadge, SessionStateBadge } from '@/components/badges'
-import { dateTime, duration, END_REASON_LABEL } from '@/lib/format'
+import { compactDateTime, dateTime, duration, END_REASON_LABEL } from '@/lib/format'
 import { firstPage, goNext, goPrev, isLastPage, pageNumber, timeCursor, type PageState } from '@/lib/paging'
 import { toast } from '@/lib/toast'
 import { useNow } from '@/hooks/useNow'
@@ -126,12 +126,14 @@ export function Sessions() {
               <tr>
                 <Th>State</Th>
                 <Th>Device</Th>
-                <Th>Operator</Th>
+                <Th className="hidden sm:table-cell">Operator</Th>
                 <Th className="hidden md:table-cell">Started</Th>
                 <Th>Duration</Th>
                 <Th className="hidden sm:table-cell">Codec</Th>
                 <Th className="hidden lg:table-cell">Outcome</Th>
-                <Th className="w-24" />
+                <Th className="text-right">
+                  <span className="sr-only">Actions</span>
+                </Th>
               </tr>
             </thead>
             <tbody>
@@ -143,22 +145,23 @@ export function Sessions() {
                     <Td>
                       <SessionStateBadge state={s.state} />
                     </Td>
-                    <Td>
-                      <Link to={`/devices/${s.device_id}`} className="font-medium hover:underline" onClick={(e) => e.stopPropagation()}>
+                    <Td className="w-full max-w-0">
+                      <Link to={`/devices/${s.device_id}`} className="block truncate font-medium hover:underline" onClick={(e) => e.stopPropagation()}>
                         {s.device_name}
                       </Link>
+                      <div className="truncate text-[12px] text-ink-faint sm:hidden">{s.operator_name}</div>
                     </Td>
-                    <Td>
+                    <Td className="hidden whitespace-nowrap sm:table-cell">
                       {s.operator_name}
                       {s.role === 'observer' && <span className="ml-1 text-[11px] text-ink-faint">(observer)</span>}
                     </Td>
-                    <Td className="hidden md:table-cell text-ink-muted">{dateTime(s.started_at)}</Td>
-                    <Td className="mono">{duration(s.connected_at ?? s.started_at, s.ended_at, now)}</Td>
+                    <Td className="hidden md:table-cell text-ink-muted whitespace-nowrap" title={dateTime(s.started_at)}>{compactDateTime(s.started_at)}</Td>
+                    <Td className="whitespace-nowrap tabular-nums">{duration(s.connected_at ?? s.started_at, s.ended_at, now)}</Td>
                     <Td className="hidden sm:table-cell">
                       <CodecBadge codec={s.codec} />
                     </Td>
                     <Td className="hidden lg:table-cell text-ink-muted">{s.end_reason ? END_REASON_LABEL[s.end_reason] : s.state === 'ended' ? '—' : ''}</Td>
-                    <Td className="text-right" onClick={(e) => e.stopPropagation()}>
+                    <Td className="text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                       {canEnd && (
                         <Button size="sm" variant="danger" icon={<Square size={12} />} onClick={() => setEnding(s)}>
                           End

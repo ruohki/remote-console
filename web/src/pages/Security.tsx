@@ -7,7 +7,7 @@ import { api, ApiError, errorMessage } from '@/lib/api'
 import type { AuthMethod, Passkey } from '@/lib/types'
 import { maskEmail } from '@/lib/authFlow'
 import { Badge, Button, ConfirmDialog, Dialog, EmptyState, Field, Input, PageHeader, Skeleton, Table, Td, Th } from '@/components/ui'
-import { dateTime, relativeTime } from '@/lib/format'
+import { compactDateTime, dateTime, relativeTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 import { webauthnSupported } from '@/lib/webauthn'
 import { useAuthProviders } from './Login'
@@ -88,7 +88,7 @@ export function SecurityPage() {
   const emailUnavailable = !!providers.data && !providers.data.email_2fa
 
   return (
-    <div className="w-full">
+    <div className="w-full max-w-6xl">
       <PageHeader title="Account security" />
       <div className="grid items-start gap-4 xl:grid-cols-2">
 
@@ -192,7 +192,7 @@ export function SecurityPage() {
                       </span>
                     )}
                   </Td>
-                  <Td className="hidden sm:table-cell text-ink-muted">{dateTime(p.created_at)}</Td>
+                  <Td className="hidden sm:table-cell text-ink-muted whitespace-nowrap" title={dateTime(p.created_at)}>{compactDateTime(p.created_at)}</Td>
                   <Td className="hidden sm:table-cell text-ink-muted">{p.last_used_at ? relativeTime(p.last_used_at) : 'never'}</Td>
                   <Td>
                     <div className="flex justify-end gap-1">

@@ -107,8 +107,9 @@ export function Devices() {
         title="Devices"
         subtitle={
           devices.length > 0 ? (
-            <span>
-              <span className="text-live">{onlineCount} online</span> · {devices.length} enrolled
+            <span className="inline-flex items-center gap-2">
+              <span className={cx('led', onlineCount > 0 ? 'led-live' : 'led-off')} aria-hidden />
+              {onlineCount} of {devices.length} online
             </span>
           ) : (
             'Machines running the agent appear here as soon as they enroll.'
@@ -223,9 +224,11 @@ export function Devices() {
               <Th>Device</Th>
               <Th className="hidden md:table-cell">User</Th>
               <Th className="hidden lg:table-cell">Groups &amp; tags</Th>
-              <Th>Mode</Th>
+              <Th className="hidden sm:table-cell">Mode</Th>
               <Th className="hidden sm:table-cell">Last seen</Th>
-              <Th className="w-28 text-right" />
+              <Th className="text-right">
+                <span className="sr-only">Connect</span>
+              </Th>
             </tr>
           </thead>
           <tbody>
@@ -240,7 +243,9 @@ export function Devices() {
                 <Td>
                   <StatusLed device={d} />
                 </Td>
-                <Td>
+                {/* w-full + max-w-0: the device column takes the free width and truncates
+                    instead of pushing the table wider than the screen */}
+                <Td className="w-full max-w-0">
                   <div className="flex items-center gap-2">
                     <OsIcon os={d.os} />
                     <div className="min-w-0">
@@ -249,8 +254,13 @@ export function Devices() {
                         <DesktopBadge device={d} />
                         <UpdateBadge version={availableUpdate(d, versions.data)} />
                       </div>
-                      <div className="mono truncate text-ink-faint">
-                        {d.hostname} · {OS_LABEL[d.os]} {d.arch === 'aarch64' ? 'arm64' : 'x64'} · v{d.agent_version}
+                      <div className="flex min-w-0 items-center gap-2.5 text-[12px] text-ink-faint">
+                        {d.hostname && d.hostname.toLowerCase() !== d.name.toLowerCase() && <span className="mono truncate">{d.hostname}</span>}
+                        <span className="shrink-0">
+                          {OS_LABEL[d.os]} {d.arch === 'aarch64' ? 'arm64' : 'x64'}
+                        </span>
+                        <span className="mono shrink-0">v{d.agent_version}</span>
+                        <span className="shrink-0 sm:hidden">{d.online ? 'Online' : relativeTime(d.last_seen_at)}</span>
                       </div>
                     </div>
                   </div>
@@ -264,23 +274,29 @@ export function Devices() {
                     <Tags tags={d.tags} />
                   </div>
                 </Td>
-                <Td>
-                  <div className="flex flex-wrap items-center gap-1">
+                <Td className="hidden sm:table-cell">
+                  <div className="flex items-center gap-1 whitespace-nowrap">
                     <ModeBadge mode={d.mode} />
                     <OverrideBadge overrides={d.local_overrides} />
                   </div>
                 </Td>
-                <Td className="hidden sm:table-cell text-ink-muted">{d.online ? 'now' : relativeTime(d.last_seen_at)}</Td>
-                <Td className="text-right">
+                <Td className="hidden whitespace-nowrap text-ink-muted sm:table-cell">{d.online ? 'now' : relativeTime(d.last_seen_at)}</Td>
+                <Td className="text-right whitespace-nowrap">
                   {canConnect(d, user) ? (
                     <Link to={`/viewer/${d.id}`} onClick={(e) => e.stopPropagation()}>
-                      <Button size="sm" variant={d.online ? 'primary' : 'secondary'} disabled={!d.online} icon={<MonitorPlay size={13} />}>
-                        {d.active_session_id ? 'Join' : 'Connect'}
+                      <Button
+                        size="sm"
+                        variant={d.online ? 'primary' : 'secondary'}
+                        disabled={!d.online}
+                        icon={<MonitorPlay size={13} />}
+                        aria-label={d.active_session_id ? 'Join' : 'Connect'}
+                      >
+                        <span className="max-sm:hidden">{d.active_session_id ? 'Join' : 'Connect'}</span>
                       </Button>
                     </Link>
                   ) : (
-                    <span className="inline-flex items-center gap-1 text-[11.5px] text-ink-faint" title="View only">
-                      <Eye size={12} /> View only
+                    <span className="inline-flex items-center gap-1 text-[12px] text-ink-faint" title="View only">
+                      <Eye size={12} /> <span className="max-sm:hidden">View only</span>
                     </span>
                   )}
                 </Td>

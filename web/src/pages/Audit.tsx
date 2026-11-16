@@ -3,7 +3,7 @@ import { Link } from 'react-router'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { api, errorMessage } from '@/lib/api'
 import type { AuditEntry } from '@/lib/types'
-import { Badge, CopyButton, Dialog, EmptyState, PageHeader, Skeleton, Table, Td, Th } from '@/components/ui'
+import { Badge, CopyButton, Dialog, EmptyState, PageHeader, Skeleton, Table, Td, Th, cx } from '@/components/ui'
 import { Pager } from '@/components/Pager'
 import { compactDateTime, dateTime, relativeTime } from '@/lib/format'
 import { summarizeDetails } from '@/lib/auditSummary'
@@ -39,7 +39,29 @@ export function Audit() {
         </div>
       ) : (
         <>
-          <Table fixed className={q.isFetching ? 'opacity-70 transition-opacity' : 'transition-opacity'}>
+          {/* phones: one stacked row per entry (five fixed columns do not fit) */}
+          <ul className={cx('panel divide-y divide-line md:hidden', q.isFetching && 'opacity-70')}>
+            {rows.map((r) => (
+              <li key={r.id}>
+                <button type="button" onClick={() => setOpenEntry(r)} className="row-hover block w-full px-3 py-2.5 text-left">
+                  <div className="flex items-center gap-2">
+                    <ActionBadge action={r.action} />
+                    <span className="min-w-0 truncate">
+                      <Actor entry={r} />
+                    </span>
+                    <span className="ml-auto shrink-0 text-[12px] text-ink-faint" title={dateTime(r.ts)}>
+                      {relativeTime(r.ts, now)}
+                    </span>
+                  </div>
+                  {(r.target || summarizeDetails(r.details)) && (
+                    <div className="mono mt-1 truncate text-ink-muted">{summarizeDetails(r.details) || shortTarget(r.target ?? '')}</div>
+                  )}
+                </button>
+              </li>
+            ))}
+            {rows.length === 0 && <li className="px-3 py-6 text-center text-ink-faint">No more entries.</li>}
+          </ul>
+          <Table fixed className={cx('max-md:hidden', q.isFetching ? 'opacity-70 transition-opacity' : 'transition-opacity')}>
             <colgroup>
               <col className="w-[170px]" />
               <col className="w-[170px]" />

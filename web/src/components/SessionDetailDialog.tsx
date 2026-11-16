@@ -53,7 +53,7 @@ export function SessionDetailDialog({ session, open, onClose }: { session: Sessi
 function Item({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
-      <dt className="text-[11px] text-ink-faint uppercase tracking-wide">{label}</dt>
+      <dt className="eyebrow">{label}</dt>
       <dd className="mt-0.5">{children}</dd>
     </div>
   )

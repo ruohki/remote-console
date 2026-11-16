@@ -5,7 +5,7 @@ import { FolderKanban, Plus, Search } from 'lucide-react'
 import { api, errorMessage } from '@/lib/api'
 import type { Group } from '@/lib/types'
 import { Button, Dialog, EmptyState, Field, Input, PageHeader, Skeleton, Table, Td, Textarea, Th } from '@/components/ui'
-import { dateTime } from '@/lib/format'
+import { compactDateTime, dateTime } from '@/lib/format'
 import { toast } from '@/lib/toast'
 
 export function GroupsPage() {
@@ -92,8 +92,8 @@ export function GroupsPage() {
                     </div>
                   </div>
                 </Td>
-                <Td className="mono">{g.device_count}</Td>
-                <Td className="hidden md:table-cell text-ink-muted">{dateTime(g.created_at)}</Td>
+                <Td className="tabular-nums">{g.device_count}</Td>
+                <Td className="hidden md:table-cell text-ink-muted whitespace-nowrap" title={dateTime(g.created_at)}>{compactDateTime(g.created_at)}</Td>
               </tr>
             ))}
           </tbody>
